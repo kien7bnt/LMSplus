@@ -158,6 +158,38 @@ export function draftLessonMarkers(db, lessonId, classId = null) {
   return rows.map(mapMarkerRow);
 }
 
+export function computeMarkerContentSig(marker, blocks = []) {
+  const vb =
+    (blocks || []).find((b) => b.id === marker?.block_id) ||
+    (blocks || []).find((b) => ['video', 'youtube'].includes(b.block_type));
+  const vc = vb?.content || {};
+  const videoIdentity = vc.video_id || vc.resource_id || vc.direct_url || '';
+  const q = marker?.question || {};
+  const raw = JSON.stringify({
+    v: videoIdentity,
+    qt: q.question_type || '',
+    p: q.prompt || '',
+    o: (q.options || []).map((x) => ({ id: x.id, text: x.text, c: Boolean(x.is_correct) })),
+    ak: q.answer_key || null,
+  });
+  return crypto.createHash('sha256').update(raw).digest('hex').slice(0, 16);
+}
+
+export function filterActiveMarkerSubs(subs, marker, blocks = []) {
+  if (!Array.isArray(subs) || subs.length === 0) return [];
+  const sig = computeMarkerContentSig(marker, blocks);
+  return subs.filter((s) => {
+    const fb = safeJson(s.feedback_json, {});
+    if (fb && typeof fb.marker_sig === 'string') {
+      return fb.marker_sig === sig;
+    }
+    if (marker?.updated_at && s.submitted_at && String(s.submitted_at) < String(marker.updated_at)) {
+      return false;
+    }
+    return true;
+  });
+}
+
 export function latestPublishedMarkers(db, lessonId) {
   const v = db
     .prepare('SELECT markers_snapshot_json FROM lesson_versions WHERE lesson_id = ? ORDER BY version_number DESC LIMIT 1')
@@ -1999,12 +2031,13 @@ export function buildStudentLessonPayload(db, { user, cls, lesson, chapterInfo, 
   ].sort((a, b) => Number(a.timestamp_sec) - Number(b.timestamp_sec) || Number(a.sort_order) - Number(b.sort_order));
 
   const studentMarkers = rawMarkers.map((m) => {
-    const mSubs = subsByTarget.get(`VIDEO_MARKER:${m.id}`) || [];
+    const mSubs = filterActiveMarkerSubs(subsByTarget.get(`VIDEO_MARKER:${m.id}`) || [], m, mergedBlocks);
     const hasSubmitted = mSubs.length > 0;
     const latestSub = mSubs[mSubs.length - 1] || null;
     const maxAtt = Number(m.max_attempts ?? 2);
     const anyCorrect = mSubs.some((s) => Boolean(s.is_correct));
     const canRetry = m.behavior !== 'INFO_ONLY' && !anyCorrect && (maxAtt === 0 || mSubs.length < maxAtt);
+    const isCompleted = m.behavior === 'INFO_ONLY' ? false : Boolean(hasSubmitted && (anyCorrect || !canRetry));
     const revealAns = hasSubmitted && Boolean(m.show_answer_after_submit) && (anyCorrect || !canRetry);
     const revealExp = hasSubmitted && Boolean(m.show_explanation);
     const bestPoints = mSubs.reduce((mx, s) => Math.max(mx, Number(s.earned_points || 0)), 0);
@@ -2027,7 +2060,7 @@ export function buildStudentLessonPayload(db, { user, cls, lesson, chapterInfo, 
           ? null
           : stripQuestionForStudent(m.question, { revealAnswer: revealAns, revealExplanation: revealExp }),
       learner_state: {
-        completed: m.behavior === 'INFO_ONLY' ? false : hasSubmitted,
+        completed: isCompleted,
         attempts_used: mSubs.length,
         is_correct: anyCorrect,
         best_points: bestPoints,
@@ -2115,29 +2148,6 @@ export function findPublishedMarkerForStudent(db, lessonId, classId, markerId) {
 }
 
 export function submitVideoMarkerAnswer(db, { user, cls, lesson, markerId, body }) {
-  const rawKey = typeof body.idempotency_key === 'string' && body.idempotency_key.trim()
-    ? `${user.id}:${cls.id}:${body.idempotency_key.trim().slice(0, 80)}`
-    : null;
-
-  if (rawKey) {
-    const dup = db
-      .prepare('SELECT * FROM lesson_quiz_submissions WHERE idempotency_key = ? AND student_id = ?')
-      .get(rawKey, user.id);
-    if (dup) {
-      const savedFb = safeJson(dup.feedback_json, {});
-      return {
-        deduplicated: true,
-        submission_id: dup.id,
-        attempt_number: dup.attempt_number,
-        is_correct: Boolean(dup.is_correct),
-        grading_status: dup.grading_status,
-        earned_points: Number(dup.earned_points || 0),
-        max_points: Number(dup.max_points || 1),
-        ...savedFb,
-      };
-    }
-  }
-
   const marker = findPublishedMarkerForStudent(db, lesson.id, cls.id, markerId);
   if (!marker) fail(404, 'MARKER_NOT_FOUND', 'Không tìm thấy câu hỏi tương tác tại mốc thời gian này.');
   if (marker.behavior === 'INFO_ONLY' || !marker.question) {
@@ -2150,13 +2160,44 @@ export function submitVideoMarkerAnswer(db, { user, cls, lesson, markerId, body 
     };
   }
 
-  const prevSubs = db
+  const publishedCustom = getPublishedClassCustom(db, cls.id, lesson.id);
+  const mergedBlocks = [
+    ...latestPublishedBlocks(db, lesson.id),
+    ...(publishedCustom ? publishedCustom.blocks : []),
+  ];
+  const markerSig = computeMarkerContentSig(marker, mergedBlocks);
+
+  const rawKey = typeof body.idempotency_key === 'string' && body.idempotency_key.trim()
+    ? `${user.id}:${cls.id}:${markerSig}:${body.idempotency_key.trim().slice(0, 80)}`
+    : null;
+
+  if (rawKey) {
+    const dup = db
+      .prepare('SELECT * FROM lesson_quiz_submissions WHERE idempotency_key = ? AND student_id = ?')
+      .get(rawKey, user.id);
+    if (dup) {
+      const savedFb = safeJson(dup.feedback_json, {});
+      return {
+        deduplicated: true,
+        submission_id: dup.id,
+        attempt_number: savedFb.active_attempt_number || dup.attempt_number,
+        is_correct: Boolean(dup.is_correct),
+        grading_status: dup.grading_status,
+        earned_points: Number(dup.earned_points || 0),
+        max_points: Number(dup.max_points || 1),
+        ...savedFb,
+      };
+    }
+  }
+
+  const allPrevSubs = db
     .prepare(
       `SELECT * FROM lesson_quiz_submissions
        WHERE student_id = ? AND subject_class_id = ? AND target_type = 'VIDEO_MARKER' AND target_id = ?
        ORDER BY attempt_number ASC`
     )
     .all(user.id, cls.id, marker.id);
+  const prevSubs = filterActiveMarkerSubs(allPrevSubs, marker, mergedBlocks);
 
   const maxAtt = Number(marker.max_attempts ?? 2);
   if (maxAtt > 0 && prevSubs.length >= maxAtt) {
@@ -2165,12 +2206,16 @@ export function submitVideoMarkerAnswer(db, { user, cls, lesson, markerId, body 
 
   const grade = gradeQuestionResponse(marker.question, body.response || {});
   const attemptNumber = prevSubs.length + 1;
+  const dbRowAttempt =
+    (allPrevSubs.length ? Math.max(...allPrevSubs.map((s) => Number(s.attempt_number || 0))) : 0) + 1;
   const canRetry = !grade.is_correct && (maxAtt === 0 || attemptNumber < maxAtt);
   const canContinue = grade.is_correct || !marker.is_required || !canRetry || Boolean(marker.allow_skip);
   const revealAns = Boolean(marker.show_answer_after_submit) && (grade.is_correct || !canRetry);
   const revealExp = Boolean(marker.show_explanation);
 
   const extraPayload = {
+    marker_sig: markerSig,
+    active_attempt_number: attemptNumber,
     max_attempts: maxAtt,
     can_retry: canRetry,
     can_continue: canContinue,
@@ -2179,7 +2224,7 @@ export function submitVideoMarkerAnswer(db, { user, cls, lesson, markerId, body 
     ...(revealAns ? { correct_answer: publicCorrectAnswer(marker.question) } : {}),
   };
 
-  const idemKey = rawKey || `auto:${user.id}:${cls.id}:vm:${marker.id}:${attemptNumber}:${crypto.randomBytes(4).toString('hex')}`;
+  const idemKey = rawKey || `auto:${user.id}:${cls.id}:vm:${marker.id}:${dbRowAttempt}:${crypto.randomBytes(4).toString('hex')}`;
   const subId = `sub_${crypto.randomBytes(6).toString('hex')}`;
   db.prepare(
     `INSERT INTO lesson_quiz_submissions (
@@ -2193,7 +2238,7 @@ export function submitVideoMarkerAnswer(db, { user, cls, lesson, markerId, body 
     cls.id,
     lesson.id,
     marker.id,
-    attemptNumber,
+    dbRowAttempt,
     JSON.stringify(grade.normalized_response),
     grade.grading_status,
     grade.is_correct ? 1 : 0,

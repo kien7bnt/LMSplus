@@ -265,9 +265,24 @@ export class YouTubeIframeAdapter implements VideoPlayerAdapter {
   private listeners = new Set<(state: VideoPlaybackState) => void>();
   private timer: number | null = null;
   private destroyed = false;
+  private lastNotifiedTime = -1;
+  private lastNotifiedDuration = -1;
 
   constructor(containerEl: HTMLElement, videoId: string, startSeconds = 0, fallbackDuration = 0) {
     this.fallbackDuration = fallbackDuration;
+
+    const applyIframePolicies = (iframe: HTMLIFrameElement | null | undefined) => {
+      if (!iframe) return;
+      iframe.title = 'Trình phát video bài giảng YouTube';
+      iframe.allow =
+        'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share';
+      iframe.allowFullscreen = true;
+      iframe.referrerPolicy = 'strict-origin-when-cross-origin';
+      iframe.style.width = '100%';
+      iframe.style.height = '100%';
+      iframe.style.border = '0';
+      iframe.style.display = 'block';
+    };
 
     const mountPlayer = (YT: any, attempt: 0 | 1) => {
       if (this.destroyed) return;
@@ -279,40 +294,36 @@ export class YouTubeIframeAdapter implements VideoPlayerAdapter {
       this.player = null;
       this.ready = false;
 
+      containerEl.innerHTML = '';
+      const hostDiv = document.createElement('div');
+      containerEl.appendChild(hostDiv);
+
       const start = Math.max(0, Math.floor(startSeconds || 0));
-      const params = new URLSearchParams({
-        enablejsapi: '1',
-        playsinline: '1',
-        rel: '0',
-        controls: '1',
-      });
-      if (start > 0) params.set('start', String(start));
+      const playerVars: Record<string, any> = {
+        playsinline: 1,
+        rel: 0,
+        controls: 1,
+        enablejsapi: 1,
+      };
+      if (start > 0) playerVars.start = start;
       if (attempt === 0 && typeof window !== 'undefined' && window.location?.origin) {
-        params.set('origin', window.location.origin);
+        playerVars.origin = window.location.origin;
       }
 
-      const embedHost = attempt === 0 ? 'https://www.youtube.com' : 'https://www.youtube-nocookie.com';
-      const iframe = document.createElement('iframe');
-      iframe.src = `${embedHost}/embed/${encodeURIComponent(videoId)}?${params.toString()}`;
-      iframe.title = 'Trình phát video bài giảng YouTube';
-      iframe.allow =
-        'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share';
-      iframe.allowFullscreen = true;
-      iframe.referrerPolicy = 'strict-origin-when-cross-origin';
-      iframe.style.width = '100%';
-      iframe.style.height = '100%';
-      iframe.style.border = '0';
-      iframe.style.display = 'block';
-
-      containerEl.innerHTML = '';
-      containerEl.appendChild(iframe);
-
-      this.player = new YT.Player(iframe, {
+      this.player = new YT.Player(hostDiv, {
+        host: attempt === 0 ? 'https://www.youtube.com' : 'https://www.youtube-nocookie.com',
+        width: '100%',
+        height: '100%',
+        videoId,
+        playerVars,
         events: {
           onReady: () => {
             if (this.destroyed) return;
+            applyIframePolicies(this.player?.getIframe?.() || containerEl.querySelector('iframe'));
             this.ready = true;
             this.errorMessage = null;
+            this.lastNotifiedTime = this.getCurrentTime();
+            this.lastNotifiedDuration = this.getDuration();
             this.notify();
             if (attempt === 1) {
               try {
@@ -324,10 +335,12 @@ export class YouTubeIframeAdapter implements VideoPlayerAdapter {
           },
           onStateChange: (ev: any) => {
             if (this.destroyed) return;
-            const st = ev?.data;
+            const st = Number(ev?.data);
             this.playing = st === YT.PlayerState.PLAYING;
             this.ended = st === YT.PlayerState.ENDED;
             if (this.playing) this.errorMessage = null;
+            this.lastNotifiedTime = this.getCurrentTime();
+            this.lastNotifiedDuration = this.getDuration();
             this.notify();
           },
           onPlaybackRateChange: (ev: any) => {
@@ -354,6 +367,8 @@ export class YouTubeIframeAdapter implements VideoPlayerAdapter {
           },
         },
       });
+
+      applyIframePolicies(this.player?.getIframe?.() || containerEl.querySelector('iframe'));
     };
 
     loadYouTubeIframeApi()
@@ -362,10 +377,32 @@ export class YouTubeIframeAdapter implements VideoPlayerAdapter {
         mountPlayer(YT, 0);
 
         this.timer = window.setInterval(() => {
-          if (this.ready && this.playing && !this.destroyed) {
+          if (!this.ready || this.destroyed || !this.player) return;
+          let rawState = -1;
+          try {
+            if (typeof this.player.getPlayerState === 'function') {
+              rawState = Number(this.player.getPlayerState());
+            }
+          } catch {
+            rawState = -1;
+          }
+          const nowPlaying = rawState === 1;
+          const nowEnded = rawState === 0;
+          const cur = this.getCurrentTime();
+          const dur = this.getDuration();
+          const changed =
+            nowPlaying !== this.playing ||
+            nowEnded !== this.ended ||
+            Math.abs(cur - this.lastNotifiedTime) >= 0.1 ||
+            Math.abs(dur - this.lastNotifiedDuration) >= 0.5;
+          this.playing = nowPlaying;
+          this.ended = nowEnded;
+          if (nowPlaying || changed) {
+            this.lastNotifiedTime = cur;
+            this.lastNotifiedDuration = dur;
             this.notify();
           }
-        }, 180);
+        }, 120);
       })
       .catch((err) => {
         if (this.destroyed) return;
@@ -425,7 +462,11 @@ export class YouTubeIframeAdapter implements VideoPlayerAdapter {
 
   pause(): void {
     try {
-      if (this.ready && this.player?.pauseVideo) this.player.pauseVideo();
+      this.playing = false;
+      if (this.ready && this.player?.pauseVideo) {
+        this.player.pauseVideo();
+      }
+      this.notify();
     } catch {
       // ignore
     }

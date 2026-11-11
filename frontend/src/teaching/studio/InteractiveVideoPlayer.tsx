@@ -178,22 +178,27 @@ export const InteractiveVideoPlayer: React.FC<InteractiveVideoPlayerProps> = ({
     return list.sort((a, b) => a.timestamp_sec - b.timestamp_sec || (a.sort_order || 0) - (b.sort_order || 0));
   }, [markers]);
 
-  // Runtime completion map + session-handled set (so rewatching from 00:00 doesn't re-pop already completed markers)
+  // Runtime completion map + session-handled set (tracks markers already paused in the current playback pass)
   const [runtimeMap, setRuntimeMap] = useState<Record<string, LocalMarkerRuntime>>({});
   const handledInSessionRef = useRef<Set<string>>(new Set());
+  const prevCheckTimeRef = useRef<number>(startSeconds || 0);
 
   useEffect(() => {
     const next: Record<string, LocalMarkerRuntime> = {};
+    const resumePos = mode === 'LEARNER' ? Number(initialProgress?.last_position_sec || 0) : 0;
+    handledInSessionRef.current.clear();
     unifiedMarkers.forEach((m) => {
       if (mode === 'LEARNER' && m.learner_state) {
+        const done = Boolean(m.learner_state.completed);
         next[m.id] = {
-          completed: Boolean(m.learner_state.completed),
+          completed: done,
           attemptsUsed: Number(m.learner_state.attempts_used || 0),
           isCorrect: Boolean(m.learner_state.is_correct),
           canRetry: Boolean(m.learner_state.can_retry),
           lastFeedback: m.learner_state.last_feedback || '',
         };
-        if (m.learner_state.completed) {
+        // Chỉ bỏ qua tự động khi khôi phục giữa chừng qua mốc đã hoàn thành; nếu phát lại từ đầu vẫn dừng tại mốc
+        if (done && resumePos >= 3 && resumePos > Number(m.timestamp_sec || 0) + 1.5) {
           handledInSessionRef.current.add(m.id);
         }
       } else {
@@ -207,7 +212,7 @@ export const InteractiveVideoPlayer: React.FC<InteractiveVideoPlayerProps> = ({
       }
     });
     setRuntimeMap(next);
-  }, [unifiedMarkers, mode]);
+  }, [unifiedMarkers, mode, initialProgress?.last_position_sec]);
 
   // Active marker overlay & queue for closely spaced markers
   const [activeMarkerId, setActiveMarkerId] = useState<string | null>(null);
@@ -364,28 +369,47 @@ export const InteractiveVideoPlayer: React.FC<InteractiveVideoPlayerProps> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sourceType, resolvedHtml5Src, videoId, fallbackDuration]);
 
+  // Khóa cứng trạng thái tạm dừng nếu trình phát YouTube/HTML5 tự chuyển từ BUFFERING sang PLAYING khi đang mở câu hỏi
+  useEffect(() => {
+    if (activeMarkerId && pb.playing) {
+      adapterRef.current?.pause();
+    }
+  }, [activeMarkerId, pb.playing]);
+
   // Deterministic Marker Detection Engine (LEARNER & PREVIEW modes)
   useEffect(() => {
     if (mode === 'AUTHOR' || activeMarkerId || !pb.ready) return;
     if (unifiedMarkers.length === 0) return;
 
     const current = pb.currentTime;
+    const prev = prevCheckTimeRef.current;
 
-    // 1. Check if learner scrubbed forward past an unanswered required PAUSE_AND_ASK marker
+    // Nếu người học tua ngược lại trước mốc, cho phép mốc đó tự động dừng lại khi phát tới
+    if (current < prev - 1.2) {
+      unifiedMarkers.forEach((m) => {
+        const mTime = getEffectiveMarkerTime(m.timestamp_sec);
+        if (mTime > current + 0.4) {
+          handledInSessionRef.current.delete(m.id);
+        }
+      });
+    }
+
+    // 1. Chặn tua vượt qua mốc PAUSE_AND_ASK bắt buộc chưa hoàn thành (kể cả khi kéo trực tiếp thanh tua của YouTube)
     const blockingRequired = unifiedMarkers.find((m) => {
       const mTime = getEffectiveMarkerTime(m.timestamp_sec);
       const rt = runtimeMap[m.id];
-      const done = Boolean(rt?.completed) || handledInSessionRef.current.has(m.id);
+      const answeredDone = Boolean(rt?.completed && !rt?.canRetry) || handledInSessionRef.current.has(m.id);
       return (
-        !done &&
+        !answeredDone &&
         m.behavior === 'PAUSE_AND_ASK' &&
         (m.is_required || !allowSeekingAhead) &&
-        current > mTime + 1.2
+        current > mTime + 1.5
       );
     });
 
     if (blockingRequired) {
       const clampTime = getEffectiveMarkerTime(blockingRequired.timestamp_sec);
+      prevCheckTimeRef.current = clampTime;
       adapterRef.current?.pause();
       adapterRef.current?.seek(clampTime);
       setSeekNotice('Hãy hoàn thành câu hỏi tương tác tại mốc này trước khi tua tiếp.');
@@ -393,21 +417,32 @@ export const InteractiveVideoPlayer: React.FC<InteractiveVideoPlayerProps> = ({
       return;
     }
 
-    // 2. Check markers reached during normal playback (including closely spaced markers -> queue)
-    if (!pb.playing && !pb.ended) return;
+    // 2. Phát hiện chạm hoặc vượt mốc thời gian trong lúc phát (hỗ trợ mọi tốc độ 0.75x–2x)
+    const progressedForward = current > prev && current - prev <= 3.5;
+    if (!pb.playing && !pb.ended && !progressedForward) {
+      prevCheckTimeRef.current = current;
+      return;
+    }
 
     const dueMarkers = unifiedMarkers.filter((m) => {
-      const mTime = getEffectiveMarkerTime(m.timestamp_sec);
+      if (handledInSessionRef.current.has(m.id)) return false;
       const rt = runtimeMap[m.id];
-      const done = Boolean(rt?.completed) || handledInSessionRef.current.has(m.id);
-      if (done) return false;
-      return current >= mTime - 0.15 && current <= mTime + 1.5;
+      const alreadyLocked = Boolean(rt?.completed && !rt?.canRetry && m.behavior !== 'INFO_ONLY');
+      if (alreadyLocked && m.allow_review === false) return false;
+      const mTime = getEffectiveMarkerTime(m.timestamp_sec);
+      const crossed = prev <= mTime && current >= mTime - 0.15;
+      const inWindow = current >= mTime - 0.15 && current <= mTime + 1.8;
+      return crossed || inWindow;
     });
+
+    prevCheckTimeRef.current = current;
 
     if (dueMarkers.length > 0) {
       const [first, ...rest] = dueMarkers;
       markerQueueRef.current = rest.map((x) => x.id);
-      openMarkerOverlay(first.id, false);
+      const firstRt = runtimeMap[first.id];
+      const openAsReview = Boolean(firstRt?.completed && !firstRt?.canRetry && first.behavior !== 'INFO_ONLY');
+      openMarkerOverlay(first.id, openAsReview);
     }
   }, [
     mode,
@@ -438,7 +473,8 @@ export const InteractiveVideoPlayer: React.FC<InteractiveVideoPlayerProps> = ({
     // Pop next queued marker if multiple markers share nearly the same timestamp
     const nextQueuedId = markerQueueRef.current.shift();
     if (nextQueuedId) {
-      openMarkerOverlay(nextQueuedId, false);
+      const nextRt = runtimeMap[nextQueuedId];
+      openMarkerOverlay(nextQueuedId, Boolean(nextRt?.completed && !nextRt?.canRetry));
       return;
     }
 
@@ -583,6 +619,15 @@ export const InteractiveVideoPlayer: React.FC<InteractiveVideoPlayerProps> = ({
       }
     }
 
+    if (targetSeconds < pb.currentTime - 0.5) {
+      unifiedMarkers.forEach((m) => {
+        const mTime = getEffectiveMarkerTime(m.timestamp_sec);
+        if (mTime >= targetSeconds - 0.2) {
+          handledInSessionRef.current.delete(m.id);
+        }
+      });
+    }
+    prevCheckTimeRef.current = targetSeconds;
     adapterRef.current.seek(targetSeconds);
   };
 
@@ -593,6 +638,8 @@ export const InteractiveVideoPlayer: React.FC<InteractiveVideoPlayerProps> = ({
       flushSaveProgress(pb.currentTime, effectiveDuration, true);
     } else {
       if (pb.ended) {
+        handledInSessionRef.current.clear();
+        prevCheckTimeRef.current = 0;
         adapterRef.current?.seek(0);
       }
       adapterRef.current?.play();
@@ -628,6 +675,8 @@ export const InteractiveVideoPlayer: React.FC<InteractiveVideoPlayerProps> = ({
               variant="ghost"
               onClick={() => {
                 setResumeBannerSec(null);
+                handledInSessionRef.current.clear();
+                prevCheckTimeRef.current = 0;
                 adapterRef.current?.seek(0);
               }}
             >

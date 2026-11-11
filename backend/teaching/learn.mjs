@@ -9,6 +9,7 @@ import { outline, latestPublishedBlocks } from './courses.mjs';
 import { getAttendancePolicy, rateFromCounts } from './attendance.mjs';
 import {
   buildStudentLessonPayload,
+  filterActiveMarkerSubs,
   getPublishedClassCustom,
   latestPublishedMarkers,
   submitStandaloneQuizBlock,
@@ -300,12 +301,13 @@ export function registerLearnRoutes(route, { jwtSecret = 'lmsplus-production-gra
       ].filter((m) => m.behavior === 'PAUSE_AND_ASK' && Boolean(m.is_required));
 
       const unmet = reqMarkers.filter((m) => {
-        const subs = db
+        const rawSubs = db
           .prepare(
-            `SELECT is_correct FROM lesson_quiz_submissions
+            `SELECT is_correct, feedback_json, submitted_at FROM lesson_quiz_submissions
              WHERE student_id = ? AND subject_class_id = ? AND target_type = 'VIDEO_MARKER' AND target_id = ?`
           )
           .all(user.id, cls.id, m.id);
+        const subs = filterActiveMarkerSubs(rawSubs, m, allBlocks);
         if (subs.length === 0) return true;
         if (subs.some((s) => Boolean(s.is_correct))) return false;
         const maxAtt = Number(m.max_attempts ?? 2);
