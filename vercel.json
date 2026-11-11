@@ -1,0 +1,26 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": null,
+  "installCommand": "npm --prefix frontend install --include=dev",
+  "buildCommand": "npm --prefix frontend run build",
+  "outputDirectory": "frontend/dist",
+  "functions": {
+    "api/index.mjs": {
+      "includeFiles": "{backend/**,shared/**,database/lmsplus_elearning_seed.json}"
+    }
+  },
+  "rewrites": [
+    {
+      "source": "/api/v1/:path*",
+      "destination": "/api/index?__lms_path=/api/v1/:path*"
+    },
+    {
+      "source": "/health",
+      "destination": "/api/index?__lms_path=/health"
+    },
+    {
+      "source": "/((?!api/|health).*)",
+      "destination": "/index.html"
+    }
+  ]
+}

@@ -1,0 +1,34 @@
+# Dependencies
+node_modules/
+frontend/node_modules/
+
+# Production build outputs
+frontend/dist/
+
+# Python virtual environments & caches
+venv/
+.venv/
+backend/venv/
+__pycache__/
+*.py[cod]
+
+# Environment & secrets
+.env
+.env.*
+!.env.example
+
+# Runtime SQLite files & local media uploads (seed JSON & SQL migrations are tracked)
+database/*.sqlite
+database/*.sqlite-shm
+database/*.sqlite-wal
+backend/uploads/
+
+# Logs & temporary test artifacts
+logs/
+*.log
+tests/.tmp/
+
+# Vercel & OS metadata
+.vercel/
+.DS_Store
+Thumbs.db

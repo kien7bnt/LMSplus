@@ -1,0 +1,243 @@
+/**
+ * ============================================================================
+ * LMS E-LEARNING — 3-TIER MULTI-THEME DESIGN TOKENS
+ * Stack: UI/UX Pro Max × Impeccable × Airbnb DLS × Adaptive Theme Engine
+ * ============================================================================
+ */
+
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&display=swap');
+
+:root {
+  /* --------------------------------------------------------------------------
+   * TIER 1: PRIMITIVE TOKENS (Airbnb DLS Palette & Mathematical Scales)
+   * -------------------------------------------------------------------------- */
+  --primitive-rausch-500: #FF385C;
+  --primitive-rausch-600: #E00B41;
+  --primitive-rausch-50:  #FFF0F3;
+
+  --primitive-babu-500:   #00A699;
+  --primitive-babu-600:   #008489;
+  --primitive-babu-400:   #00C2B3;
+  --primitive-babu-50:    #EBF8F7;
+
+  --primitive-arches-500: #FC642D;
+  --primitive-arches-400: #FF7E47;
+  --primitive-arches-50:  #FFF4EF;
+
+  --primitive-hof-900:    #222222;
+  --primitive-foggy-600:  #717171;
+  --primitive-foggy-400:  #8A8A8A;
+  --primitive-line-200:   #EBEBEB;
+  --primitive-line-300:   #DDDDDD;
+  --primitive-surface-50: #F7F7F7;
+  --primitive-surface-100:#F0F0F0;
+  --primitive-white:      #FFFFFF;
+
+  /* Dark Obsidian Primitives (Warm Charcoal — Zero Neon) */
+  --primitive-obsidian-950: #121214;
+  --primitive-obsidian-900: #1A1A1E;
+  --primitive-obsidian-800: #222228;
+  --primitive-obsidian-700: #2A2A32;
+  --primitive-alabaster-50: #F5F5F7;
+  --primitive-zinc-400:     #A1A1AA;
+  --primitive-zinc-500:     #71717A;
+
+  /* Typography Families */
+  --font-sans:  'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-serif: 'Source Serif 4', Georgia, serif;
+  --font-mono:  'JetBrains Mono', monospace;
+
+  /* Fluid Type Scale (Major Third >= 1.25x Hierarchy) */
+  --text-display:    clamp(2rem, 3.5vw, 3rem);
+  --text-h1:         clamp(1.625rem, 2.5vw, 2.25rem);
+  --text-h2:         clamp(1.375rem, 2vw, 1.625rem);
+  --text-h3:         1.125rem;   /* 18px */
+  --text-card-title: 0.9375rem;  /* 15px - Airbnb Listing Signature */
+  --text-body:       1rem;       /* 16px */
+  --text-sm:         0.875rem;   /* 14px */
+  --text-xs:         0.75rem;    /* 12px */
+
+  /* 4px / 8px Spatial Grid Scale */
+  --space-1:  0.25rem; /* 4px */
+  --space-2:  0.5rem;  /* 8px */
+  --space-3:  0.75rem; /* 12px */
+  --space-4:  1rem;    /* 16px */
+  --space-5:  1.25rem; /* 20px */
+  --space-6:  1.5rem;  /* 24px */
+  --space-8:  2rem;    /* 32px */
+  --space-10: 2.5rem;  /* 40px */
+  --space-12: 3rem;    /* 48px */
+  --space-16: 4rem;    /* 64px */
+  --space-20: 5rem;    /* 80px */
+
+  /* Border Radii */
+  --radius-xs:   6px;
+  --radius-sm:   8px;
+  --radius-md:   12px;
+  --radius-lg:   16px;
+  --radius-xl:   24px;
+  --radius-pill: 9999px;
+
+  /* Physical Motion Easing (Zero Bounce) */
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --duration-fast: 150ms;
+  --duration-base: 220ms;
+  --duration-slow: 300ms;
+
+  /* --------------------------------------------------------------------------
+   * TIER 2: SEMANTIC TOKENS — DEFAULT: AIRBNB DAYLIGHT (`airbnb-light`)
+   * -------------------------------------------------------------------------- */
+  --bg-canvas:         var(--primitive-white);
+  --bg-surface:        var(--primitive-white);
+  --bg-surface-subtle: var(--primitive-surface-50);
+  --bg-surface-hover:  var(--primitive-surface-100);
+  --bg-glass-header:   rgba(255, 255, 255, 0.92);
+
+  --text-primary:      var(--primitive-hof-900);
+  --text-secondary:    var(--primitive-foggy-600);
+  --text-muted:        var(--primitive-foggy-400);
+  --text-on-brand:     var(--primitive-white);
+
+  --border-subtle:     var(--primitive-line-200);
+  --border-strong:     var(--primitive-line-300);
+  --border-focus:      var(--primitive-hof-900);
+
+  --brand-primary:       var(--primitive-rausch-500);
+  --brand-primary-hover: var(--primitive-rausch-600);
+  --brand-tint:          var(--primitive-rausch-50);
+
+  --accent-learning:     var(--primitive-babu-500);
+  --accent-learning-tint:var(--primitive-babu-50);
+  --accent-streak:       var(--primitive-arches-500);
+  --accent-streak-tint:  var(--primitive-arches-50);
+
+  --status-success: #008A05;
+  --status-warning: #E07912;
+  --status-danger:  #C13515;
+
+  /* Airbnb Multi-Layer Ambient Shadows */
+  --shadow-card:       0 1px 2px rgba(0, 0, 0, 0.04), 0 4px 12px rgba(0, 0, 0, 0.05);
+  --shadow-card-hover: 0 6px 20px rgba(0, 0, 0, 0.10);
+  --shadow-floating:   0 8px 28px rgba(0, 0, 0, 0.14);
+
+  /* Semantic Scrims & Layout Metrics */
+  --overlay-scrim:     rgba(18, 18, 20, 0.56);
+  --overlay-quiz:      rgba(18, 18, 20, 0.78);
+  --app-header-h:      80px;
+  --card-pad:          24px;
+}
+
+/* ----------------------------------------------------------------------------
+ * THEME VARIANT 2: CINEMA FOCUS DARK MODE (`cinema-dark`)
+ * Designed for distraction-free video lectures, late-night coding & quizzes.
+ * Separates elevation via Surface Luminance + 1px hairline (Zero Neon Glow).
+ * ---------------------------------------------------------------------------- */
+[data-theme="cinema-dark"],
+.dark {
+  --bg-canvas:         var(--primitive-obsidian-950);
+  --bg-surface:        var(--primitive-obsidian-900);
+  --bg-surface-subtle: var(--primitive-obsidian-800);
+  --bg-surface-hover:  var(--primitive-obsidian-700);
+  --bg-glass-header:   rgba(18, 18, 20, 0.90);
+
+  --text-primary:      var(--primitive-alabaster-50);
+  --text-secondary:    var(--primitive-zinc-400);
+  --text-muted:        var(--primitive-zinc-500);
+  --text-on-brand:     var(--primitive-white);
+
+  --border-subtle:     rgba(255, 255, 255, 0.08);
+  --border-strong:     rgba(255, 255, 255, 0.16);
+  --border-focus:      var(--primitive-alabaster-50);
+
+  --brand-primary:       #FF385C;
+  --brand-primary-hover: #FF5A5F;
+  --brand-tint:          rgba(255, 56, 92, 0.14);
+
+  --accent-learning:      var(--primitive-babu-400);
+  --accent-learning-tint: rgba(0, 194, 179, 0.14);
+  --accent-streak:        var(--primitive-arches-400);
+  --accent-streak-tint:   rgba(255, 126, 71, 0.14);
+
+  --status-success: #2ECC71;
+  --status-warning: #F39C12;
+  --status-danger:  #FF5A5F;
+
+  --shadow-card:       0 2px 8px rgba(0, 0, 0, 0.45);
+  --shadow-card-hover: 0 8px 24px rgba(0, 0, 0, 0.60);
+  --shadow-floating:   0 12px 36px rgba(0, 0, 0, 0.72);
+  --overlay-scrim:     rgba(0, 0, 0, 0.72);
+  --overlay-quiz:      rgba(10, 10, 12, 0.86);
+}
+
+/* ----------------------------------------------------------------------------
+ * THEME VARIANT 3: BABU ACADEMY (`babu-academy`)
+ * Shifts primary brand accent to Airbnb Babu Teal for academic/enterprise LMS.
+ * ---------------------------------------------------------------------------- */
+[data-theme="babu-academy"] {
+  --bg-surface-subtle:   #F4F9F9;
+  --bg-surface-hover:    #E8F3F2;
+  --text-primary:        #182625;
+  --text-secondary:      #586E6C;
+  --border-subtle:       #E2ECEB;
+  --border-strong:       #C8D9D7;
+  --brand-primary:       var(--primitive-babu-600);
+  --brand-primary-hover: #00686B;
+  --brand-tint:          var(--primitive-babu-50);
+  --accent-learning:     var(--primitive-rausch-500);
+}
+
+/* ----------------------------------------------------------------------------
+ * BASE RESET & IMPECCABLE TYPOGRAPHY GUARDRAILS
+ * ---------------------------------------------------------------------------- */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background-color: var(--bg-canvas);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: var(--text-body);
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  transition: background-color var(--duration-base) var(--ease-standard),
+              color var(--duration-base) var(--ease-standard);
+}
+
+h1, h2, h3, h4 {
+  margin-top: 0;
+  color: var(--text-primary);
+  text-wrap: balance;
+}
+
+p, li {
+  max-width: 72ch; /* Impeccable readability measure */
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+}
+
+/* Accessible Focus Ring */
+:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 2px;
+}
+
+/* Reduced Motion Respect (UI/UX Pro Max Priority 7) */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

@@ -1,0 +1,1763 @@
+{
+  "meta": {
+    "schema_version": "2.0",
+    "system": "LMSPLUS E-Learning",
+    "dataset": "Toán lớp 5 — lớp 5A1",
+    "updated_at": "2026-11-10T09:55:45.248Z"
+  },
+  "users": [
+    {
+      "id": "22222222-2222-2222-2222-222222222222",
+      "code": "HS50101",
+      "email": "minhanh.hs@lmsplus.edu.vn",
+      "full_name": "Nguyễn Minh Anh",
+      "roles": [
+        "STUDENT"
+      ],
+      "department_id": "khoi_5"
+    },
+    {
+      "id": "22222222-2222-2222-2222-222222222223",
+      "code": "HS50102",
+      "email": "giabao.hs@lmsplus.edu.vn",
+      "full_name": "Trần Gia Bảo",
+      "roles": [
+        "STUDENT"
+      ],
+      "department_id": "khoi_5"
+    },
+    {
+      "id": "22222222-2222-2222-2222-222222222224",
+      "code": "HS50103",
+      "email": "ngochan.hs@lmsplus.edu.vn",
+      "full_name": "Lê Ngọc Hân",
+      "roles": [
+        "STUDENT"
+      ],
+      "department_id": "khoi_5"
+    },
+    {
+      "id": "11111111-1111-1111-1111-111111111111",
+      "code": "GV5001",
+      "email": "thuha.gv@lmsplus.edu.vn",
+      "full_name": "Cô Lê Thu Hà",
+      "roles": [
+        "INSTRUCTOR"
+      ],
+      "department_id": "khoi_5"
+    },
+    {
+      "id": "33333333-3333-3333-3333-333333333333",
+      "code": "TG5001",
+      "email": "minhquan.tg@lmsplus.edu.vn",
+      "full_name": "Thầy Phạm Minh Quân",
+      "roles": [
+        "TEACHING_ASSISTANT"
+      ],
+      "department_id": "khoi_5"
+    },
+    {
+      "id": "44444444-4444-4444-4444-444444444444",
+      "code": "GVU001",
+      "email": "giaovu@lmsplus.edu.vn",
+      "full_name": "Cô Nguyễn Thu Trang",
+      "roles": [
+        "ACADEMIC_STAFF"
+      ],
+      "department_id": "khoi_5"
+    },
+    {
+      "id": "99999999-9999-9999-9999-999999999999",
+      "code": "AD00001",
+      "email": "admin@lmsplus.edu.vn",
+      "full_name": "Quản trị Hệ thống",
+      "roles": [
+        "ADMIN"
+      ],
+      "department_id": null
+    }
+  ],
+  "courses": [
+    {
+      "id": "crs_toan5",
+      "code": "TOAN5-2026",
+      "title": "Toán lớp 5",
+      "instructor_id": "11111111-1111-1111-1111-111111111111",
+      "instructor_name": "Cô Lê Thu Hà",
+      "department_id": "khoi_5",
+      "department_name": "Tổ Toán – Khối 5",
+      "chapters_count": 4,
+      "lessons_count": 12,
+      "progress_pct": 33,
+      "enrollment_policy": "ASSIGNED_ONLY",
+      "enrollment_status": "ENROLLED",
+      "is_assigned_to_student": true
+    }
+  ],
+  "subject_classes": [
+    {
+      "id": "sc_toan5_5a1",
+      "course_id": "crs_toan5",
+      "code": "5A1",
+      "title": "Toán lớp 5",
+      "instructor_name": "Cô Lê Thu Hà",
+      "ta_names": [
+        "Thầy Phạm Minh Quân"
+      ],
+      "schedule_text": "Thứ Hai, Thứ Tư, Thứ Sáu • Tiết 2 (07:30 – 08:05)",
+      "room": "Phòng 5A1 – Dãy B",
+      "student_count": 35
+    }
+  ],
+  "chapters": [
+    {
+      "id": "ch_1",
+      "subject_class_id": "sc_toan5_5a1",
+      "code": "Chương 1",
+      "title": "Ôn tập và bổ sung về phân số",
+      "progress_pct": 100,
+      "lessons": [
+        {
+          "id": "les_101",
+          "code": "1.1",
+          "title": "Ôn tập khái niệm và tính chất cơ bản của phân số",
+          "duration_minutes": 12,
+          "status": "COMPLETED",
+          "unlock_condition_text": null,
+          "required_video_pct": 85,
+          "require_quick_check": true,
+          "last_video_position_sec": 720,
+          "total_video_seconds": 720,
+          "quick_check_passed": true
+        },
+        {
+          "id": "les_102",
+          "code": "1.2",
+          "title": "Phân số thập phân và hỗn số",
+          "duration_minutes": 14,
+          "status": "COMPLETED",
+          "unlock_condition_text": null,
+          "required_video_pct": 85,
+          "require_quick_check": true,
+          "last_video_position_sec": 840,
+          "total_video_seconds": 840,
+          "quick_check_passed": true
+        },
+        {
+          "id": "les_103",
+          "code": "1.3",
+          "title": "Cộng, trừ, nhân, chia phân số",
+          "duration_minutes": 15,
+          "status": "COMPLETED",
+          "unlock_condition_text": null,
+          "required_video_pct": 85,
+          "require_quick_check": true,
+          "last_video_position_sec": 900,
+          "total_video_seconds": 900,
+          "quick_check_passed": true
+        }
+      ]
+    },
+    {
+      "id": "ch_2",
+      "subject_class_id": "sc_toan5_5a1",
+      "code": "Chương 2",
+      "title": "Số thập phân",
+      "progress_pct": 33,
+      "lessons": [
+        {
+          "id": "les_201",
+          "code": "2.1",
+          "title": "Khái niệm số thập phân, hàng của số thập phân",
+          "duration_minutes": 12,
+          "status": "COMPLETED",
+          "unlock_condition_text": null,
+          "required_video_pct": 85,
+          "require_quick_check": true,
+          "last_video_position_sec": 720,
+          "total_video_seconds": 720,
+          "quick_check_passed": true
+        },
+        {
+          "id": "les_202",
+          "code": "2.2",
+          "title": "So sánh hai số thập phân",
+          "duration_minutes": 10,
+          "status": "IN_PROGRESS",
+          "unlock_condition_text": null,
+          "required_video_pct": 85,
+          "require_quick_check": true,
+          "last_video_position_sec": 300,
+          "total_video_seconds": 600,
+          "quick_check_passed": false
+        },
+        {
+          "id": "les_203",
+          "code": "2.3",
+          "title": "Cộng và trừ số thập phân",
+          "duration_minutes": 14,
+          "status": "LOCKED",
+          "unlock_condition_text": "Hoàn thành bài trước (xem ít nhất 85% video và trả lời đúng câu hỏi kiểm tra nhanh)",
+          "required_video_pct": 85,
+          "require_quick_check": true,
+          "last_video_position_sec": 0,
+          "total_video_seconds": 840,
+          "quick_check_passed": false
+        }
+      ]
+    },
+    {
+      "id": "ch_3",
+      "subject_class_id": "sc_toan5_5a1",
+      "code": "Chương 3",
+      "title": "Tỉ số phần trăm",
+      "progress_pct": 0,
+      "lessons": [
+        {
+          "id": "les_301",
+          "code": "3.1",
+          "title": "Tỉ số phần trăm",
+          "duration_minutes": 12,
+          "status": "LOCKED",
+          "unlock_condition_text": "Hoàn thành bài trước (xem ít nhất 85% video và trả lời đúng câu hỏi kiểm tra nhanh)",
+          "required_video_pct": 85,
+          "require_quick_check": true,
+          "last_video_position_sec": 0,
+          "total_video_seconds": 720,
+          "quick_check_passed": false
+        },
+        {
+          "id": "les_302",
+          "code": "3.2",
+          "title": "Giải toán về tỉ số phần trăm",
+          "duration_minutes": 15,
+          "status": "LOCKED",
+          "unlock_condition_text": "Hoàn thành bài trước (xem ít nhất 85% video và trả lời đúng câu hỏi kiểm tra nhanh)",
+          "required_video_pct": 85,
+          "require_quick_check": true,
+          "last_video_position_sec": 0,
+          "total_video_seconds": 900,
+          "quick_check_passed": false
+        },
+        {
+          "id": "les_303",
+          "code": "3.3",
+          "title": "Luyện tập chung về tỉ số phần trăm",
+          "duration_minutes": 15,
+          "status": "LOCKED",
+          "unlock_condition_text": "Hoàn thành bài trước (xem ít nhất 85% video và trả lời đúng câu hỏi kiểm tra nhanh)",
+          "required_video_pct": 85,
+          "require_quick_check": true,
+          "last_video_position_sec": 0,
+          "total_video_seconds": 900,
+          "quick_check_passed": false
+        }
+      ]
+    },
+    {
+      "id": "ch_4",
+      "subject_class_id": "sc_toan5_5a1",
+      "code": "Chương 4",
+      "title": "Hình học: tam giác, hình thang, hình tròn",
+      "progress_pct": 0,
+      "lessons": [
+        {
+          "id": "les_401",
+          "code": "4.1",
+          "title": "Diện tích hình tam giác",
+          "duration_minutes": 12,
+          "status": "LOCKED",
+          "unlock_condition_text": "Hoàn thành bài trước (xem ít nhất 85% video và trả lời đúng câu hỏi kiểm tra nhanh)",
+          "required_video_pct": 85,
+          "require_quick_check": true,
+          "last_video_position_sec": 0,
+          "total_video_seconds": 720,
+          "quick_check_passed": false
+        },
+        {
+          "id": "les_402",
+          "code": "4.2",
+          "title": "Diện tích hình thang",
+          "duration_minutes": 14,
+          "status": "LOCKED",
+          "unlock_condition_text": "Hoàn thành bài trước (xem ít nhất 85% video và trả lời đúng câu hỏi kiểm tra nhanh)",
+          "required_video_pct": 85,
+          "require_quick_check": true,
+          "last_video_position_sec": 0,
+          "total_video_seconds": 840,
+          "quick_check_passed": false
+        },
+        {
+          "id": "les_403",
+          "code": "4.3",
+          "title": "Chu vi và diện tích hình tròn",
+          "duration_minutes": 15,
+          "status": "LOCKED",
+          "unlock_condition_text": "Hoàn thành bài trước (xem ít nhất 85% video và trả lời đúng câu hỏi kiểm tra nhanh)",
+          "required_video_pct": 85,
+          "require_quick_check": true,
+          "last_video_position_sec": 0,
+          "total_video_seconds": 900,
+          "quick_check_passed": false
+        }
+      ]
+    }
+  ],
+  "lesson_drafts": {
+    "les_101": {
+      "revision_number": 1,
+      "published_version": 1,
+      "blocks": [
+        {
+          "id": "blk_101_1",
+          "lesson_id": "les_101",
+          "schema_version": "1.0",
+          "sort_order": 1000,
+          "status": "ACTIVE",
+          "block_type": "callout",
+          "content": {
+            "variant": "learning_objective",
+            "title": "Mục tiêu bài 1.1",
+            "text": "Đọc, viết được phân số; vận dụng tính chất cơ bản của phân số để rút gọn và quy đồng."
+          }
+        },
+        {
+          "id": "blk_101_2",
+          "lesson_id": "les_101",
+          "schema_version": "1.0",
+          "sort_order": 2000,
+          "status": "ACTIVE",
+          "block_type": "paragraph",
+          "content": {
+            "text": "Phân số gồm tử số viết trên gạch ngang và mẫu số viết dưới gạch ngang. Mẫu số cho biết đơn vị được chia thành bao nhiêu phần bằng nhau, tử số cho biết đã lấy bao nhiêu phần. Nếu nhân (hoặc chia) cả tử số và mẫu số với cùng một số tự nhiên khác 0 thì được một phân số bằng phân số đã cho.",
+            "linked_term_id": "wt_phan_so"
+          }
+        },
+        {
+          "id": "blk_101_3",
+          "lesson_id": "les_101",
+          "schema_version": "1.0",
+          "sort_order": 3000,
+          "status": "ACTIVE",
+          "block_type": "step_by_step_solution",
+          "content": {
+            "problem": "Rút gọn phân số 18/24.",
+            "steps": [
+              {
+                "step_number": 1,
+                "title": "Tìm số lớn nhất cùng chia hết cho tử và mẫu",
+                "explanation": "18 và 24 cùng chia hết cho 6."
+              },
+              {
+                "step_number": 2,
+                "title": "Chia cả tử số và mẫu số cho 6",
+                "explanation": "18 : 6 = 3 ; 24 : 6 = 4."
+              },
+              {
+                "step_number": 3,
+                "title": "Kết luận",
+                "explanation": "18/24 = 3/4 (phân số tối giản)."
+              }
+            ]
+          }
+        },
+        {
+          "id": "blk_101_4",
+          "lesson_id": "les_101",
+          "schema_version": "1.0",
+          "sort_order": 4000,
+          "status": "ACTIVE",
+          "block_type": "inline_mcq",
+          "content": {
+            "question": "Phân số nào bằng phân số 2/3?",
+            "options": [
+              {
+                "id": "opt_1",
+                "text": "4/6",
+                "is_correct": true,
+                "feedback": "Đúng rồi! Nhân cả tử và mẫu của 2/3 với 2 ta được 4/6."
+              },
+              {
+                "id": "opt_2",
+                "text": "3/4",
+                "is_correct": false,
+                "feedback": "Chưa đúng. Hãy nhân cả tử số và mẫu số của 2/3 với cùng một số."
+              },
+              {
+                "id": "opt_3",
+                "text": "2/6",
+                "is_correct": false,
+                "feedback": "Chưa đúng. Hãy nhân cả tử số và mẫu số của 2/3 với cùng một số."
+              },
+              {
+                "id": "opt_4",
+                "text": "6/4",
+                "is_correct": false,
+                "feedback": "Chưa đúng. Hãy nhân cả tử số và mẫu số của 2/3 với cùng một số."
+              }
+            ]
+          }
+        },
+        {
+          "id": "blk_101_5",
+          "lesson_id": "les_101",
+          "schema_version": "1.0",
+          "sort_order": 5000,
+          "status": "ACTIVE",
+          "block_type": "callout",
+          "content": {
+            "variant": "summary",
+            "title": "Ghi nhớ",
+            "text": "Rút gọn: chia cả tử và mẫu cho cùng một số. Quy đồng: nhân cả tử và mẫu với cùng một số để các phân số có chung mẫu số."
+          }
+        }
+      ]
+    },
+    "les_102": {
+      "revision_number": 1,
+      "published_version": 1,
+      "blocks": [
+        {
+          "id": "blk_102_1",
+          "lesson_id": "les_102",
+          "schema_version": "1.0",
+          "sort_order": 1000,
+          "status": "ACTIVE",
+          "block_type": "callout",
+          "content": {
+            "variant": "learning_objective",
+            "title": "Mục tiêu bài 1.2",
+            "text": "Nhận biết phân số thập phân; đọc, viết hỗn số và chuyển hỗn số thành phân số."
+          }
+        },
+        {
+          "id": "blk_102_2",
+          "lesson_id": "les_102",
+          "schema_version": "1.0",
+          "sort_order": 2000,
+          "status": "ACTIVE",
+          "block_type": "paragraph",
+          "content": {
+            "text": "Các phân số có mẫu số là 10, 100, 1000, … gọi là phân số thập phân. Hỗn số gồm phần nguyên và phần phân số (phần phân số luôn bé hơn 1), ví dụ 2 3/5 đọc là \"hai và ba phần năm\".",
+            "linked_term_id": "wt_hon_so"
+          }
+        },
+        {
+          "id": "blk_102_3",
+          "lesson_id": "les_102",
+          "schema_version": "1.0",
+          "sort_order": 3000,
+          "status": "ACTIVE",
+          "block_type": "step_by_step_solution",
+          "content": {
+            "problem": "Chuyển hỗn số 2 3/5 thành phân số.",
+            "steps": [
+              {
+                "step_number": 1,
+                "title": "Nhân phần nguyên với mẫu số",
+                "explanation": "2 × 5 = 10."
+              },
+              {
+                "step_number": 2,
+                "title": "Cộng với tử số của phần phân số",
+                "explanation": "10 + 3 = 13."
+              },
+              {
+                "step_number": 3,
+                "title": "Giữ nguyên mẫu số",
+                "explanation": "2 3/5 = 13/5."
+              }
+            ]
+          }
+        },
+        {
+          "id": "blk_102_4",
+          "lesson_id": "les_102",
+          "schema_version": "1.0",
+          "sort_order": 4000,
+          "status": "ACTIVE",
+          "block_type": "inline_mcq",
+          "content": {
+            "question": "Hỗn số 3 1/4 bằng phân số nào?",
+            "options": [
+              {
+                "id": "opt_1",
+                "text": "13/4",
+                "is_correct": true,
+                "feedback": "Chính xác! 3 × 4 + 1 = 13, giữ mẫu số 4."
+              },
+              {
+                "id": "opt_2",
+                "text": "7/4",
+                "is_correct": false,
+                "feedback": "Chưa đúng. Lấy phần nguyên nhân mẫu số rồi cộng tử số."
+              },
+              {
+                "id": "opt_3",
+                "text": "31/4",
+                "is_correct": false,
+                "feedback": "Chưa đúng. Lấy phần nguyên nhân mẫu số rồi cộng tử số."
+              },
+              {
+                "id": "opt_4",
+                "text": "4/13",
+                "is_correct": false,
+                "feedback": "Chưa đúng. Lấy phần nguyên nhân mẫu số rồi cộng tử số."
+              }
+            ]
+          }
+        },
+        {
+          "id": "blk_102_5",
+          "lesson_id": "les_102",
+          "schema_version": "1.0",
+          "sort_order": 5000,
+          "status": "ACTIVE",
+          "block_type": "callout",
+          "content": {
+            "variant": "summary",
+            "title": "Ghi nhớ",
+            "text": "Muốn chuyển hỗn số thành phân số: tử số = phần nguyên × mẫu số + tử số; mẫu số giữ nguyên."
+          }
+        }
+      ]
+    },
+    "les_103": {
+      "revision_number": 1,
+      "published_version": 1,
+      "blocks": [
+        {
+          "id": "blk_103_1",
+          "lesson_id": "les_103",
+          "schema_version": "1.0",
+          "sort_order": 1000,
+          "status": "ACTIVE",
+          "block_type": "callout",
+          "content": {
+            "variant": "learning_objective",
+            "title": "Mục tiêu bài 1.3",
+            "text": "Thực hiện thành thạo bốn phép tính với phân số."
+          }
+        },
+        {
+          "id": "blk_103_2",
+          "lesson_id": "les_103",
+          "schema_version": "1.0",
+          "sort_order": 2000,
+          "status": "ACTIVE",
+          "block_type": "paragraph",
+          "content": {
+            "text": "Muốn cộng hoặc trừ hai phân số khác mẫu số, ta quy đồng mẫu số rồi cộng (trừ) các tử số. Muốn nhân hai phân số, ta lấy tử nhân tử, mẫu nhân mẫu. Muốn chia một phân số cho một phân số, ta nhân phân số thứ nhất với phân số thứ hai đảo ngược.",
+            "linked_term_id": "wt_mau_so_chung"
+          }
+        },
+        {
+          "id": "blk_103_3",
+          "lesson_id": "les_103",
+          "schema_version": "1.0",
+          "sort_order": 3000,
+          "status": "ACTIVE",
+          "block_type": "step_by_step_solution",
+          "content": {
+            "problem": "Tính 2/3 + 1/4.",
+            "steps": [
+              {
+                "step_number": 1,
+                "title": "Quy đồng mẫu số",
+                "explanation": "Mẫu số chung là 12: 2/3 = 8/12 ; 1/4 = 3/12."
+              },
+              {
+                "step_number": 2,
+                "title": "Cộng hai tử số, giữ nguyên mẫu số",
+                "explanation": "8/12 + 3/12 = 11/12."
+              }
+            ]
+          }
+        },
+        {
+          "id": "blk_103_4",
+          "lesson_id": "les_103",
+          "schema_version": "1.0",
+          "sort_order": 4000,
+          "status": "ACTIVE",
+          "block_type": "inline_mcq",
+          "content": {
+            "question": "Kết quả của phép chia 3/5 : 3/10 là:",
+            "options": [
+              {
+                "id": "opt_1",
+                "text": "2",
+                "is_correct": true,
+                "feedback": "Đúng! 3/5 × 10/3 = 30/15 = 2."
+              },
+              {
+                "id": "opt_2",
+                "text": "9/50",
+                "is_correct": false,
+                "feedback": "Chưa đúng. Hãy nhân 3/5 với phân số đảo ngược của 3/10."
+              },
+              {
+                "id": "opt_3",
+                "text": "1/2",
+                "is_correct": false,
+                "feedback": "Chưa đúng. Hãy nhân 3/5 với phân số đảo ngược của 3/10."
+              },
+              {
+                "id": "opt_4",
+                "text": "6/5",
+                "is_correct": false,
+                "feedback": "Chưa đúng. Hãy nhân 3/5 với phân số đảo ngược của 3/10."
+              }
+            ]
+          }
+        },
+        {
+          "id": "blk_103_5",
+          "lesson_id": "les_103",
+          "schema_version": "1.0",
+          "sort_order": 5000,
+          "status": "ACTIVE",
+          "block_type": "callout",
+          "content": {
+            "variant": "summary",
+            "title": "Ghi nhớ",
+            "text": "Cộng/trừ: quy đồng mẫu số. Nhân: tử × tử, mẫu × mẫu. Chia: nhân với phân số đảo ngược."
+          }
+        }
+      ]
+    },
+    "les_201": {
+      "revision_number": 1,
+      "published_version": 1,
+      "blocks": [
+        {
+          "id": "blk_201_1",
+          "lesson_id": "les_201",
+          "schema_version": "1.0",
+          "sort_order": 1000,
+          "status": "ACTIVE",
+          "block_type": "callout",
+          "content": {
+            "variant": "learning_objective",
+            "title": "Mục tiêu bài 2.1",
+            "text": "Đọc, viết số thập phân; nêu được giá trị của chữ số theo từng hàng."
+          }
+        },
+        {
+          "id": "blk_201_2",
+          "lesson_id": "les_201",
+          "schema_version": "1.0",
+          "sort_order": 2000,
+          "status": "ACTIVE",
+          "block_type": "paragraph",
+          "content": {
+            "text": "Mỗi số thập phân gồm hai phần: phần nguyên và phần thập phân, ngăn cách bởi dấu phẩy. Các chữ số bên phải dấu phẩy lần lượt thuộc hàng phần mười, phần trăm, phần nghìn. Ví dụ 0,5 = 5/10 ; 0,07 = 7/100.",
+            "linked_term_id": "wt_so_thap_phan"
+          }
+        },
+        {
+          "id": "blk_201_3",
+          "lesson_id": "les_201",
+          "schema_version": "1.0",
+          "sort_order": 3000,
+          "status": "ACTIVE",
+          "block_type": "step_by_step_solution",
+          "content": {
+            "problem": "Viết các phân số 7/100 và 325/100 dưới dạng số thập phân.",
+            "steps": [
+              {
+                "step_number": 1,
+                "title": "Mẫu số 100 ứng với hai chữ số ở phần thập phân",
+                "explanation": "7/100 = 0,07."
+              },
+              {
+                "step_number": 2,
+                "title": "Tương tự với 325/100",
+                "explanation": "325/100 = 3,25."
+              }
+            ]
+          }
+        },
+        {
+          "id": "blk_201_4",
+          "lesson_id": "les_201",
+          "schema_version": "1.0",
+          "sort_order": 4000,
+          "status": "ACTIVE",
+          "block_type": "inline_mcq",
+          "content": {
+            "question": "Chữ số 4 trong số 12,345 thuộc hàng nào?",
+            "options": [
+              {
+                "id": "opt_1",
+                "text": "Hàng phần mười",
+                "is_correct": false,
+                "feedback": "Chưa đúng. Đếm từ dấu phẩy sang phải: phần mười, phần trăm, phần nghìn."
+              },
+              {
+                "id": "opt_2",
+                "text": "Hàng phần trăm",
+                "is_correct": true,
+                "feedback": "Đúng! 3 ở hàng phần mười, 4 ở hàng phần trăm, 5 ở hàng phần nghìn."
+              },
+              {
+                "id": "opt_3",
+                "text": "Hàng phần nghìn",
+                "is_correct": false,
+                "feedback": "Chưa đúng. Đếm từ dấu phẩy sang phải: phần mười, phần trăm, phần nghìn."
+              },
+              {
+                "id": "opt_4",
+                "text": "Hàng đơn vị",
+                "is_correct": false,
+                "feedback": "Chưa đúng. Đếm từ dấu phẩy sang phải: phần mười, phần trăm, phần nghìn."
+              }
+            ]
+          }
+        },
+        {
+          "id": "blk_201_5",
+          "lesson_id": "les_201",
+          "schema_version": "1.0",
+          "sort_order": 5000,
+          "status": "ACTIVE",
+          "block_type": "callout",
+          "content": {
+            "variant": "summary",
+            "title": "Ghi nhớ",
+            "text": "Phần nguyên ở bên trái dấu phẩy, phần thập phân ở bên phải dấu phẩy."
+          }
+        }
+      ]
+    },
+    "les_202": {
+      "revision_number": 3,
+      "published_version": 2,
+      "blocks": [
+        {
+          "id": "blk_202_1",
+          "lesson_id": "les_202",
+          "schema_version": "1.0",
+          "sort_order": 1000,
+          "status": "ACTIVE",
+          "block_type": "callout",
+          "content": {
+            "variant": "learning_objective",
+            "title": "Mục tiêu bài 2.2",
+            "text": "Biết so sánh hai số thập phân và sắp xếp các số thập phân theo thứ tự."
+          }
+        },
+        {
+          "id": "blk_202_2",
+          "lesson_id": "les_202",
+          "schema_version": "1.0",
+          "sort_order": 2000,
+          "status": "ACTIVE",
+          "block_type": "paragraph",
+          "content": {
+            "text": "Muốn so sánh hai số thập phân, ta so sánh phần nguyên trước. Nếu phần nguyên bằng nhau thì so sánh lần lượt hàng phần mười, hàng phần trăm, hàng phần nghìn… Viết thêm chữ số 0 vào bên phải phần thập phân thì giá trị số thập phân không thay đổi.",
+            "linked_term_id": "wt_so_thap_phan"
+          }
+        },
+        {
+          "id": "blk_202_3",
+          "lesson_id": "les_202",
+          "schema_version": "1.0",
+          "sort_order": 3000,
+          "status": "ACTIVE",
+          "block_type": "step_by_step_solution",
+          "content": {
+            "problem": "So sánh 8,45 và 8,5.",
+            "steps": [
+              {
+                "step_number": 1,
+                "title": "So sánh phần nguyên",
+                "explanation": "Cả hai số đều có phần nguyên là 8."
+              },
+              {
+                "step_number": 2,
+                "title": "So sánh hàng phần mười",
+                "explanation": "Số 8,45 có chữ số 4, số 8,5 có chữ số 5. Vì 4 < 5."
+              },
+              {
+                "step_number": 3,
+                "title": "Kết luận",
+                "explanation": "8,45 < 8,5."
+              }
+            ]
+          }
+        },
+        {
+          "id": "blk_202_4",
+          "lesson_id": "les_202",
+          "schema_version": "1.0",
+          "sort_order": 4000,
+          "status": "ACTIVE",
+          "block_type": "inline_mcq",
+          "content": {
+            "question": "Số lớn nhất trong các số 0,9 ; 0,89 ; 0,899 ; 0,8999 là:",
+            "options": [
+              {
+                "id": "opt_1",
+                "text": "0,9",
+                "is_correct": true,
+                "feedback": "Chính xác! Hàng phần mười của 0,9 là 9, lớn hơn 8 của các số còn lại."
+              },
+              {
+                "id": "opt_2",
+                "text": "0,89",
+                "is_correct": false,
+                "feedback": "Chưa đúng. Số có nhiều chữ số hơn chưa chắc đã lớn hơn — hãy so sánh hàng phần mười trước."
+              },
+              {
+                "id": "opt_3",
+                "text": "0,899",
+                "is_correct": false,
+                "feedback": "Chưa đúng. Số có nhiều chữ số hơn chưa chắc đã lớn hơn — hãy so sánh hàng phần mười trước."
+              },
+              {
+                "id": "opt_4",
+                "text": "0,8999",
+                "is_correct": false,
+                "feedback": "Chưa đúng. Số có nhiều chữ số hơn chưa chắc đã lớn hơn — hãy so sánh hàng phần mười trước."
+              }
+            ]
+          }
+        },
+        {
+          "id": "blk_202_5",
+          "lesson_id": "les_202",
+          "schema_version": "1.0",
+          "sort_order": 5000,
+          "status": "ACTIVE",
+          "block_type": "callout",
+          "content": {
+            "variant": "summary",
+            "title": "Ghi nhớ",
+            "text": "So sánh phần nguyên → hàng phần mười → hàng phần trăm → … Số có nhiều chữ số hơn chưa chắc lớn hơn."
+          }
+        }
+      ]
+    },
+    "les_203": {
+      "revision_number": 1,
+      "published_version": 1,
+      "blocks": [
+        {
+          "id": "blk_203_1",
+          "lesson_id": "les_203",
+          "schema_version": "1.0",
+          "sort_order": 1000,
+          "status": "ACTIVE",
+          "block_type": "callout",
+          "content": {
+            "variant": "learning_objective",
+            "title": "Mục tiêu bài 2.3",
+            "text": "Đặt tính và thực hiện phép cộng, trừ hai số thập phân."
+          }
+        },
+        {
+          "id": "blk_203_2",
+          "lesson_id": "les_203",
+          "schema_version": "1.0",
+          "sort_order": 2000,
+          "status": "ACTIVE",
+          "block_type": "paragraph",
+          "content": {
+            "text": "Muốn cộng (trừ) hai số thập phân, ta viết số này dưới số kia sao cho các chữ số cùng hàng thẳng cột, dấu phẩy thẳng cột với nhau; thực hiện như cộng (trừ) số tự nhiên rồi đặt dấu phẩy ở kết quả thẳng cột với các dấu phẩy.",
+            "linked_term_id": "wt_so_thap_phan"
+          }
+        },
+        {
+          "id": "blk_203_3",
+          "lesson_id": "les_203",
+          "schema_version": "1.0",
+          "sort_order": 3000,
+          "status": "ACTIVE",
+          "block_type": "step_by_step_solution",
+          "content": {
+            "problem": "Tính 15,7 + 4,38.",
+            "steps": [
+              {
+                "step_number": 1,
+                "title": "Viết thêm chữ số 0 cho đủ hàng",
+                "explanation": "15,7 = 15,70."
+              },
+              {
+                "step_number": 2,
+                "title": "Đặt tính thẳng dấu phẩy và cộng như số tự nhiên",
+                "explanation": "1570 + 438 = 2008."
+              },
+              {
+                "step_number": 3,
+                "title": "Đặt dấu phẩy ở kết quả",
+                "explanation": "15,7 + 4,38 = 20,08."
+              }
+            ]
+          }
+        },
+        {
+          "id": "blk_203_4",
+          "lesson_id": "les_203",
+          "schema_version": "1.0",
+          "sort_order": 4000,
+          "status": "ACTIVE",
+          "block_type": "inline_mcq",
+          "content": {
+            "question": "9,2 − 3,75 = ?",
+            "options": [
+              {
+                "id": "opt_1",
+                "text": "5,45",
+                "is_correct": true,
+                "feedback": "Đúng! 9,20 − 3,75 = 5,45."
+              },
+              {
+                "id": "opt_2",
+                "text": "6,55",
+                "is_correct": false,
+                "feedback": "Chưa đúng. Viết 9,2 thành 9,20 rồi trừ thẳng cột."
+              },
+              {
+                "id": "opt_3",
+                "text": "5,55",
+                "is_correct": false,
+                "feedback": "Chưa đúng. Viết 9,2 thành 9,20 rồi trừ thẳng cột."
+              },
+              {
+                "id": "opt_4",
+                "text": "6,45",
+                "is_correct": false,
+                "feedback": "Chưa đúng. Viết 9,2 thành 9,20 rồi trừ thẳng cột."
+              }
+            ]
+          }
+        },
+        {
+          "id": "blk_203_5",
+          "lesson_id": "les_203",
+          "schema_version": "1.0",
+          "sort_order": 5000,
+          "status": "ACTIVE",
+          "block_type": "callout",
+          "content": {
+            "variant": "summary",
+            "title": "Ghi nhớ",
+            "text": "Luôn đặt các dấu phẩy thẳng cột; có thể viết thêm chữ số 0 vào bên phải phần thập phân cho đủ hàng."
+          }
+        }
+      ]
+    },
+    "les_301": {
+      "revision_number": 1,
+      "published_version": 1,
+      "blocks": [
+        {
+          "id": "blk_301_1",
+          "lesson_id": "les_301",
+          "schema_version": "1.0",
+          "sort_order": 1000,
+          "status": "ACTIVE",
+          "block_type": "callout",
+          "content": {
+            "variant": "learning_objective",
+            "title": "Mục tiêu bài 3.1",
+            "text": "Hiểu ý nghĩa tỉ số phần trăm; tìm tỉ số phần trăm của hai số."
+          }
+        },
+        {
+          "id": "blk_301_2",
+          "lesson_id": "les_301",
+          "schema_version": "1.0",
+          "sort_order": 2000,
+          "status": "ACTIVE",
+          "block_type": "paragraph",
+          "content": {
+            "text": "Tỉ số phần trăm cho biết một số bằng bao nhiêu phần trăm của số kia. Muốn tìm tỉ số phần trăm của hai số, ta tìm thương của hai số rồi nhân thương đó với 100 và viết thêm kí hiệu % vào bên phải.",
+            "linked_term_id": "wt_ti_so_phan_tram"
+          }
+        },
+        {
+          "id": "blk_301_3",
+          "lesson_id": "les_301",
+          "schema_version": "1.0",
+          "sort_order": 3000,
+          "status": "ACTIVE",
+          "block_type": "step_by_step_solution",
+          "content": {
+            "problem": "Lớp 5A1 có 25 học sinh, trong đó có 15 bạn nữ. Tìm tỉ số phần trăm của số bạn nữ so với cả lớp.",
+            "steps": [
+              {
+                "step_number": 1,
+                "title": "Tìm thương của hai số",
+                "explanation": "15 : 25 = 0,6."
+              },
+              {
+                "step_number": 2,
+                "title": "Nhân với 100 và viết thêm %",
+                "explanation": "0,6 × 100 = 60 → 60%."
+              }
+            ]
+          }
+        },
+        {
+          "id": "blk_301_4",
+          "lesson_id": "les_301",
+          "schema_version": "1.0",
+          "sort_order": 4000,
+          "status": "ACTIVE",
+          "block_type": "inline_mcq",
+          "content": {
+            "question": "Số thập phân 0,35 viết dưới dạng tỉ số phần trăm là:",
+            "options": [
+              {
+                "id": "opt_1",
+                "text": "35%",
+                "is_correct": true,
+                "feedback": "Đúng! 0,35 × 100 = 35 → 35%."
+              },
+              {
+                "id": "opt_2",
+                "text": "3,5%",
+                "is_correct": false,
+                "feedback": "Chưa đúng. Nhân số đó với 100 rồi viết thêm kí hiệu %."
+              },
+              {
+                "id": "opt_3",
+                "text": "0,35%",
+                "is_correct": false,
+                "feedback": "Chưa đúng. Nhân số đó với 100 rồi viết thêm kí hiệu %."
+              },
+              {
+                "id": "opt_4",
+                "text": "350%",
+                "is_correct": false,
+                "feedback": "Chưa đúng. Nhân số đó với 100 rồi viết thêm kí hiệu %."
+              }
+            ]
+          }
+        },
+        {
+          "id": "blk_301_5",
+          "lesson_id": "les_301",
+          "schema_version": "1.0",
+          "sort_order": 5000,
+          "status": "ACTIVE",
+          "block_type": "callout",
+          "content": {
+            "variant": "summary",
+            "title": "Ghi nhớ",
+            "text": "Tỉ số phần trăm của a và b: (a : b) × 100 rồi viết thêm %."
+          }
+        }
+      ]
+    },
+    "les_302": {
+      "revision_number": 1,
+      "published_version": 1,
+      "blocks": [
+        {
+          "id": "blk_302_1",
+          "lesson_id": "les_302",
+          "schema_version": "1.0",
+          "sort_order": 1000,
+          "status": "ACTIVE",
+          "block_type": "callout",
+          "content": {
+            "variant": "learning_objective",
+            "title": "Mục tiêu bài 3.2",
+            "text": "Tìm giá trị phần trăm của một số và tìm một số khi biết giá trị phần trăm của nó."
+          }
+        },
+        {
+          "id": "blk_302_2",
+          "lesson_id": "les_302",
+          "schema_version": "1.0",
+          "sort_order": 2000,
+          "status": "ACTIVE",
+          "block_type": "paragraph",
+          "content": {
+            "text": "Muốn tìm a% của số B, ta lấy B nhân với a rồi chia cho 100. Muốn tìm một số khi biết a% của nó bằng C, ta lấy C chia cho a rồi nhân với 100.",
+            "linked_term_id": "wt_ti_so_phan_tram"
+          }
+        },
+        {
+          "id": "blk_302_3",
+          "lesson_id": "les_302",
+          "schema_version": "1.0",
+          "sort_order": 3000,
+          "status": "ACTIVE",
+          "block_type": "step_by_step_solution",
+          "content": {
+            "problem": "Một cửa hàng có 450 kg gạo, đã bán 20% số gạo. Hỏi cửa hàng đã bán bao nhiêu ki-lô-gam gạo?",
+            "steps": [
+              {
+                "step_number": 1,
+                "title": "Áp dụng quy tắc tìm a% của B",
+                "explanation": "450 × 20 : 100."
+              },
+              {
+                "step_number": 2,
+                "title": "Tính kết quả",
+                "explanation": "450 × 20 = 9000 ; 9000 : 100 = 90 (kg)."
+              }
+            ]
+          }
+        },
+        {
+          "id": "blk_302_4",
+          "lesson_id": "les_302",
+          "schema_version": "1.0",
+          "sort_order": 4000,
+          "status": "ACTIVE",
+          "block_type": "inline_mcq",
+          "content": {
+            "question": "30% của một số là 60. Số đó là:",
+            "options": [
+              {
+                "id": "opt_1",
+                "text": "200",
+                "is_correct": true,
+                "feedback": "Chính xác! 60 : 30 × 100 = 200."
+              },
+              {
+                "id": "opt_2",
+                "text": "18",
+                "is_correct": false,
+                "feedback": "Chưa đúng. Lấy 60 chia cho 30 rồi nhân với 100."
+              },
+              {
+                "id": "opt_3",
+                "text": "180",
+                "is_correct": false,
+                "feedback": "Chưa đúng. Lấy 60 chia cho 30 rồi nhân với 100."
+              },
+              {
+                "id": "opt_4",
+                "text": "90",
+                "is_correct": false,
+                "feedback": "Chưa đúng. Lấy 60 chia cho 30 rồi nhân với 100."
+              }
+            ]
+          }
+        },
+        {
+          "id": "blk_302_5",
+          "lesson_id": "les_302",
+          "schema_version": "1.0",
+          "sort_order": 5000,
+          "status": "ACTIVE",
+          "block_type": "callout",
+          "content": {
+            "variant": "summary",
+            "title": "Ghi nhớ",
+            "text": "Tìm a% của B: B × a : 100. Tìm số khi biết a% của nó là C: C : a × 100."
+          }
+        }
+      ]
+    },
+    "les_303": {
+      "revision_number": 1,
+      "published_version": 1,
+      "blocks": [
+        {
+          "id": "blk_303_1",
+          "lesson_id": "les_303",
+          "schema_version": "1.0",
+          "sort_order": 1000,
+          "status": "ACTIVE",
+          "block_type": "callout",
+          "content": {
+            "variant": "learning_objective",
+            "title": "Mục tiêu bài 3.3",
+            "text": "Vận dụng tỉ số phần trăm để giải bài toán thực tế: giảm giá, tiền lãi."
+          }
+        },
+        {
+          "id": "blk_303_2",
+          "lesson_id": "les_303",
+          "schema_version": "1.0",
+          "sort_order": 2000,
+          "status": "ACTIVE",
+          "block_type": "paragraph",
+          "content": {
+            "text": "Trong cuộc sống, tỉ số phần trăm thường dùng để tính tiền giảm giá khi mua hàng, tiền lãi khi gửi tiết kiệm hoặc tỉ lệ học sinh đạt kết quả tốt.",
+            "linked_term_id": "wt_ti_so_phan_tram"
+          }
+        },
+        {
+          "id": "blk_303_3",
+          "lesson_id": "les_303",
+          "schema_version": "1.0",
+          "sort_order": 3000,
+          "status": "ACTIVE",
+          "block_type": "step_by_step_solution",
+          "content": {
+            "problem": "Một quyển truyện giá 80 000 đồng, được giảm giá 15%. Hỏi giá quyển truyện sau khi giảm là bao nhiêu?",
+            "steps": [
+              {
+                "step_number": 1,
+                "title": "Tính số tiền được giảm",
+                "explanation": "80 000 × 15 : 100 = 12 000 (đồng)."
+              },
+              {
+                "step_number": 2,
+                "title": "Tính giá sau khi giảm",
+                "explanation": "80 000 − 12 000 = 68 000 (đồng)."
+              }
+            ]
+          }
+        },
+        {
+          "id": "blk_303_4",
+          "lesson_id": "les_303",
+          "schema_version": "1.0",
+          "sort_order": 4000,
+          "status": "ACTIVE",
+          "block_type": "inline_mcq",
+          "content": {
+            "question": "Gửi tiết kiệm 2 000 000 đồng với lãi suất 0,5% một tháng. Sau 1 tháng tiền lãi là:",
+            "options": [
+              {
+                "id": "opt_1",
+                "text": "10 000 đồng",
+                "is_correct": true,
+                "feedback": "Đúng! 2 000 000 × 0,5 : 100 = 10 000 đồng."
+              },
+              {
+                "id": "opt_2",
+                "text": "100 000 đồng",
+                "is_correct": false,
+                "feedback": "Chưa đúng. Tính 0,5% của 2 000 000 đồng."
+              },
+              {
+                "id": "opt_3",
+                "text": "1 000 đồng",
+                "is_correct": false,
+                "feedback": "Chưa đúng. Tính 0,5% của 2 000 000 đồng."
+              },
+              {
+                "id": "opt_4",
+                "text": "20 000 đồng",
+                "is_correct": false,
+                "feedback": "Chưa đúng. Tính 0,5% của 2 000 000 đồng."
+              }
+            ]
+          }
+        },
+        {
+          "id": "blk_303_5",
+          "lesson_id": "les_303",
+          "schema_version": "1.0",
+          "sort_order": 5000,
+          "status": "ACTIVE",
+          "block_type": "callout",
+          "content": {
+            "variant": "summary",
+            "title": "Ghi nhớ",
+            "text": "Đọc kỹ đề để xác định cần tìm \"a% của một số\" hay \"tìm một số khi biết a% của nó\"."
+          }
+        }
+      ]
+    },
+    "les_401": {
+      "revision_number": 1,
+      "published_version": 1,
+      "blocks": [
+        {
+          "id": "blk_401_1",
+          "lesson_id": "les_401",
+          "schema_version": "1.0",
+          "sort_order": 1000,
+          "status": "ACTIVE",
+          "block_type": "callout",
+          "content": {
+            "variant": "learning_objective",
+            "title": "Mục tiêu bài 4.1",
+            "text": "Nhận biết đáy, chiều cao và tính diện tích hình tam giác."
+          }
+        },
+        {
+          "id": "blk_401_2",
+          "lesson_id": "les_401",
+          "schema_version": "1.0",
+          "sort_order": 2000,
+          "status": "ACTIVE",
+          "block_type": "paragraph",
+          "content": {
+            "text": "Muốn tính diện tích hình tam giác, ta lấy độ dài đáy nhân với chiều cao (cùng một đơn vị đo) rồi chia cho 2.",
+            "linked_term_id": "wt_dien_tich_tam_giac"
+          }
+        },
+        {
+          "id": "blk_401_3",
+          "lesson_id": "les_401",
+          "schema_version": "1.0",
+          "sort_order": 3000,
+          "status": "ACTIVE",
+          "block_type": "step_by_step_solution",
+          "content": {
+            "problem": "Tính diện tích hình tam giác có độ dài đáy 8 cm và chiều cao 5 cm.",
+            "steps": [
+              {
+                "step_number": 1,
+                "title": "Nhân đáy với chiều cao",
+                "explanation": "8 × 5 = 40."
+              },
+              {
+                "step_number": 2,
+                "title": "Chia cho 2",
+                "explanation": "40 : 2 = 20 (cm²)."
+              }
+            ]
+          }
+        },
+        {
+          "id": "blk_401_4",
+          "lesson_id": "les_401",
+          "schema_version": "1.0",
+          "sort_order": 4000,
+          "status": "ACTIVE",
+          "block_type": "inline_mcq",
+          "content": {
+            "question": "Hình tam giác có đáy 12 dm, chiều cao 7 dm. Diện tích là:",
+            "options": [
+              {
+                "id": "opt_1",
+                "text": "42 dm²",
+                "is_correct": true,
+                "feedback": "Đúng! 12 × 7 : 2 = 42 (dm²)."
+              },
+              {
+                "id": "opt_2",
+                "text": "84 dm²",
+                "is_correct": false,
+                "feedback": "Chưa đúng. Đừng quên chia cho 2 sau khi nhân đáy với chiều cao."
+              },
+              {
+                "id": "opt_3",
+                "text": "19 dm²",
+                "is_correct": false,
+                "feedback": "Chưa đúng. Đừng quên chia cho 2 sau khi nhân đáy với chiều cao."
+              },
+              {
+                "id": "opt_4",
+                "text": "38 dm²",
+                "is_correct": false,
+                "feedback": "Chưa đúng. Đừng quên chia cho 2 sau khi nhân đáy với chiều cao."
+              }
+            ]
+          }
+        },
+        {
+          "id": "blk_401_5",
+          "lesson_id": "les_401",
+          "schema_version": "1.0",
+          "sort_order": 5000,
+          "status": "ACTIVE",
+          "block_type": "callout",
+          "content": {
+            "variant": "summary",
+            "title": "Ghi nhớ",
+            "text": "S = a × h : 2 (a là độ dài đáy, h là chiều cao, cùng đơn vị đo)."
+          }
+        }
+      ]
+    },
+    "les_402": {
+      "revision_number": 1,
+      "published_version": 1,
+      "blocks": [
+        {
+          "id": "blk_402_1",
+          "lesson_id": "les_402",
+          "schema_version": "1.0",
+          "sort_order": 1000,
+          "status": "ACTIVE",
+          "block_type": "callout",
+          "content": {
+            "variant": "learning_objective",
+            "title": "Mục tiêu bài 4.2",
+            "text": "Nhận biết hình thang và tính được diện tích hình thang."
+          }
+        },
+        {
+          "id": "blk_402_2",
+          "lesson_id": "les_402",
+          "schema_version": "1.0",
+          "sort_order": 2000,
+          "status": "ACTIVE",
+          "block_type": "paragraph",
+          "content": {
+            "text": "Muốn tính diện tích hình thang, ta lấy tổng độ dài hai đáy nhân với chiều cao (cùng một đơn vị đo) rồi chia cho 2.",
+            "linked_term_id": "wt_dien_tich_hinh_thang"
+          }
+        },
+        {
+          "id": "blk_402_3",
+          "lesson_id": "les_402",
+          "schema_version": "1.0",
+          "sort_order": 3000,
+          "status": "ACTIVE",
+          "block_type": "step_by_step_solution",
+          "content": {
+            "problem": "Tính diện tích hình thang có đáy lớn 9 cm, đáy bé 5 cm và chiều cao 4 cm.",
+            "steps": [
+              {
+                "step_number": 1,
+                "title": "Tính tổng hai đáy",
+                "explanation": "9 + 5 = 14 (cm)."
+              },
+              {
+                "step_number": 2,
+                "title": "Nhân với chiều cao rồi chia cho 2",
+                "explanation": "14 × 4 : 2 = 28 (cm²)."
+              }
+            ]
+          }
+        },
+        {
+          "id": "blk_402_4",
+          "lesson_id": "les_402",
+          "schema_version": "1.0",
+          "sort_order": 4000,
+          "status": "ACTIVE",
+          "block_type": "inline_mcq",
+          "content": {
+            "question": "Hình thang có hai đáy 6 m và 4 m, chiều cao 3 m. Diện tích là:",
+            "options": [
+              {
+                "id": "opt_1",
+                "text": "15 m²",
+                "is_correct": true,
+                "feedback": "Chính xác! (6 + 4) × 3 : 2 = 15 (m²)."
+              },
+              {
+                "id": "opt_2",
+                "text": "30 m²",
+                "is_correct": false,
+                "feedback": "Chưa đúng. Cộng hai đáy, nhân chiều cao rồi chia cho 2."
+              },
+              {
+                "id": "opt_3",
+                "text": "13 m²",
+                "is_correct": false,
+                "feedback": "Chưa đúng. Cộng hai đáy, nhân chiều cao rồi chia cho 2."
+              },
+              {
+                "id": "opt_4",
+                "text": "72 m²",
+                "is_correct": false,
+                "feedback": "Chưa đúng. Cộng hai đáy, nhân chiều cao rồi chia cho 2."
+              }
+            ]
+          }
+        },
+        {
+          "id": "blk_402_5",
+          "lesson_id": "les_402",
+          "schema_version": "1.0",
+          "sort_order": 5000,
+          "status": "ACTIVE",
+          "block_type": "callout",
+          "content": {
+            "variant": "summary",
+            "title": "Ghi nhớ",
+            "text": "S = (a + b) × h : 2 (a, b là độ dài hai đáy, h là chiều cao)."
+          }
+        }
+      ]
+    },
+    "les_403": {
+      "revision_number": 1,
+      "published_version": 1,
+      "blocks": [
+        {
+          "id": "blk_403_1",
+          "lesson_id": "les_403",
+          "schema_version": "1.0",
+          "sort_order": 1000,
+          "status": "ACTIVE",
+          "block_type": "callout",
+          "content": {
+            "variant": "learning_objective",
+            "title": "Mục tiêu bài 4.3",
+            "text": "Tính chu vi và diện tích hình tròn khi biết bán kính hoặc đường kính."
+          }
+        },
+        {
+          "id": "blk_403_2",
+          "lesson_id": "les_403",
+          "schema_version": "1.0",
+          "sort_order": 2000,
+          "status": "ACTIVE",
+          "block_type": "paragraph",
+          "content": {
+            "text": "Chu vi hình tròn bằng đường kính nhân với 3,14 (hoặc bán kính nhân 2 rồi nhân 3,14). Diện tích hình tròn bằng bán kính nhân bán kính rồi nhân với 3,14.",
+            "linked_term_id": "wt_so_pi"
+          }
+        },
+        {
+          "id": "blk_403_3",
+          "lesson_id": "les_403",
+          "schema_version": "1.0",
+          "sort_order": 3000,
+          "status": "ACTIVE",
+          "block_type": "step_by_step_solution",
+          "content": {
+            "problem": "Một hình tròn có bán kính 5 cm. Tính chu vi và diện tích hình tròn đó.",
+            "steps": [
+              {
+                "step_number": 1,
+                "title": "Tính chu vi",
+                "explanation": "C = 5 × 2 × 3,14 = 31,4 (cm)."
+              },
+              {
+                "step_number": 2,
+                "title": "Tính diện tích",
+                "explanation": "S = 5 × 5 × 3,14 = 78,5 (cm²)."
+              }
+            ]
+          }
+        },
+        {
+          "id": "blk_403_4",
+          "lesson_id": "les_403",
+          "schema_version": "1.0",
+          "sort_order": 4000,
+          "status": "ACTIVE",
+          "block_type": "inline_mcq",
+          "content": {
+            "question": "Hình tròn có đường kính 10 cm. Chu vi hình tròn là:",
+            "options": [
+              {
+                "id": "opt_1",
+                "text": "31,4 cm",
+                "is_correct": true,
+                "feedback": "Đúng! C = 10 × 3,14 = 31,4 (cm)."
+              },
+              {
+                "id": "opt_2",
+                "text": "62,8 cm",
+                "is_correct": false,
+                "feedback": "Chưa đúng. Chu vi = đường kính × 3,14."
+              },
+              {
+                "id": "opt_3",
+                "text": "78,5 cm",
+                "is_correct": false,
+                "feedback": "Chưa đúng. Chu vi = đường kính × 3,14."
+              },
+              {
+                "id": "opt_4",
+                "text": "15,7 cm",
+                "is_correct": false,
+                "feedback": "Chưa đúng. Chu vi = đường kính × 3,14."
+              }
+            ]
+          }
+        },
+        {
+          "id": "blk_403_5",
+          "lesson_id": "les_403",
+          "schema_version": "1.0",
+          "sort_order": 5000,
+          "status": "ACTIVE",
+          "block_type": "callout",
+          "content": {
+            "variant": "summary",
+            "title": "Ghi nhớ",
+            "text": "C = d × 3,14 = r × 2 × 3,14 ; S = r × r × 3,14."
+          }
+        }
+      ]
+    }
+  },
+  "wiki_terms": [
+    {
+      "id": "wt_phan_so",
+      "canonical_name": "Phân số",
+      "aliases": [
+        "Tử số",
+        "Mẫu số"
+      ],
+      "subject_context": "Toán lớp 5",
+      "short_definition": "Số gồm tử số và mẫu số (mẫu số khác 0), biểu thị một hay nhiều phần bằng nhau của đơn vị.",
+      "formula_or_example": "3/4 đọc là \"ba phần tư\""
+    },
+    {
+      "id": "wt_hon_so",
+      "canonical_name": "Hỗn số",
+      "aliases": [
+        "Phần nguyên",
+        "Phần phân số"
+      ],
+      "subject_context": "Toán lớp 5",
+      "short_definition": "Số gồm phần nguyên và phần phân số bé hơn 1.",
+      "formula_or_example": "2 3/5 = 13/5"
+    },
+    {
+      "id": "wt_mau_so_chung",
+      "canonical_name": "Mẫu số chung",
+      "aliases": [
+        "Quy đồng mẫu số"
+      ],
+      "subject_context": "Toán lớp 5",
+      "short_definition": "Mẫu số giống nhau của các phân số sau khi quy đồng, thường chọn là số bé nhất cùng chia hết cho các mẫu số.",
+      "formula_or_example": "2/3 và 1/4 có mẫu số chung là 12"
+    },
+    {
+      "id": "wt_so_thap_phan",
+      "canonical_name": "Số thập phân",
+      "aliases": [
+        "Phần nguyên",
+        "Phần thập phân",
+        "Dấu phẩy"
+      ],
+      "subject_context": "Toán lớp 5",
+      "short_definition": "Số gồm phần nguyên và phần thập phân, ngăn cách bởi dấu phẩy.",
+      "formula_or_example": "3,25 = 3 25/100"
+    },
+    {
+      "id": "wt_ti_so_phan_tram",
+      "canonical_name": "Tỉ số phần trăm",
+      "aliases": [
+        "Phần trăm",
+        "%"
+      ],
+      "subject_context": "Toán lớp 5",
+      "short_definition": "Tỉ số của hai số được viết dưới dạng phân số có mẫu số 100, kí hiệu %.",
+      "formula_or_example": "15 : 25 = 0,6 = 60%"
+    },
+    {
+      "id": "wt_dien_tich_tam_giac",
+      "canonical_name": "Diện tích hình tam giác",
+      "aliases": [
+        "Đáy",
+        "Chiều cao"
+      ],
+      "subject_context": "Toán lớp 5",
+      "short_definition": "Bằng độ dài đáy nhân chiều cao (cùng đơn vị đo) rồi chia cho 2.",
+      "formula_or_example": "S = a × h : 2"
+    },
+    {
+      "id": "wt_dien_tich_hinh_thang",
+      "canonical_name": "Diện tích hình thang",
+      "aliases": [
+        "Đáy lớn",
+        "Đáy bé"
+      ],
+      "subject_context": "Toán lớp 5",
+      "short_definition": "Bằng tổng độ dài hai đáy nhân chiều cao (cùng đơn vị đo) rồi chia cho 2.",
+      "formula_or_example": "S = (a + b) × h : 2"
+    },
+    {
+      "id": "wt_so_pi",
+      "canonical_name": "Số 3,14 (số pi)",
+      "aliases": [
+        "Chu vi hình tròn",
+        "Bán kính",
+        "Đường kính"
+      ],
+      "subject_context": "Toán lớp 5",
+      "short_definition": "Số dùng để tính chu vi và diện tích hình tròn; ở lớp 5 lấy giá trị gần đúng 3,14.",
+      "formula_or_example": "C = d × 3,14 ; S = r × r × 3,14"
+    }
+  ],
+  "sessions": [
+    {
+      "session_id": "ses_501",
+      "subject_class_id": "sc_toan5_5a1",
+      "subject_class_code": "5A1",
+      "subject_title": "Toán lớp 5",
+      "session_title": "Tiết 12: So sánh hai số thập phân",
+      "scheduled_start_at": "2026-11-10T07:30:00+07:00",
+      "scheduled_end_at": "2026-11-10T08:05:00+07:00",
+      "confirmation_deadline_at": "2026-11-11T08:05:00+07:00",
+      "actual_start_at": "2026-11-10T07:30:00+07:00",
+      "actual_end_at": "2026-11-10T08:05:00+07:00",
+      "scheduled_instructor_id": "11111111-1111-1111-1111-111111111111",
+      "scheduled_instructor_name": "Cô Lê Thu Hà",
+      "actual_instructor_name": "Cô Lê Thu Hà",
+      "is_substitute_teaching": false,
+      "ta_names": [
+        "Thầy Phạm Minh Quân"
+      ],
+      "confirmation_status": "AWAITING_CONFIRMATION",
+      "confirmed_at": null,
+      "is_late_confirmation": false,
+      "reminder_sent_count": 0,
+      "lessons_delivery": [
+        {
+          "lesson_id": "les_202",
+          "lesson_title": "Bài 2.2: So sánh hai số thập phân",
+          "delivery_status": "PARTIAL",
+          "progress_note": "Đã dạy quy tắc so sánh và ví dụ mẫu; phần sắp xếp thứ tự chuyển sang tiết sau."
+        }
+      ]
+    },
+    {
+      "session_id": "ses_500",
+      "subject_class_id": "sc_toan5_5a1",
+      "subject_class_code": "5A1",
+      "subject_title": "Toán lớp 5",
+      "session_title": "Tiết 11: Khái niệm số thập phân",
+      "scheduled_start_at": "2026-11-07T07:30:00+07:00",
+      "scheduled_end_at": "2026-11-07T08:05:00+07:00",
+      "confirmation_deadline_at": "2026-11-08T08:05:00+07:00",
+      "actual_start_at": "2026-11-07T07:30:00+07:00",
+      "actual_end_at": "2026-11-07T08:05:00+07:00",
+      "scheduled_instructor_id": "11111111-1111-1111-1111-111111111111",
+      "scheduled_instructor_name": "Cô Lê Thu Hà",
+      "actual_instructor_name": "Cô Lê Thu Hà",
+      "is_substitute_teaching": false,
+      "ta_names": [
+        "Thầy Phạm Minh Quân"
+      ],
+      "confirmation_status": "OVERDUE_UNCONFIRMED",
+      "confirmed_at": null,
+      "is_late_confirmation": false,
+      "reminder_sent_count": 1,
+      "lessons_delivery": [
+        {
+          "lesson_id": "les_201",
+          "lesson_title": "Bài 2.1: Khái niệm số thập phân, hàng của số thập phân",
+          "delivery_status": "COMPLETED",
+          "progress_note": "Hoàn thành bài học và phiếu luyện tập."
+        }
+      ]
+    }
+  ],
+  "teaching_log_history": [
+    {
+      "id": "hist_01",
+      "session_id": "ses_500",
+      "session_code": "Tiết 11 (5A1)",
+      "previous_status": "AWAITING_CONFIRMATION",
+      "new_status": "OVERDUE_UNCONFIRMED",
+      "changed_by": "Hệ thống tự động (24 giờ)",
+      "changed_at": "2026-11-08 08:05",
+      "note": "Quá 24 giờ sau khi kết thúc tiết học chưa xác nhận. Giáo viên vẫn có thể xác nhận bổ sung."
+    }
+  ],
+  "leave_requests": [
+    {
+      "id": "lv_01",
+      "subject_class_id": "sc_toan5_5a1",
+      "student_code": "HS50102",
+      "student_name": "Trần Gia Bảo",
+      "reason": "Bị sốt, có giấy xin phép của phụ huynh",
+      "makeup_class_requested": "Xem lại video bài 2.2 và làm câu hỏi kiểm tra nhanh",
+      "status": "PENDING"
+    },
+    {
+      "id": "lv_02",
+      "subject_class_id": "sc_toan5_5a1",
+      "student_code": "HS50103",
+      "student_name": "Lê Ngọc Hân",
+      "reason": "Đi khám răng theo lịch hẹn",
+      "makeup_class_requested": "Học bù cùng cô giáo vào giờ ra chơi thứ Năm",
+      "status": "APPROVED"
+    }
+  ]
+}

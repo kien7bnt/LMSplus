@@ -1,0 +1,16 @@
+{
+  "name": "lmsplus-elearning",
+  "private": true,
+  "version": "1.0.0",
+  "description": "LMSPLUS E-Learning — Hệ thống Quản lý Khóa học, Lớp học, Lesson Studio & Điểm danh",
+  "type": "module",
+  "engines": {
+    "node": "24.x"
+  },
+  "scripts": {
+    "dev": "npm --prefix frontend run dev",
+    "build": "npm --prefix frontend install --include=dev && npm --prefix frontend run build",
+    "audit:ui": "node .agents/skills/ui-ux-standard/scripts/impeccable_audit.mjs .",
+    "test": "node tests/elearning_full_test_suite.mjs && node tests/teaching_test_suite.mjs && node tests/lesson_studio_test_suite.mjs"
+  }
+}

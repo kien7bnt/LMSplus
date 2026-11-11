@@ -1,0 +1,764 @@
+<!DOCTYPE html>
+<html lang="vi" data-theme="airbnb-light">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LMSPLUS E-Learning — Hệ thống Thiết kế Đa chủ đề</title>
+  <link rel="stylesheet" href="./tokens.css" />
+  <style>
+    /* ========================================================================
+     * LIVING STYLEGUIDE & REFERENCE COMPONENT STYLES
+     * Follows 4px/8px Grid, Zero-Slop, and Airbnb DLS Specifications
+     * ======================================================================== */
+    .container {
+      max-width: 1360px;
+      margin: 0 auto;
+      padding: 0 var(--space-8);
+    }
+    @media (max-width: 768px) {
+      .container {
+        padding: 0 var(--space-5);
+      }
+    }
+
+    /* 1. Sticky Header & Airbnb Pill Search */
+    .site-header {
+      position: sticky;
+      top: 0;
+      z-index: 50;
+      min-height: 80px;
+      padding: 8px 0;
+      background: var(--bg-glass-header);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border-subtle);
+      display: flex;
+      align-items: center;
+    }
+    .header-inner {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: var(--space-4);
+    }
+    .brand-logo {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--space-3);
+      font-weight: 700;
+      font-size: 1.125rem;
+      letter-spacing: -0.02em;
+      color: var(--brand-primary);
+      text-decoration: none;
+      min-height: 44px;
+    }
+    .brand-logo span {
+      color: var(--text-primary);
+    }
+
+    /* Airbnb Pill Search Bar */
+    .search-pill {
+      display: flex;
+      align-items: center;
+      height: 52px;
+      background: var(--bg-surface);
+      border: 1px solid var(--border-strong);
+      border-radius: var(--radius-pill);
+      box-shadow: var(--shadow-card);
+      padding-left: var(--space-5);
+      padding-right: 6px;
+      transition: box-shadow var(--duration-base) var(--ease-standard),
+                  border-color var(--duration-base) var(--ease-standard);
+    }
+    .search-pill:hover {
+      box-shadow: var(--shadow-card-hover);
+    }
+    .pill-segment {
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      padding: 0 var(--space-4);
+      min-height: 44px;
+      cursor: pointer;
+    }
+    .pill-label {
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--text-primary);
+      line-height: 1.2;
+    }
+    .pill-value {
+      font-size: 13px;
+      color: var(--text-secondary);
+      white-space: nowrap;
+    }
+    .pill-divider {
+      width: 1px;
+      height: 28px;
+      background: var(--border-subtle);
+    }
+    .pill-search-btn {
+      width: 44px;
+      height: 44px;
+      min-width: 44px;
+      border-radius: var(--radius-pill);
+      border: none;
+      background: var(--brand-primary);
+      color: var(--text-on-brand);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      margin-left: var(--space-2);
+      transition: background-color var(--duration-fast) var(--ease-standard),
+                  transform var(--duration-fast) var(--ease-standard);
+    }
+    .pill-search-btn:hover {
+      background: var(--brand-primary-hover);
+    }
+    .pill-search-btn:active {
+      transform: scale(0.96);
+    }
+
+    /* Theme Switcher Control */
+    .theme-switcher {
+      display: inline-flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 4px;
+      padding: 4px;
+      background: var(--bg-surface-subtle);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-lg);
+    }
+    .theme-btn {
+      min-height: 44px;
+      padding: 0 var(--space-3);
+      border-radius: var(--radius-md);
+      border: none;
+      background: transparent;
+      color: var(--text-secondary);
+      font-family: var(--font-sans);
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all var(--duration-fast) var(--ease-standard);
+    }
+    .theme-btn[aria-pressed="true"] {
+      background: var(--bg-surface);
+      color: var(--text-primary);
+      box-shadow: var(--shadow-card);
+    }
+
+    /* 2. Horizontal Category Filter Rail */
+    .category-rail-wrap {
+      border-bottom: 1px solid var(--border-subtle);
+      background: var(--bg-canvas);
+    }
+    .category-rail {
+      display: flex;
+      align-items: center;
+      gap: var(--space-8);
+      overflow-x: auto;
+      scrollbar-width: none;
+      height: 76px;
+    }
+    .category-rail::-webkit-scrollbar {
+      display: none;
+    }
+    .cat-tab {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      height: 100%;
+      min-width: 64px;
+      padding: 0 var(--space-2);
+      background: transparent;
+      border: none;
+      border-bottom: 2px solid transparent;
+      color: var(--text-secondary);
+      font-family: var(--font-sans);
+      font-size: 12px;
+      font-weight: 600;
+      white-space: nowrap;
+      cursor: pointer;
+      transition: color var(--duration-fast) var(--ease-standard),
+                  border-color var(--duration-fast) var(--ease-standard);
+    }
+    .cat-tab:hover {
+      color: var(--text-primary);
+    }
+    .cat-tab.is-active {
+      color: var(--text-primary);
+      border-bottom-color: var(--text-primary);
+    }
+
+    /* 3. Section Headings */
+    .section-block {
+      padding: var(--space-10) 0;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .section-header {
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: var(--space-4);
+      margin-bottom: var(--space-6);
+      flex-wrap: wrap;
+    }
+    .section-eyebrow {
+      font-size: var(--text-xs);
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--brand-primary);
+      margin-bottom: var(--space-1);
+    }
+    .section-title {
+      font-size: var(--text-h2);
+      font-weight: 600;
+      letter-spacing: -0.015em;
+      margin: 0;
+    }
+    .section-subtitle {
+      font-size: var(--text-sm);
+      color: var(--text-secondary);
+      margin: 4px 0 0 0;
+    }
+
+    /* 4. Airbnb Zero-Chrome Course Grid */
+    .course-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      column-gap: var(--space-6);
+      row-gap: var(--space-10);
+    }
+    @media (max-width: 1180px) {
+      .course-grid { grid-template-columns: repeat(3, 1fr); }
+    }
+    @media (max-width: 860px) {
+      .course-grid { grid-template-columns: repeat(2, 1fr); }
+      .search-pill { display: none; }
+    }
+    @media (max-width: 540px) {
+      .course-grid { grid-template-columns: 1fr; }
+    }
+
+    .course-card {
+      display: flex;
+      flex-direction: column;
+      gap: var(--space-3);
+      text-decoration: none;
+      color: inherit;
+      cursor: pointer;
+    }
+    .course-thumb {
+      position: relative;
+      aspect-ratio: 16 / 10;
+      border-radius: var(--radius-lg);
+      overflow: hidden;
+      background: var(--bg-surface-subtle);
+    }
+    .course-thumb-visual {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-end;
+      padding: var(--space-4);
+      transition: transform var(--duration-slow) var(--ease-standard);
+    }
+    .course-card:hover .course-thumb-visual {
+      transform: scale(1.03);
+    }
+    .badge-guest-fav {
+      position: absolute;
+      top: 12px;
+      left: 12px;
+      background: var(--bg-glass-header);
+      color: var(--primitive-hof-900);
+      font-size: 12px;
+      font-weight: 700;
+      padding: 4px 12px;
+      border-radius: var(--radius-pill);
+      box-shadow: var(--shadow-card);
+    }
+    .btn-wishlist {
+      position: absolute;
+      top: 8px;
+      right: 8px;
+      width: 44px;
+      height: 44px;
+      border: none;
+      background: transparent;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      color: var(--text-on-brand);
+    }
+    .duration-pill {
+      position: absolute;
+      bottom: 12px;
+      right: 12px;
+      background: var(--overlay-quiz, var(--primitive-obsidian-900));
+      color: var(--text-on-brand);
+      font-family: var(--font-mono);
+      font-size: 12px;
+      font-weight: 500;
+      padding: 4px 8px;
+      border-radius: var(--radius-xs);
+    }
+    .course-meta {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+    .course-row-top {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: var(--space-2);
+    }
+    .course-title {
+      font-size: var(--text-card-title);
+      font-weight: 600;
+      line-height: 1.35;
+      color: var(--text-primary);
+      margin: 0;
+    }
+    .course-rating {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      font-size: var(--text-sm);
+      font-weight: 500;
+      color: var(--text-primary);
+      white-space: nowrap;
+    }
+    .course-instructor,
+    .course-stats {
+      font-size: var(--text-sm);
+      color: var(--text-secondary);
+      margin: 0;
+    }
+    .course-price-row {
+      margin-top: 4px;
+      display: flex;
+      align-items: baseline;
+      gap: 6px;
+      font-size: var(--text-card-title);
+    }
+    .course-price {
+      font-weight: 600;
+      color: var(--text-primary);
+    }
+    .course-price-unit {
+      font-size: var(--text-sm);
+      color: var(--text-secondary);
+      font-weight: 400;
+    }
+
+    /* 5. Course Detail Split Layout & Sticky Enrollment Card */
+    .detail-split {
+      display: grid;
+      grid-template-columns: 1.65fr 1fr;
+      gap: var(--space-12);
+      align-items: start;
+    }
+    @media (max-width: 920px) {
+      .detail-split {
+        grid-template-columns: 1fr;
+      }
+      .enrollment-card {
+        position: static;
+      }
+    }
+    .highlight-list {
+      display: flex;
+      flex-direction: column;
+      gap: var(--space-5);
+      padding: var(--space-6) 0;
+      border-top: 1px solid var(--border-subtle);
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .highlight-item {
+      display: flex;
+      align-items: flex-start;
+      gap: var(--space-4);
+    }
+    .highlight-icon {
+      width: 28px;
+      height: 28px;
+      color: var(--text-primary);
+      flex-shrink: 0;
+      margin-top: 2px;
+    }
+    .highlight-title {
+      font-size: 16px;
+      font-weight: 600;
+      margin: 0 0 2px 0;
+    }
+    .highlight-desc {
+      font-size: 14px;
+      color: var(--text-secondary);
+      margin: 0;
+    }
+
+    /* Sticky Right-Rail Enrollment Widget */
+    .enrollment-card {
+      position: sticky;
+      top: 104px;
+      background: var(--bg-surface);
+      border: 1px solid var(--border-strong);
+      border-radius: var(--radius-lg);
+      padding: var(--space-6);
+      box-shadow: var(--shadow-floating);
+    }
+    .enroll-price-header {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      margin-bottom: var(--space-5);
+    }
+    .enroll-price {
+      font-size: 22px;
+      font-weight: 700;
+      color: var(--text-primary);
+    }
+    .enroll-selector-grid {
+      border: 1px solid var(--border-strong);
+      border-radius: var(--radius-md);
+      overflow: hidden;
+      margin-bottom: var(--space-4);
+    }
+    .enroll-selector-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .enroll-cell {
+      padding: 10px 12px;
+    }
+    .enroll-cell + .enroll-cell {
+      border-left: 1px solid var(--border-subtle);
+    }
+    .btn-enroll-cta {
+      width: 100%;
+      height: 52px;
+      border: none;
+      border-radius: var(--radius-sm);
+      background: var(--brand-primary);
+      color: var(--text-on-brand);
+      font-family: var(--font-sans);
+      font-size: 16px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background-color var(--duration-fast) var(--ease-standard),
+                  transform var(--duration-fast) var(--ease-standard);
+    }
+    .btn-enroll-cta:hover {
+      background: var(--brand-primary-hover);
+    }
+    .btn-enroll-cta:active {
+      transform: scale(0.99);
+    }
+    .progress-bar-track {
+      height: 8px;
+      background: var(--bg-surface-subtle);
+      border-radius: var(--radius-pill);
+      overflow: hidden;
+      margin-top: 8px;
+    }
+    .progress-bar-fill {
+      height: 100%;
+      width: 72%;
+      background: var(--accent-learning);
+      border-radius: var(--radius-pill);
+    }
+  </style>
+</head>
+<body>
+
+  <!-- 1. STICKY HEADER WITH AIRBNB PILL SEARCH & MULTI-THEME SWITCHER -->
+  <header class="site-header">
+    <div class="container header-inner">
+      <a href="#top" class="brand-logo" aria-label="LMS E-Learning Trang chủ">
+        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M12 2L2 7l10 5 10-5-10-5z"/>
+          <path d="M2 17l10 5 10-5"/>
+          <path d="M2 12l10 5 10-5"/>
+        </svg>
+        <span>Luminary<strong>LMS</strong></span>
+      </a>
+
+      <!-- Airbnb Signature Pill Search -->
+      <div class="search-pill" role="search" aria-label="Tìm kiếm khóa học">
+        <div class="pill-segment">
+          <span class="pill-label">Kỹ năng</span>
+          <span class="pill-value">System Design & AI</span>
+        </div>
+        <div class="pill-divider" aria-hidden="true"></div>
+        <div class="pill-segment">
+          <span class="pill-label">Cấp độ</span>
+          <span class="pill-value">Mọi cấp độ</span>
+        </div>
+        <div class="pill-divider" aria-hidden="true"></div>
+        <div class="pill-segment">
+          <span class="pill-label">Hình thức</span>
+          <span class="pill-value">Video + Lab tương tác</span>
+        </div>
+        <button type="button" class="pill-search-btn" aria-label="Tìm kiếm">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="11" cy="11" r="8"></circle>
+            <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+          </svg>
+        </button>
+      </div>
+
+      <!-- 3-Tier Theme Switcher -->
+      <div class="theme-switcher" role="group" aria-label="Chuyển đổi giao diện Theme">
+        <button type="button" class="theme-btn" data-set-theme="airbnb-light" aria-pressed="true">Airbnb Light</button>
+        <button type="button" class="theme-btn" data-set-theme="cinema-dark" aria-pressed="false">Cinema Dark</button>
+        <button type="button" class="theme-btn" data-set-theme="babu-academy" aria-pressed="false">Babu Teal</button>
+      </div>
+    </div>
+  </header>
+
+  <!-- 2. HORIZONTAL CATEGORY FILTER RAIL -->
+  <nav class="category-rail-wrap" aria-label="Danh mục chuyên ngành">
+    <div class="container category-rail">
+      <button type="button" class="cat-tab is-active">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/></svg>
+        <span>Product & UI/UX</span>
+      </button>
+      <button type="button" class="cat-tab">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+        <span>Fullstack Eng</span>
+      </button>
+      <button type="button" class="cat-tab">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><path d="M12 2a10 10 0 1 0 10 10H12V2z"/><path d="M12 12 2.1 10.5"/></svg>
+        <span>AI & Data Science</span>
+      </button>
+      <button type="button" class="cat-tab">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><path d="M12 20V10"/><path d="M18 20V4"/><path d="M6 20v-4"/></svg>
+        <span>FinTech & Quant</span>
+      </button>
+      <button type="button" class="cat-tab">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+        <span>Cloud Architecture</span>
+      </button>
+    </div>
+  </nav>
+
+  <main class="container">
+    <!-- 3. COURSE CATALOG GRID (AIRBNB ZERO-CHROME CARDS) -->
+    <section class="section-block" aria-labelledby="catalog-heading">
+      <div class="section-header">
+        <div>
+          <div class="section-eyebrow">UI/UX Pro Max × Airbnb DLS</div>
+          <h1 id="catalog-heading" class="section-title">Khóa học được học viên yêu thích nhất</h1>
+          <p class="section-subtitle">Thiết kế thẻ Zero-Chrome: không khung viền thừa, ảnh tỷ lệ 16:10 bo góc 16px, số liệu Tabular Numerals.</p>
+        </div>
+      </div>
+
+      <div class="course-grid">
+        <!-- Card 1 -->
+        <article class="course-card">
+          <div class="course-thumb">
+            <div class="course-thumb-visual" style="background: linear-gradient(135deg, var(--primitive-obsidian-800) 0%, var(--primitive-obsidian-950) 100%); color: var(--primitive-alabaster-50);">
+              <span style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; opacity: 0.85;">Masterclass • 24 Modules</span>
+              <strong style="font-size: 17px; line-height: 1.3; margin-top: 4px;">Design Systems & Micro-Interactions</strong>
+            </div>
+            <span class="badge-guest-fav">Học viên yêu thích</span>
+            <button type="button" class="btn-wishlist" aria-label="Lưu khóa học Design Systems vào danh sách yêu thích">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="var(--overlay-scrim)" stroke="currentColor" stroke-width="2"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
+            </button>
+            <span class="duration-pill tabular-nums">18h 45m</span>
+          </div>
+          <div class="course-meta">
+            <div class="course-row-top">
+              <h2 class="course-title">Kiến trúc Design System chuẩn Airbnb & Figma Tokens</h2>
+              <span class="course-rating tabular-nums">★ 4.96</span>
+            </div>
+            <p class="course-instructor">Lê Minh Khôi • Staff Design Technologist</p>
+            <p class="course-stats tabular-nums">42 bài giảng • Dự án thực chiến</p>
+            <div class="course-price-row tabular-nums">
+              <span class="course-price">1.290.000₫</span>
+              <span class="course-price-unit">/ sở hữu trọn đời</span>
+            </div>
+          </div>
+        </article>
+
+        <!-- Card 2 -->
+        <article class="course-card">
+          <div class="course-thumb">
+            <div class="course-thumb-visual" style="background: linear-gradient(135deg, var(--primitive-babu-600) 0%, var(--primitive-obsidian-950) 100%); color: var(--primitive-alabaster-50);">
+              <span style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; opacity: 0.85;">Engineering • Next.js 15</span>
+              <strong style="font-size: 17px; line-height: 1.3; margin-top: 4px;">Distributed LMS Architecture</strong>
+            </div>
+            <span class="badge-guest-fav">Bestseller</span>
+            <button type="button" class="btn-wishlist" aria-label="Lưu khóa học Distributed LMS vào danh sách yêu thích">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="var(--overlay-scrim)" stroke="currentColor" stroke-width="2"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
+            </button>
+            <span class="duration-pill tabular-nums">26h 15m</span>
+          </div>
+          <div class="course-meta">
+            <div class="course-row-top">
+              <h2 class="course-title">Xây dựng nền tảng Video Streaming & E-Learning chịu tải cao</h2>
+              <span class="course-rating tabular-nums">★ 4.92</span>
+            </div>
+            <p class="course-instructor">TS. Trần Quốc Tuấn • Principal Architect</p>
+            <p class="course-stats tabular-nums">64 bài giảng • Có chấm code tự động</p>
+            <div class="course-price-row tabular-nums">
+              <span class="course-price">1.650.000₫</span>
+              <span class="course-price-unit">/ sở hữu trọn đời</span>
+            </div>
+          </div>
+        </article>
+
+        <!-- Card 3 -->
+        <article class="course-card">
+          <div class="course-thumb">
+            <div class="course-thumb-visual" style="background: linear-gradient(135deg, var(--primitive-hof-800) 0%, var(--primitive-obsidian-950) 100%); color: var(--primitive-alabaster-50);">
+              <span style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; opacity: 0.85;">Product AI • Agents</span>
+              <strong style="font-size: 17px; line-height: 1.3; margin-top: 4px;">Agentic Workflows in Production</strong>
+            </div>
+            <button type="button" class="btn-wishlist" aria-label="Lưu khóa học Agentic Workflows vào danh sách yêu thích">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="var(--overlay-scrim)" stroke="currentColor" stroke-width="2"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
+            </button>
+            <span class="duration-pill tabular-nums">14h 20m</span>
+          </div>
+          <div class="course-meta">
+            <div class="course-row-top">
+              <h2 class="course-title">Thiết kế trải nghiệm AI Agent & RAG cho sản phẩm EdTech</h2>
+              <span class="course-rating tabular-nums">★ 4.89</span>
+            </div>
+            <p class="course-instructor">Nguyễn Hà My • AI Product Lead</p>
+            <p class="course-stats tabular-nums">35 bài giảng • Live Q&A hàng tuần</p>
+            <div class="course-price-row tabular-nums">
+              <span class="course-price">1.490.000₫</span>
+              <span class="course-price-unit">/ lộ trình</span>
+            </div>
+          </div>
+        </article>
+
+        <!-- Card 4 (Active Learning State with Babu Teal Progress) -->
+        <article class="course-card">
+          <div class="course-thumb">
+            <div class="course-thumb-visual" style="background: linear-gradient(135deg, var(--primitive-obsidian-700) 0%, var(--primitive-obsidian-950) 100%); color: var(--primitive-alabaster-50);">
+              <span style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; opacity: 0.85;">Đang học • Chương 4/6</span>
+              <strong style="font-size: 17px; line-height: 1.3; margin-top: 4px;">Frontend Performance & Core Web Vitals</strong>
+            </div>
+            <span class="duration-pill tabular-nums">11h 10m</span>
+          </div>
+          <div class="course-meta">
+            <div class="course-row-top">
+              <h2 class="course-title">Tối ưu 60fps Motion, Zero CLS & Web Accessibility</h2>
+              <span class="course-rating tabular-nums">72%</span>
+            </div>
+            <p class="course-instructor">Bài tiếp: Kỹ thuật chứa bố cục (CSS Containment)</p>
+            <div class="progress-bar-track" role="progressbar" aria-valuenow="72" aria-valuemin="0" aria-valuemax="100" aria-label="Tiến độ khóa học 72 phần trăm">
+              <div class="progress-bar-fill"></div>
+            </div>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <!-- 4. ASYMMETRIC COURSE DETAIL & STICKY RIGHT-RAIL ENROLLMENT -->
+    <section class="section-block" aria-labelledby="detail-heading">
+      <div class="section-header">
+        <div>
+          <div class="section-eyebrow">Airbnb Listing Detail Pattern (62% / 34% Split)</div>
+          <h2 id="detail-heading" class="section-title">Mẫu bố cục Chi tiết Khóa học & Khung Đăng ký Dính (Sticky Rail)</h2>
+        </div>
+      </div>
+
+      <div class="detail-split">
+        <!-- Left 62% Content Column -->
+        <div>
+          <p style="font-size: var(--text-body); color: var(--text-secondary); margin-bottom: var(--space-6);">
+            Thay vì dùng 3 ô vuông icon màu mè kiểu cũ (<code>icon-tile-stack</code> bị cấm bởi Impeccable), chúng ta sử dụng <strong>Airbnb Highlight Rows</strong>: icon nét mảnh 24px bên trái, tiêu đề đậm 16px và giải thích rõ ràng bên phải, giới hạn độ rộng dòng dưới 72 ký tự.
+          </p>
+
+          <div class="highlight-list">
+            <div class="highlight-item">
+              <svg class="highlight-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+              <div>
+                <h3 class="highlight-title">Kiểm định tự động bằng Impeccable Audit</h3>
+                <p class="highlight-desc">Chặn đứng mọi dấu hiệu AI-Slop (gradient tím, chữ chuyển sắc, bóng neon dark-glow) ngay từ bước viết code.</p>
+              </div>
+            </div>
+            <div class="highlight-item">
+              <svg class="highlight-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+              <div>
+                <h3 class="highlight-title">Học tập đa chế độ: Daylight & Cinema Dark Mode</h3>
+                <p class="highlight-desc">Chuyển đổi tức thì sang nền Obsidian ấm (#121214) khi xem video bài giảng ban đêm, bảo vệ thị giác học viên.</p>
+              </div>
+            </div>
+            <div class="highlight-item">
+              <svg class="highlight-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+              <div>
+                <h3 class="highlight-title">Đạt chuẩn UI/UX Pro Max 10 Hạng mục Ưu tiên</h3>
+                <p class="highlight-desc">Tương phản WCAG AA >= 4.5:1, vùng chạm tối thiểu 44×44px, khóa tỷ lệ khung hình chống nhảy trang (CLS = 0).</p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Right 34% Sticky Enrollment Card -->
+        <aside class="enrollment-card" aria-label="Bảng đăng ký khóa học">
+          <div class="enroll-price-header tabular-nums">
+            <div>
+              <span class="enroll-price">1.290.000₫</span>
+              <span style="font-size: 14px; color: var(--text-secondary); text-decoration: line-through; margin-left: 6px;">1.890.000₫</span>
+            </div>
+            <span style="font-size: 14px; font-weight: 600;">★ 4.96 · 128 đánh giá</span>
+          </div>
+
+          <div class="enroll-selector-grid">
+            <div class="enroll-selector-row">
+              <div class="enroll-cell">
+                <div class="pill-label">Hình thức học</div>
+                <div class="pill-value" style="color: var(--text-primary); font-weight: 500; margin-top: 2px;">Tự học + Mentor</div>
+              </div>
+              <div class="enroll-cell">
+                <div class="pill-label">Khai giảng Cohort</div>
+                <div class="pill-value tabular-nums" style="color: var(--text-primary); font-weight: 500; margin-top: 2px;">15/11/2026</div>
+              </div>
+            </div>
+            <div class="enroll-cell">
+              <div class="pill-label">Quyền lợi bao gồm</div>
+              <div class="pill-value" style="color: var(--text-primary); margin-top: 2px;">42 video 4K • Mã nguồn Figma & React • Chứng chỉ</div>
+            </div>
+          </div>
+
+          <button type="button" class="btn-enroll-cta">Đăng ký học ngay</button>
+          <p style="text-align: center; font-size: 13px; color: var(--text-secondary); margin: 12px 0 0 0;">
+            Hoàn tiền trong 30 ngày nếu không phù hợp • Truy cập trọn đời
+          </p>
+        </aside>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    // Interactive Theme Switcher Logic
+    const buttons = document.querySelectorAll('[data-set-theme]');
+    buttons.forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const theme = btn.getAttribute('data-set-theme');
+        document.documentElement.setAttribute('data-theme', theme);
+        buttons.forEach((b) => b.setAttribute('aria-pressed', String(b === btn)));
+      });
+    });
+  </script>
+</body>
+</html>
