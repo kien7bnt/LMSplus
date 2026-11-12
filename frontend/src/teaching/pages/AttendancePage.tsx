@@ -408,6 +408,14 @@ export const AttendancePage: React.FC = () => {
         }
         actions={
           <>
+            {selectedSessionId && (
+              <Link
+                className="t-btn t-btn--small t-btn--secondary"
+                to={`/teaching/classes/${classId}/sessions/${encodeURIComponent(selectedSessionId)}/live`}
+              >
+                Phòng trực tuyến & Điểm danh tự động
+              </Link>
+            )}
             {sheet && (
               <Btn small variant="ghost" onClick={openHistory}>
                 Lịch sử chỉnh sửa

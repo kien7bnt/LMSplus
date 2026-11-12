@@ -13,9 +13,11 @@
  */
 
 import crypto from 'node:crypto';
+import { encryptSecret, encryptJsonCredentials } from './virtualProviders.mjs';
 
 export const TEACHING_SEED_MARKER = 'teaching_seed_v1';
 export const STUDIO_SEED_MARKER = 'studio_seed_v1';
+export const VIRTUAL_SEED_MARKER = 'virtual_classroom_seed_v1';
 
 export const ATTENDANCE_STATUSES = ['PRESENT', 'LATE', 'EXCUSED_ABSENCE', 'UNEXCUSED_ABSENCE'];
 export const COURSE_STATUSES = ['DRAFT', 'PUBLISHED', 'ARCHIVED', 'INACTIVE'];
@@ -148,6 +150,8 @@ export function ensureTeachingSchema(db) {
 
   // ---- Lớp học ----
   ensureSubjectClasses(db);
+  addColumn(db, 'subject_classes', 'default_virtual_room_id', 'TEXT');
+  addColumn(db, 'subject_classes', 'attendance_rules_json', 'TEXT');
   // Bổ sung đơn vị / môn học cho lớp cũ còn thiếu (lấy từ khóa học) — idempotent.
   db.exec(`
     UPDATE subject_classes SET
@@ -195,6 +199,14 @@ export function ensureTeachingSchema(db) {
   addColumn(db, 'sessions', 'attendance_locked_by', 'TEXT');
   addColumn(db, 'sessions', 'created_by', 'TEXT');
   addColumn(db, 'sessions', 'created_at', 'TEXT');
+  addColumn(db, 'sessions', 'delivery_mode', "TEXT NOT NULL DEFAULT 'OFFLINE'");
+  addColumn(db, 'sessions', 'teaching_content', 'TEXT');
+  addColumn(db, 'sessions', 'virtual_room_id', 'TEXT');
+  addColumn(db, 'sessions', 'live_status', "TEXT NOT NULL DEFAULT 'NOT_STARTED'");
+  addColumn(db, 'sessions', 'live_started_at', 'TEXT');
+  addColumn(db, 'sessions', 'live_ended_at', 'TEXT');
+  addColumn(db, 'sessions', 'attendance_sync_status', "TEXT NOT NULL DEFAULT 'IDLE'");
+  addColumn(db, 'sessions', 'attendance_rules_json', 'TEXT');
   db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_class_start ON sessions(subject_class_id, scheduled_start_at)');
 
   // ---- Điểm danh ----
@@ -469,12 +481,194 @@ export function ensureTeachingSchema(db) {
     CREATE INDEX IF NOT EXISTS idx_lesson_quiz_submissions_lookup
       ON lesson_quiz_submissions(student_id, subject_class_id, lesson_id);
   `);
+
+  // Nếu bảng virtual_* từ lần thử nghiệm trước thiếu cột chuẩn mới, tái tạo sạch sẽ
+  const vpsCols = columnNames(db, 'virtual_participant_sessions').map((c) => c.name);
+  if (vpsCols.length > 0 && !vpsCols.includes('is_currently_in_room')) {
+    db.exec(`
+      DROP TABLE IF EXISTS virtual_sync_jobs;
+      DROP TABLE IF EXISTS virtual_attendance_adjustments;
+      DROP TABLE IF EXISTS virtual_attendance_calculations;
+      DROP TABLE IF EXISTS virtual_identity_mappings;
+      DROP TABLE IF EXISTS virtual_participant_sessions;
+      DROP TABLE IF EXISTS virtual_webhook_events;
+      DROP TABLE IF EXISTS virtual_meeting_rooms;
+      DROP TABLE IF EXISTS virtual_provider_configs;
+      DELETE FROM app_meta WHERE key = '${VIRTUAL_SEED_MARKER}';
+    `);
+  }
+
+  db.exec(`
+    -- ---- Phòng học trực tuyến & Điểm danh tự động (Virtual Classroom & Auto-Attendance) ----
+    CREATE TABLE IF NOT EXISTS virtual_provider_configs (
+      provider TEXT PRIMARY KEY CHECK (provider IN ('ZOOM','GOOGLE_MEET','EXTERNAL')),
+      display_name TEXT NOT NULL,
+      auth_mode TEXT NOT NULL DEFAULT 'SERVER_TO_SERVER_OAUTH',
+      account_id TEXT,
+      client_id TEXT,
+      encrypted_credentials_json TEXT,
+      scopes_json TEXT NOT NULL DEFAULT '[]',
+      capabilities_json TEXT NOT NULL DEFAULT '{}',
+      connection_status TEXT NOT NULL DEFAULT 'SANDBOX_READY',
+      last_verified_at TEXT,
+      status_message TEXT,
+      updated_by TEXT,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS virtual_meeting_rooms (
+      id TEXT PRIMARY KEY,
+      subject_class_id TEXT NOT NULL REFERENCES subject_classes(id) ON DELETE CASCADE,
+      session_id TEXT NULL REFERENCES sessions(session_id) ON DELETE SET NULL,
+      provider TEXT NOT NULL CHECK (provider IN ('ZOOM','GOOGLE_MEET','EXTERNAL')),
+      external_platform_name TEXT,
+      creation_mode TEXT NOT NULL DEFAULT 'AUTO_API',
+      is_recurring_room INTEGER NOT NULL DEFAULT 0,
+      room_title TEXT NOT NULL,
+      external_meeting_id TEXT,
+      external_meeting_uuid TEXT,
+      join_url TEXT NOT NULL,
+      encrypted_host_start_url TEXT,
+      encrypted_passcode TEXT,
+      scheduled_start_at TEXT,
+      scheduled_end_at TEXT,
+      room_status TEXT NOT NULL DEFAULT 'SCHEDULED',
+      supports_auto_sync INTEGER NOT NULL DEFAULT 1,
+      provider_metadata_json TEXT NOT NULL DEFAULT '{}',
+      created_by TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_virtual_rooms_class ON virtual_meeting_rooms(subject_class_id);
+    CREATE INDEX IF NOT EXISTS idx_virtual_rooms_session ON virtual_meeting_rooms(session_id);
+    CREATE INDEX IF NOT EXISTS idx_virtual_rooms_external ON virtual_meeting_rooms(provider, external_meeting_id);
+
+    CREATE TABLE IF NOT EXISTS virtual_webhook_events (
+      id TEXT PRIMARY KEY,
+      event_key TEXT NOT NULL UNIQUE,
+      provider TEXT NOT NULL,
+      event_type TEXT NOT NULL,
+      external_meeting_id TEXT,
+      session_id TEXT NULL,
+      event_timestamp_ms INTEGER NOT NULL DEFAULT 0,
+      signature_verified INTEGER NOT NULL DEFAULT 0,
+      processing_status TEXT NOT NULL DEFAULT 'PROCESSED',
+      raw_payload_json TEXT NOT NULL,
+      received_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_virtual_webhooks_session ON virtual_webhook_events(session_id, received_at);
+
+    CREATE TABLE IF NOT EXISTS virtual_participant_sessions (
+      id TEXT PRIMARY KEY,
+      session_key TEXT NOT NULL UNIQUE,
+      session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
+      virtual_room_id TEXT NOT NULL REFERENCES virtual_meeting_rooms(id) ON DELETE CASCADE,
+      provider TEXT NOT NULL,
+      external_participant_id TEXT,
+      registrant_id TEXT,
+      lms_join_token TEXT,
+      participant_email TEXT,
+      display_name TEXT NOT NULL,
+      matched_student_id TEXT NULL REFERENCES users(id) ON DELETE SET NULL,
+      identity_match_method TEXT NOT NULL DEFAULT 'UNKNOWN',
+      join_at TEXT NOT NULL,
+      leave_at TEXT NULL,
+      duration_sec INTEGER NOT NULL DEFAULT 0,
+      is_currently_in_room INTEGER NOT NULL DEFAULT 0,
+      device_info TEXT,
+      source TEXT NOT NULL DEFAULT 'WEBHOOK',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_virtual_part_session ON virtual_participant_sessions(session_id, virtual_room_id);
+    CREATE INDEX IF NOT EXISTS idx_virtual_part_student ON virtual_participant_sessions(session_id, matched_student_id);
+
+    CREATE TABLE IF NOT EXISTS virtual_identity_mappings (
+      id TEXT PRIMARY KEY,
+      subject_class_id TEXT NOT NULL REFERENCES subject_classes(id) ON DELETE CASCADE,
+      student_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      provider TEXT NOT NULL,
+      provider_email TEXT,
+      provider_user_id TEXT,
+      registrant_id TEXT,
+      lms_join_token TEXT,
+      mapped_by TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_virtual_identity_class ON virtual_identity_mappings(subject_class_id, provider);
+
+    CREATE TABLE IF NOT EXISTS virtual_attendance_calculations (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
+      subject_class_id TEXT NOT NULL REFERENCES subject_classes(id) ON DELETE CASCADE,
+      student_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      first_join_at TEXT,
+      last_leave_at TEXT,
+      raw_sessions_count INTEGER NOT NULL DEFAULT 0,
+      merged_intervals_json TEXT NOT NULL DEFAULT '[]',
+      total_merged_duration_sec INTEGER NOT NULL DEFAULT 0,
+      valid_window_duration_sec INTEGER NOT NULL DEFAULT 0,
+      required_window_duration_sec INTEGER NOT NULL DEFAULT 0,
+      attendance_ratio_pct REAL NOT NULL DEFAULT 0,
+      late_minutes REAL NOT NULL DEFAULT 0,
+      calculated_status TEXT NOT NULL,
+      final_status TEXT NOT NULL,
+      identity_match_method TEXT,
+      is_manually_adjusted INTEGER NOT NULL DEFAULT 0,
+      adjustment_reason TEXT,
+      adjusted_by TEXT,
+      adjusted_at TEXT,
+      calculated_at TEXT NOT NULL,
+      CONSTRAINT uq_virtual_att_calc UNIQUE (session_id, student_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_virtual_att_calc_session ON virtual_attendance_calculations(session_id);
+
+    CREATE TABLE IF NOT EXISTS virtual_attendance_adjustments (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
+      student_id TEXT NULL REFERENCES users(id) ON DELETE CASCADE,
+      action_type TEXT NOT NULL DEFAULT 'STATUS_OVERRIDE',
+      previous_status TEXT,
+      new_status TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      actor_id TEXT NOT NULL,
+      actor_name TEXT,
+      metadata_json TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_virtual_att_adj_session ON virtual_attendance_adjustments(session_id, created_at);
+
+    CREATE TABLE IF NOT EXISTS virtual_sync_jobs (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
+      virtual_room_id TEXT,
+      provider TEXT NOT NULL,
+      trigger_source TEXT NOT NULL DEFAULT 'MANUAL_RESYNC',
+      status TEXT NOT NULL,
+      attempt_count INTEGER NOT NULL DEFAULT 1,
+      participants_fetched INTEGER NOT NULL DEFAULT 0,
+      matched_students INTEGER NOT NULL DEFAULT 0,
+      unknown_participants INTEGER NOT NULL DEFAULT 0,
+      error_message TEXT,
+      started_at TEXT NOT NULL,
+      completed_at TEXT
+    );
+  `);
   addColumn(db, 'class_lesson_customs', 'published_snapshot_json', 'TEXT');
 }
 
 /** Xóa dữ liệu module giảng dạy (chỉ dùng khi reset seed cho môi trường phát triển/kiểm thử). */
 export function clearTeachingData(db) {
   db.exec(`
+    DELETE FROM virtual_sync_jobs;
+    DELETE FROM virtual_attendance_adjustments;
+    DELETE FROM virtual_attendance_calculations;
+    DELETE FROM virtual_identity_mappings;
+    DELETE FROM virtual_participant_sessions;
+    DELETE FROM virtual_webhook_events;
+    DELETE FROM virtual_meeting_rooms;
+    DELETE FROM virtual_provider_configs;
     DELETE FROM lesson_quiz_submissions;
     DELETE FROM video_watch_progress;
     DELETE FROM class_lesson_blocks;
@@ -491,7 +685,7 @@ export function clearTeachingData(db) {
     DELETE FROM teaching_staff_assignments;
     DELETE FROM class_enrollments;
     DELETE FROM subject_classes;
-    DELETE FROM app_meta WHERE key IN ('${TEACHING_SEED_MARKER}', '${STUDIO_SEED_MARKER}');
+    DELETE FROM app_meta WHERE key IN ('${TEACHING_SEED_MARKER}', '${STUDIO_SEED_MARKER}', '${VIRTUAL_SEED_MARKER}');
   `);
 }
 
@@ -524,8 +718,9 @@ export function insertClassSession(db, s) {
        scheduled_start_at, scheduled_end_at, confirmation_deadline_at, actual_start_at, actual_end_at,
        scheduled_instructor_id, scheduled_instructor_name, actual_instructor_name, is_substitute_teaching,
        ta_names_json, confirmation_status, confirmed_at, is_late_confirmation, reminder_sent_count,
-       lessons_delivery_json, room_or_link, session_status, created_by, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, 0, 0, '[]', ?, ?, ?, ?)`
+       lessons_delivery_json, room_or_link, session_status, delivery_mode, teaching_content, virtual_room_id,
+       live_status, attendance_sync_status, created_by, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, 0, 0, '[]', ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     s.session_id,
     s.subject_class_id,
@@ -545,6 +740,11 @@ export function insertClassSession(db, s) {
     s.confirmed_at || null,
     s.room_or_link || null,
     s.session_status || 'SCHEDULED',
+    s.delivery_mode || 'OFFLINE',
+    s.teaching_content || null,
+    s.virtual_room_id || null,
+    s.live_status || 'NOT_STARTED',
+    s.attendance_sync_status || 'IDLE',
     s.created_by || null,
     new Date().toISOString()
   );
@@ -558,6 +758,7 @@ export function seedTeachingData(db, { seed, hashPassword }) {
   const marker = db.prepare('SELECT value FROM app_meta WHERE key = ?').get(TEACHING_SEED_MARKER);
   if (marker) {
     seedStudioStarterData(db);
+    seedVirtualClassroomStarterData(db);
     return;
   }
 
@@ -695,11 +896,17 @@ export function seedTeachingData(db, { seed, hashPassword }) {
         const day = new Date(startDay.getTime() + d * 86400000);
         const dateStr = vnDate(new Date(day.getTime() + 12 * 3600000));
         const weekday = new Date(`${dateStr}T12:00:00+07:00`).getUTCDay();
-        if (!p.days.includes(weekday)) continue;
+        const isToday5a1 = p.classId === 'sc_toan5_5a1' && dateStr === today;
+        if (!p.days.includes(weekday) && !isToday5a1) continue;
         if (existingDates.has(`${p.classId}|${dateStr}`)) continue;
         idx++;
-        const startAt = vnDateTime(dateStr, p.start);
-        const endAt = vnDateTime(dateStr, p.end);
+        let startAt = vnDateTime(dateStr, p.start);
+        let endAt = vnDateTime(dateStr, p.end);
+        // Nếu buổi hôm nay của 5A1 chưa bắt đầu (chạy test vào sáng sớm), lùi 90 phút trước giờ hiện tại để luôn có buổi trong vòng 24h
+        if (isToday5a1 && Date.parse(endAt) >= now.getTime()) {
+          startAt = vnIso(new Date(now.getTime() - 90 * 60000));
+          endAt = vnIso(new Date(now.getTime() - 55 * 60000));
+        }
         const isPast = Date.parse(endAt) < now.getTime();
         const isOld = Date.parse(endAt) + 24 * 3600000 < now.getTime();
         insertClassSession(db, {
@@ -776,6 +983,7 @@ export function seedTeachingData(db, { seed, hashPassword }) {
   }
 
   seedStudioStarterData(db);
+  seedVirtualClassroomStarterData(db);
 }
 
 /**
@@ -960,6 +1168,484 @@ export function seedStudioStarterData(db) {
     }
 
     db.prepare('INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)').run(STUDIO_SEED_MARKER, nowIso);
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+}
+
+/**
+ * Khởi tạo dữ liệu mẫu cho Hệ thống Phòng học trực tuyến & Tự động điểm danh (Zoom, Google Meet, External Link).
+ * Giữ nguyên trạng thái `attendance_saved_at IS NULL` trên buổi học gần nhất của 5A1 để tương thích 100% với bộ test hiện hữu,
+ * đồng thời cung cấp sẵn phiên tham gia Zoom thực tế + 1 người tham gia UNKNOWN chờ giảng viên đối soát.
+ */
+export function seedVirtualClassroomStarterData(db) {
+  const marker = db.prepare('SELECT value FROM app_meta WHERE key = ?').get(VIRTUAL_SEED_MARKER);
+  if (marker) return;
+
+  const now = new Date();
+  const nowIso = now.toISOString();
+  const nowVnStr = vnIso(now);
+
+  db.exec('BEGIN');
+  try {
+    // 1. Cấu hình nhà cung cấp mặc định (Zoom, Google Meet, Link bên ngoài)
+    const insProv = db.prepare(
+      `INSERT OR IGNORE INTO virtual_provider_configs (
+         provider, display_name, auth_mode, account_id, client_id,
+         encrypted_credentials_json, scopes_json, capabilities_json,
+         connection_status, last_verified_at, status_message, updated_by, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'system', ?)`
+    );
+
+    insProv.run(
+      'ZOOM',
+      'Zoom Meetings (REST API v2 & Webhooks)',
+      'SERVER_TO_SERVER_OAUTH',
+      'lmsplus_zoom_acct_2026',
+      'zoom_s2s_client_lmsplus',
+      encryptJsonCredentials({
+        client_secret: 'zoom_s2s_secret_lmsplus_prod_key',
+        webhook_secret_token: 'lmsplus-zoom-webhook-secret-2026',
+        default_host_email: 'lethuha.gv@lmsplus.edu.vn',
+      }),
+      JSON.stringify([
+        'meeting:write:meeting:admin',
+        'meeting:read:meeting:admin',
+        'meeting:read:list_past_participants:admin',
+        'report:read:meeting:admin',
+      ]),
+      JSON.stringify({
+        create_meeting: true,
+        update_meeting: true,
+        delete_meeting: true,
+        live_webhooks: true,
+        past_meeting_report: true,
+        auto_attendance: true,
+      }),
+      'SANDBOX_READY',
+      nowIso,
+      'Đã cấu hình Server-to-Server OAuth & Webhook HMAC-SHA256.',
+      nowIso
+    );
+
+    insProv.run(
+      'GOOGLE_MEET',
+      'Google Meet (Google Workspace Meet REST API v2)',
+      'GOOGLE_WORKSPACE_OAUTH2',
+      'lmsplus.edu.vn',
+      'lmsplus-gmeet.apps.googleusercontent.com',
+      encryptJsonCredentials({
+        client_secret: 'gmeet_workspace_secret_2026',
+        webhook_secret_token: 'lmsplus_gmeet_pubsub_token_2026',
+        workspace_domain: 'lmsplus.edu.vn',
+      }),
+      JSON.stringify([
+        'https://www.googleapis.com/auth/meetings.space.created',
+        'https://www.googleapis.com/auth/meetings.space.readonly',
+        'https://www.googleapis.com/auth/meetings.conference.media.readonly',
+      ]),
+      JSON.stringify({
+        create_meeting: true,
+        conference_records: true,
+        participant_sessions: true,
+        auto_attendance: true,
+      }),
+      'SANDBOX_READY',
+      nowIso,
+      'Hỗ trợ Spaces, ConferenceRecords, Participants & ParticipantSessions cho tài khoản Google Workspace.',
+      nowIso
+    );
+
+    insProv.run(
+      'EXTERNAL',
+      'Link phòng học bên ngoài (Thủ công)',
+      'MANUAL_LINK',
+      '',
+      '',
+      encryptJsonCredentials({}),
+      '[]',
+      JSON.stringify({
+        create_meeting: false,
+        live_webhooks: false,
+        auto_attendance: false,
+      }),
+      'MANUAL_ONLY',
+      nowIso,
+      'Chưa hỗ trợ đồng bộ điểm danh tự động với nền tảng này',
+      nowIso
+    );
+
+    // 2. Gắn phòng học Zoom & dữ liệu tham gia vào buổi học gần nhất chưa chốt điểm danh của lớp 5A1
+    const reviewSession = db
+      .prepare(
+        `SELECT * FROM sessions
+         WHERE subject_class_id = 'sc_toan5_5a1'
+           AND session_status <> 'CANCELLED'
+           AND attendance_saved_at IS NULL
+           AND scheduled_start_at <= ?
+         ORDER BY scheduled_start_at DESC LIMIT 1`
+      )
+      .get(nowVnStr);
+
+    if (reviewSession) {
+      const roomId = 'vmr_5a1_review';
+      const meetingId = '89241057712';
+      const joinUrl = `https://zoom.us/j/${meetingId}?pwd=lmsplus5a1`;
+      const hostStartUrl = `https://zoom.us/s/${meetingId}?zak=host_zak_token_5a1_review`;
+
+      db.prepare(
+        `INSERT OR IGNORE INTO virtual_meeting_rooms (
+           id, subject_class_id, session_id, provider, external_platform_name, creation_mode,
+           is_recurring_room, room_title, external_meeting_id, external_meeting_uuid, join_url,
+           encrypted_host_start_url, encrypted_passcode, scheduled_start_at, scheduled_end_at,
+           room_status, supports_auto_sync, provider_metadata_json, created_by, created_at, updated_at
+         ) VALUES (?, 'sc_toan5_5a1', ?, 'ZOOM', 'Zoom Meeting', 'AUTO_API', 0, ?, ?, ?, ?, ?, ?, ?, ?, 'ENDED', 1, ?, 'usr_gv01', ?, ?)`
+      ).run(
+        roomId,
+        reviewSession.session_id,
+        `${reviewSession.session_title} (Zoom Trực tuyến)`,
+        meetingId,
+        'zm_uuid_5a1_review_2026',
+        joinUrl,
+        encryptSecret(hostStartUrl),
+        encryptSecret('5012026'),
+        reviewSession.scheduled_start_at,
+        reviewSession.scheduled_end_at,
+        JSON.stringify({ formatted_meeting_id: '892 4105 7712', waiting_room: false, auto_recording: 'cloud' }),
+        nowIso,
+        nowIso
+      );
+
+      db.prepare(
+        `UPDATE sessions SET
+           delivery_mode = 'ONLINE',
+           teaching_content = COALESCE(teaching_content, 'Ôn tập phân số, quy đồng mẫu số và giải bài toán tỉ số phần trăm trực tuyến qua Zoom.'),
+           virtual_room_id = ?,
+           room_or_link = ?,
+           live_status = 'ENDED',
+           live_started_at = ?,
+           live_ended_at = ?,
+           attendance_sync_status = 'NEEDS_REVIEW'
+         WHERE session_id = ?`
+      ).run(
+        roomId,
+        'Zoom · ID: 892 4105 7712',
+        reviewSession.scheduled_start_at,
+        reviewSession.scheduled_end_at,
+        reviewSession.session_id
+      );
+
+      // Tạo log phiên tham gia thực tế cho học sinh lớp 5A1
+      const roster = db
+        .prepare(
+          `SELECT u.id, u.code, u.full_name, u.email
+           FROM class_enrollments e JOIN users u ON u.id = e.student_id
+           WHERE e.subject_class_id = 'sc_toan5_5a1' AND e.status = 'ACTIVE'
+           ORDER BY u.code`
+        )
+        .all();
+
+      const startMs = Date.parse(reviewSession.scheduled_start_at);
+      const endMs = Date.parse(reviewSession.scheduled_end_at);
+      const windowSec = Math.max(60, Math.round((endMs - startMs) / 1000)); // 35 phút = 2100s
+
+      const insPart = db.prepare(
+        `INSERT OR IGNORE INTO virtual_participant_sessions (
+           id, session_key, session_id, virtual_room_id, provider,
+           external_participant_id, registrant_id, lms_join_token, participant_email, display_name,
+           matched_student_id, identity_match_method, join_at, leave_at, duration_sec,
+           is_currently_in_room, device_info, source, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, 'ZOOM', ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, 0, ?, 'WEBHOOK', ?, ?)`
+      );
+
+      const insCalc = db.prepare(
+        `INSERT OR IGNORE INTO virtual_attendance_calculations (
+           id, session_id, subject_class_id, student_id,
+           first_join_at, last_leave_at, raw_sessions_count, merged_intervals_json,
+           total_merged_duration_sec, valid_window_duration_sec, required_window_duration_sec,
+           attendance_ratio_pct, late_minutes, calculated_status, final_status,
+           identity_match_method, is_manually_adjusted, calculated_at
+         ) VALUES (?, ?, 'sc_toan5_5a1', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`
+      );
+
+      roster.forEach((stu, idx) => {
+        if (idx === 0) {
+          // Học sinh đầu tiên: vào 3 lần (mất mạng vào lại) -> 3 khoảng rời nhau
+          const s1Start = vnIso(new Date(startMs));
+          const s1End = vnIso(new Date(startMs + 12 * 60000));
+          const s2Start = vnIso(new Date(startMs + 14 * 60000));
+          const s2End = vnIso(new Date(startMs + 24 * 60000));
+          const s3Start = vnIso(new Date(startMs + 25 * 60000));
+          const s3End = vnIso(new Date(endMs));
+          insPart.run(`vps_${reviewSession.session_id}_${idx}_1`, `sk_${reviewSession.session_id}_${idx}_1`, reviewSession.session_id, roomId, `zp_${stu.code}_1`, `reg_${stu.code}`, stu.email, stu.full_name, stu.id, 'VERIFIED_EMAIL', s1Start, s1End, 720, 'Zoom Desktop (Windows)', nowIso, nowIso);
+          insPart.run(`vps_${reviewSession.session_id}_${idx}_2`, `sk_${reviewSession.session_id}_${idx}_2`, reviewSession.session_id, roomId, `zp_${stu.code}_2`, `reg_${stu.code}`, stu.email, stu.full_name, stu.id, 'VERIFIED_EMAIL', s2Start, s2End, 600, 'Zoom Desktop (Windows)', nowIso, nowIso);
+          insPart.run(`vps_${reviewSession.session_id}_${idx}_3`, `sk_${reviewSession.session_id}_${idx}_3`, reviewSession.session_id, roomId, `zp_${stu.code}_3`, `reg_${stu.code}`, stu.email, stu.full_name, stu.id, 'VERIFIED_EMAIL', s3Start, s3End, 600, 'Zoom Mobile (iOS)', nowIso, nowIso);
+          const validSec = 720 + 600 + 600; // 1920s / 2100s = 91.4%
+          const pct = Math.round((validSec / windowSec) * 1000) / 10;
+          insCalc.run(
+            `vac_${reviewSession.session_id}_${stu.id}`,
+            reviewSession.session_id,
+            stu.id,
+            s1Start,
+            s3End,
+            3,
+            JSON.stringify([
+              { start_at: s1Start, end_at: s1End, durationSec: 720 },
+              { start_at: s2Start, end_at: s2End, durationSec: 600 },
+              { start_at: s3Start, end_at: s3End, durationSec: 600 },
+            ]),
+            validSec,
+            validSec,
+            windowSec,
+            pct,
+            0,
+            'PRESENT',
+            'PRESENT',
+            'VERIFIED_EMAIL',
+            nowIso
+          );
+        } else if (idx === 1) {
+          // Học sinh thứ 2: vào muộn 12 phút nhưng học đến hết giờ -> LATE
+          const jAt = vnIso(new Date(startMs + 12 * 60000));
+          const lAt = vnIso(new Date(endMs));
+          const dur = Math.max(60, Math.round((endMs - (startMs + 12 * 60000)) / 1000));
+          const pct = Math.round((dur / windowSec) * 1000) / 10;
+          insPart.run(`vps_${reviewSession.session_id}_${idx}_1`, `sk_${reviewSession.session_id}_${idx}_1`, reviewSession.session_id, roomId, `zp_${stu.code}_1`, `reg_${stu.code}`, stu.email, stu.full_name, stu.id, 'VERIFIED_EMAIL', jAt, lAt, dur, 'Zoom Web Client', nowIso, nowIso);
+          insCalc.run(
+            `vac_${reviewSession.session_id}_${stu.id}`,
+            reviewSession.session_id,
+            stu.id,
+            jAt,
+            lAt,
+            1,
+            JSON.stringify([{ start_at: jAt, end_at: lAt, durationSec: dur }]),
+            dur,
+            dur,
+            windowSec,
+            pct,
+            12,
+            'LATE',
+            'LATE',
+            'VERIFIED_EMAIL',
+            nowIso
+          );
+        } else if (idx === 2) {
+          // Học sinh thứ 3: chỉ tham gia 10 phút rồi thoát -> PARTIAL
+          const jAt = vnIso(new Date(startMs + 2 * 60000));
+          const lAt = vnIso(new Date(startMs + 12 * 60000));
+          const dur = 600;
+          const pct = Math.round((dur / windowSec) * 1000) / 10;
+          insPart.run(`vps_${reviewSession.session_id}_${idx}_1`, `sk_${reviewSession.session_id}_${idx}_1`, reviewSession.session_id, roomId, `zp_${stu.code}_1`, `reg_${stu.code}`, stu.email, stu.full_name, stu.id, 'VERIFIED_EMAIL', jAt, lAt, dur, 'Zoom Desktop', nowIso, nowIso);
+          insCalc.run(
+            `vac_${reviewSession.session_id}_${stu.id}`,
+            reviewSession.session_id,
+            stu.id,
+            jAt,
+            lAt,
+            1,
+            JSON.stringify([{ start_at: jAt, end_at: lAt, durationSec: dur }]),
+            dur,
+            dur,
+            windowSec,
+            pct,
+            2,
+            'PARTIAL',
+            'PARTIAL',
+            'VERIFIED_EMAIL',
+            nowIso
+          );
+        } else if (idx === roster.length - 1) {
+          // Học sinh cuối danh sách: chưa đối chiếu vì vào bằng thiết bị ngoài không có email -> MANUAL_REVIEW
+          insCalc.run(
+            `vac_${reviewSession.session_id}_${stu.id}`,
+            reviewSession.session_id,
+            stu.id,
+            null,
+            null,
+            0,
+            '[]',
+            0,
+            0,
+            windowSec,
+            0,
+            0,
+            'MANUAL_REVIEW',
+            'MANUAL_REVIEW',
+            'NONE',
+            nowIso
+          );
+        } else {
+          // Các học sinh còn lại tham gia đầy đủ -> PRESENT
+          const jAt = vnIso(new Date(startMs + (idx % 4) * 60000));
+          const lAt = vnIso(new Date(endMs));
+          const dur = Math.max(60, Math.round((endMs - (startMs + (idx % 4) * 60000)) / 1000));
+          const pct = Math.round((dur / windowSec) * 1000) / 10;
+          insPart.run(`vps_${reviewSession.session_id}_${idx}_1`, `sk_${reviewSession.session_id}_${idx}_1`, reviewSession.session_id, roomId, `zp_${stu.code}_1`, `reg_${stu.code}`, stu.email, stu.full_name, stu.id, 'VERIFIED_EMAIL', jAt, lAt, dur, 'Zoom Desktop', nowIso, nowIso);
+          insCalc.run(
+            `vac_${reviewSession.session_id}_${stu.id}`,
+            reviewSession.session_id,
+            stu.id,
+            jAt,
+            lAt,
+            1,
+            JSON.stringify([{ start_at: jAt, end_at: lAt, durationSec: dur }]),
+            dur,
+            dur,
+            windowSec,
+            pct,
+            idx % 4,
+            'PRESENT',
+            'PRESENT',
+            'VERIFIED_EMAIL',
+            nowIso
+          );
+        }
+      });
+
+      // Thêm 1 người tham gia UNKNOWN (chỉ có display_name "iPad Phụ huynh (Chưa đăng nhập email)", không có email)
+      const unkJoin = vnIso(new Date(startMs + 3 * 60000));
+      const unkLeave = vnIso(new Date(endMs - 2 * 60000));
+      const unkDur = Math.max(60, Math.round((Date.parse(unkLeave) - Date.parse(unkJoin)) / 1000));
+      insPart.run(
+        `vps_${reviewSession.session_id}_unknown_1`,
+        `sk_${reviewSession.session_id}_unknown_1`,
+        reviewSession.session_id,
+        roomId,
+        'zp_guest_ipad_99',
+        null,
+        null,
+        'iPad Phụ huynh (Chưa đăng nhập email)',
+        null,
+        'UNKNOWN',
+        unkJoin,
+        unkLeave,
+        unkDur,
+        'iPadOS Zoom Client',
+        nowIso,
+        nowIso
+      );
+
+      db.prepare(
+        `INSERT OR IGNORE INTO virtual_sync_jobs (
+           id, session_id, virtual_room_id, provider, trigger_source, status, attempt_count,
+           participants_fetched, matched_students, unknown_participants, started_at, completed_at
+         ) VALUES (?, ?, ?, 'ZOOM', 'WEBHOOK_MEETING_ENDED', 'COMPLETED', 1, ?, ?, 1, ?, ?)`
+      ).run(
+        `vsj_${reviewSession.session_id}_1`,
+        reviewSession.session_id,
+        roomId,
+        roster.length,
+        roster.length - 1,
+        reviewSession.scheduled_end_at,
+        reviewSession.scheduled_end_at
+      );
+    }
+
+    // 3. Gắn phòng Zoom cho buổi học sắp tới của lớp 5A1 để Giảng viên & Học viên có thể bấm "Tham gia lớp học trực tuyến" ngay
+    const upcoming5a1 = db
+      .prepare(
+        `SELECT * FROM sessions
+         WHERE subject_class_id = 'sc_toan5_5a1'
+           AND session_status <> 'CANCELLED'
+           AND scheduled_end_at >= ?
+         ORDER BY scheduled_start_at ASC LIMIT 1`
+      )
+      .get(nowVnStr);
+
+    if (upcoming5a1) {
+      const roomId = 'vmr_5a1_upcoming';
+      const meetingId = '89512039944';
+      const joinUrl = `https://zoom.us/j/${meetingId}?pwd=lmsplus5a1live`;
+      const hostStartUrl = `https://zoom.us/s/${meetingId}?zak=host_zak_token_5a1_upcoming`;
+      db.prepare(
+        `INSERT OR IGNORE INTO virtual_meeting_rooms (
+           id, subject_class_id, session_id, provider, external_platform_name, creation_mode,
+           is_recurring_room, room_title, external_meeting_id, external_meeting_uuid, join_url,
+           encrypted_host_start_url, encrypted_passcode, scheduled_start_at, scheduled_end_at,
+           room_status, supports_auto_sync, provider_metadata_json, created_by, created_at, updated_at
+         ) VALUES (?, 'sc_toan5_5a1', ?, 'ZOOM', 'Zoom Meeting', 'AUTO_API', 1, ?, ?, ?, ?, ?, ?, ?, ?, 'SCHEDULED', 1, ?, 'usr_gv01', ?, ?)`
+      ).run(
+        roomId,
+        upcoming5a1.session_id,
+        `${upcoming5a1.session_title} (Zoom Trực tuyến)`,
+        meetingId,
+        'zm_uuid_5a1_upcoming_2026',
+        joinUrl,
+        encryptSecret(hostStartUrl),
+        encryptSecret('501888'),
+        upcoming5a1.scheduled_start_at,
+        upcoming5a1.scheduled_end_at,
+        JSON.stringify({ formatted_meeting_id: '895 1203 9944', waiting_room: false, auto_recording: 'cloud' }),
+        nowIso,
+        nowIso
+      );
+
+      db.prepare(
+        `UPDATE sessions SET
+           delivery_mode = 'ONLINE',
+           teaching_content = COALESCE(teaching_content, 'Bài giảng trực tuyến qua Zoom: Giải toán tỉ số phần trăm & luyện tập tương tác.'),
+           virtual_room_id = ?,
+           room_or_link = ?,
+           live_status = 'NOT_STARTED',
+           attendance_sync_status = 'IDLE'
+         WHERE session_id = ?`
+      ).run(roomId, 'Zoom · ID: 895 1203 9944', upcoming5a1.session_id);
+
+      db.prepare(`UPDATE subject_classes SET default_virtual_room_id = ? WHERE id = 'sc_toan5_5a1'`).run(roomId);
+    }
+
+    // 4. Gắn phòng Google Meet cho buổi học sắp tới của lớp 5A2
+    const upcoming5a2 = db
+      .prepare(
+        `SELECT * FROM sessions
+         WHERE subject_class_id = 'sc_toan5_5a2'
+           AND session_status <> 'CANCELLED'
+           AND scheduled_end_at >= ?
+         ORDER BY scheduled_start_at ASC LIMIT 1`
+      )
+      .get(nowVnStr);
+
+    if (upcoming5a2) {
+      const roomId = 'vmr_5a2_upcoming';
+      const meetCode = 'kxm-pqrs-tuv';
+      const joinUrl = `https://meet.google.com/${meetCode}`;
+      db.prepare(
+        `INSERT OR IGNORE INTO virtual_meeting_rooms (
+           id, subject_class_id, session_id, provider, external_platform_name, creation_mode,
+           is_recurring_room, room_title, external_meeting_id, external_meeting_uuid, join_url,
+           encrypted_host_start_url, encrypted_passcode, scheduled_start_at, scheduled_end_at,
+           room_status, supports_auto_sync, provider_metadata_json, created_by, created_at, updated_at
+         ) VALUES (?, 'sc_toan5_5a2', ?, 'GOOGLE_MEET', 'Google Meet', 'AUTO_API', 0, ?, ?, ?, ?, ?, NULL, ?, ?, 'SCHEDULED', 1, ?, 'gv_5002', ?, ?)`
+      ).run(
+        roomId,
+        upcoming5a2.session_id,
+        `${upcoming5a2.session_title} (Google Meet)`,
+        meetCode,
+        'spaces/kxm-pqrs-tuv',
+        joinUrl,
+        encryptSecret(`${joinUrl}?hs=122&authuser=vankhoa.gv@lmsplus.edu.vn`),
+        upcoming5a2.scheduled_start_at,
+        upcoming5a2.scheduled_end_at,
+        JSON.stringify({ space_name: 'spaces/kxm-pqrs-tuv', access_type: 'TRUSTED' }),
+        nowIso,
+        nowIso
+      );
+
+      db.prepare(
+        `UPDATE sessions SET
+           delivery_mode = 'HYBRID',
+           teaching_content = COALESCE(teaching_content, 'Học kết hợp tại Phòng 5A2 và trực tuyến qua Google Meet.'),
+           virtual_room_id = ?,
+           room_or_link = ?,
+           live_status = 'NOT_STARTED',
+           attendance_sync_status = 'IDLE'
+         WHERE session_id = ?`
+      ).run(roomId, `Google Meet · ${meetCode}`, upcoming5a2.session_id);
+    }
+
+    db.prepare('INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)').run(VIRTUAL_SEED_MARKER, nowIso);
     db.exec('COMMIT');
   } catch (err) {
     db.exec('ROLLBACK');

@@ -6,6 +6,9 @@ import { Badge, fmtDate, fmtTime, fmtWeekday } from '../ui';
 export const attendanceLink = (s: Pick<SessionSummary, 'class_id' | 'id'>) =>
   `/teaching/classes/${s.class_id}/attendance?session=${encodeURIComponent(s.id)}`;
 
+export const virtualSessionLink = (s: Pick<SessionSummary, 'class_id' | 'id'>) =>
+  `/teaching/classes/${s.class_id}/sessions/${encodeURIComponent(s.id)}/live`;
+
 /** Một dòng buổi học: thời gian, lớp, nội dung, trạng thái điểm danh + thao tác nhanh. */
 export const SessionRow: React.FC<{ s: SessionSummary; showClass?: boolean; showDate?: boolean; actions?: React.ReactNode; classLink?: boolean }> = ({
   s,
@@ -21,20 +24,26 @@ export const SessionRow: React.FC<{ s: SessionSummary; showClass?: boolean; show
         {showDate && <span className="t-sub">{fmtWeekday(s.start_at)}, {fmtDate(s.start_at)}</span>}
       </span>
       <span style={{ minWidth: 0 }}>
-        <strong>
-          {showClass &&
-            (classLink ? (
-              <Link className="t-row-link" to={`/teaching/classes/${s.class_id}`}>
-                Lớp {s.class_code}
-              </Link>
-            ) : (
-              <>Lớp {s.class_code}</>
-            ))}
-          {showClass ? ' · ' : ''}
-          {s.title}
+        <strong style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <span>
+            {showClass &&
+              (classLink ? (
+                <Link className="t-row-link" to={`/teaching/classes/${s.class_id}`}>
+                  Lớp {s.class_code}
+                </Link>
+              ) : (
+                <>Lớp {s.class_code}</>
+              ))}
+            {showClass ? ' · ' : ''}
+            {s.title}
+          </span>
+          {s.virtual_room && <Badge kind="virtualProvider" value={s.virtual_room.provider} />}
+          {s.live_status === 'LIVE' && <Badge kind="liveStatus" value="LIVE" />}
         </strong>
         <span className="t-sub">
-          {s.room_or_link || 'Chưa có phòng học'}
+          {s.virtual_room
+            ? `${s.virtual_room.room_title}${s.virtual_room.external_meeting_id ? ` · ID: ${s.virtual_room.external_meeting_id}` : ''}`
+            : s.room_or_link || 'Chưa có phòng học'}
           {s.session_status === 'CANCELLED' && s.cancel_reason ? ` · Lý do hủy: ${s.cancel_reason}` : ''}
         </span>
       </span>
@@ -47,10 +56,19 @@ export const SessionRow: React.FC<{ s: SessionSummary; showClass?: boolean; show
         </span>
       ) : null}
       {actions ??
-        (s.session_status !== 'CANCELLED' && s.attendance_state !== 'NOT_STARTED' ? (
-          <Link className={`t-btn t-btn--small ${s.attendance_state === 'NEEDS_ATTENDANCE' ? 't-btn--primary' : ''}`} to={attendanceLink(s)}>
-            {s.attendance_state === 'NEEDS_ATTENDANCE' ? 'Điểm danh ngay' : 'Xem điểm danh'}
-          </Link>
+        (s.session_status !== 'CANCELLED' ? (
+          <>
+            {classLink && (
+              <Link className="t-btn t-btn--small" to={virtualSessionLink(s)}>
+                {s.virtual_room ? 'Phòng trực tuyến' : 'Tạo phòng online'}
+              </Link>
+            )}
+            {s.attendance_state !== 'NOT_STARTED' && (
+              <Link className={`t-btn t-btn--small ${s.attendance_state === 'NEEDS_ATTENDANCE' ? 't-btn--primary' : ''}`} to={attendanceLink(s)}>
+                {s.attendance_state === 'NEEDS_ATTENDANCE' ? 'Điểm danh ngay' : 'Xem điểm danh'}
+              </Link>
+            )}
+          </>
         ) : null)}
     </div>
   </div>

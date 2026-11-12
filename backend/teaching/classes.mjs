@@ -13,6 +13,14 @@ import {
   compareVietnameseName,
 } from './http.mjs';
 import { getAttendancePolicy, rateFromCounts } from './attendance.mjs';
+import { virtualRoomSummaryDto } from './virtualClassroom.mjs';
+import {
+  VIRTUAL_PROVIDERS,
+  EXTERNAL_NO_SYNC_NOTICE,
+  encryptSecret,
+  decryptJsonCredentials,
+  createProviderAdapter,
+} from './virtualProviders.mjs';
 
 const CLASS_CODE_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$/;
 
@@ -70,7 +78,9 @@ function classCounters(db, cls) {
     .get(cls.id);
   const next = db
     .prepare(
-      `SELECT session_id, session_title, scheduled_start_at, scheduled_end_at, room_or_link FROM sessions
+      `SELECT session_id, session_title, scheduled_start_at, scheduled_end_at, room_or_link,
+              delivery_mode, virtual_room_id, live_status, attendance_sync_status
+       FROM sessions
        WHERE subject_class_id = ? AND session_status <> 'CANCELLED' AND scheduled_end_at >= ?
        ORDER BY scheduled_start_at LIMIT 1`
     )
@@ -84,7 +94,7 @@ function classCounters(db, cls) {
       { PRESENT: agg.p || 0, LATE: agg.l || 0, EXCUSED_ABSENCE: agg.e || 0, UNEXCUSED_ABSENCE: agg.a || 0 },
       getAttendancePolicy(db)
     ),
-    next_session: next || null,
+    next_session: next ? { ...next, virtual_room: virtualRoomSummaryDto(db, next) } : null,
   };
 }
 
@@ -183,6 +193,13 @@ function sessionDto(db, s, rosterSize = null) {
     confirmation_deadline_at: s.confirmation_deadline_at,
     confirmed_at: s.confirmed_at,
     is_late_confirmation: Boolean(s.is_late_confirmation),
+    delivery_mode: s.delivery_mode || 'OFFLINE',
+    teaching_content: s.teaching_content || '',
+    live_status: s.live_status || 'NOT_STARTED',
+    live_started_at: s.live_started_at || null,
+    live_ended_at: s.live_ended_at || null,
+    attendance_sync_status: s.attendance_sync_status || 'IDLE',
+    virtual_room: virtualRoomSummaryDto(db, s),
   };
 }
 
@@ -578,7 +595,11 @@ export function registerClassRoutes(route) {
     const startTime = timeField(body, 'start_time', { label: 'giờ bắt đầu' });
     const endTime = timeField(body, 'end_time', { label: 'giờ kết thúc' });
     if (endTime <= startTime) fail(422, 'VALIDATION_ERROR', 'Giờ kết thúc phải sau giờ bắt đầu.', { field: 'end_time' });
-    const title = text(body, 'title', { max: 200, label: 'nội dung buổi học' });
+    const title = text(body, 'title', { max: 200, label: 'tên buổi học' });
+    const teachingContent = text(body, 'teaching_content', { max: 2000, label: 'nội dung giảng dạy' });
+    const deliveryMode = body.delivery_mode
+      ? oneOf(body, 'delivery_mode', DELIVERY_MODES, { fallback: cls.delivery_mode || 'OFFLINE', label: 'hình thức học' })
+      : cls.delivery_mode || 'OFFLINE';
     const room = text(body, 'room_or_link', { max: 300, label: 'phòng học / đường dẫn' }) || cls.room || null;
     let dates = [];
     if (body.recurrence) {
@@ -600,7 +621,7 @@ export function registerClassRoutes(route) {
     const created = [];
     const skipped = [];
     tx(db, () => {
-      dates.forEach((d, i) => {
+      dates.forEach((d) => {
         const startAt = vnDateTime(d, startTime);
         if (db.prepare('SELECT 1 FROM sessions WHERE subject_class_id = ? AND scheduled_start_at = ?').get(cls.id, startAt)) {
           skipped.push(d);
@@ -618,19 +639,154 @@ export function registerClassRoutes(route) {
           instructor_id: instructor ? instructor.id : '',
           instructor_name: instructor ? instructor.full_name : '',
           room_or_link: room,
+          delivery_mode: deliveryMode,
+          teaching_content: teachingContent || null,
           created_by: user.id,
         });
         created.push(id);
       });
     });
-    log('INFO', `[teaching] ${created.length} session(s) created for ${cls.code} by ${user.id}`);
-    return [201, { created_count: created.length, skipped_dates: skipped, created_ids: created }];
+
+    // Nếu không có cấu hình phòng trực tuyến đi kèm, trả về đồng bộ ngay lập tức
+    if (!created.length || !['ONLINE', 'HYBRID'].includes(deliveryMode) || !body.virtual_room_config || typeof body.virtual_room_config !== 'object') {
+      log('INFO', `[teaching] ${created.length} session(s) created for ${cls.code} by ${user.id}`);
+      return [201, { created_count: created.length, skipped_dates: skipped, created_ids: created, virtual_room_id: null }];
+    }
+
+    return (async () => {
+      const vcfg = body.virtual_room_config;
+      const roomOption = String(vcfg.room_option || 'CREATE_NEW').toUpperCase();
+      let attachedRoomId = null;
+
+      if (roomOption === 'REUSE_EXISTING' && vcfg.existing_room_id) {
+        const existingRoom = db
+          .prepare('SELECT * FROM virtual_meeting_rooms WHERE id = ? AND subject_class_id = ?')
+          .get(String(vcfg.existing_room_id).trim(), cls.id);
+        if (!existingRoom) fail(404, 'VIRTUAL_ROOM_NOT_FOUND', 'Không tìm thấy phòng trực tuyến đã chọn trong lớp.');
+        tx(db, () => {
+          for (const sid of created) {
+            db.prepare('UPDATE sessions SET virtual_room_id = ?, room_or_link = ? WHERE session_id = ?')
+              .run(existingRoom.id, existingRoom.join_url, sid);
+          }
+        });
+        attachedRoomId = existingRoom.id;
+      } else {
+        const provider = oneOf(vcfg, 'provider', VIRTUAL_PROVIDERS, { fallback: 'ZOOM', label: 'nền tảng họp trực tuyến' });
+        const isRecurring = Boolean(vcfg.is_recurring || roomOption === 'RECURRING_ROOM' || created.length > 1);
+        const firstSession = db.prepare('SELECT * FROM sessions WHERE session_id = ?').get(created[0]);
+        const durationMinutes = Math.max(
+          15,
+          Math.round((Date.parse(firstSession.scheduled_end_at) - Date.parse(firstSession.scheduled_start_at)) / 60000)
+        );
+        const roomTitle = text(vcfg, 'room_title', { max: 200, label: 'tên phòng học' }) || `${cls.code} — ${firstSession.session_title}`;
+        const passcode = text(vcfg, 'passcode', { max: 40, label: 'mật khẩu phòng' }) || null;
+        const now = nowIso();
+        const roomId = `vmr_${crypto.randomBytes(6).toString('hex')}`;
+
+        if (provider === 'EXTERNAL' || vcfg.creation_mode === 'MANUAL_LINK') {
+          const joinUrl = text(vcfg, 'join_url', { required: true, max: 500, label: 'đường dẫn phòng học (Meeting URL)' });
+          if (!/^https:\/\//i.test(joinUrl)) {
+            fail(422, 'INVALID_MEETING_URL', 'Đường dẫn phòng học phải bắt đầu bằng https://.', { field: 'join_url' });
+          }
+          const extId = text(vcfg, 'external_meeting_id', { max: 80, label: 'mã phòng' }) || null;
+          const extPlatformName = text(vcfg, 'external_platform_name', { max: 100, label: 'tên nền tảng' }) ||
+            (provider === 'ZOOM' ? 'Zoom Meeting' : provider === 'GOOGLE_MEET' ? 'Google Meet' : 'Microsoft Teams / Nền tảng ngoài');
+          const supportsSync = provider !== 'EXTERNAL' && Boolean(extId) && Boolean(vcfg.supports_auto_sync);
+          tx(db, () => {
+            db.prepare(
+              `INSERT INTO virtual_meeting_rooms (
+                 id, subject_class_id, session_id, provider, external_platform_name, creation_mode,
+                 is_recurring_room, room_title, external_meeting_id, join_url,
+                 encrypted_host_start_url, encrypted_passcode, scheduled_start_at, scheduled_end_at,
+                 room_status, supports_auto_sync, provider_metadata_json, created_by, created_at, updated_at
+               ) VALUES (?, ?, ?, ?, ?, 'MANUAL_LINK', ?, ?, ?, ?, NULL, ?, ?, ?, 'SCHEDULED', ?, ?, ?, ?, ?)`
+            ).run(
+              roomId,
+              cls.id,
+              created[0],
+              provider,
+              extPlatformName,
+              isRecurring ? 1 : 0,
+              roomTitle,
+              extId ? extId.replace(/\s+/g, '') : null,
+              joinUrl,
+              passcode ? encryptSecret(passcode) : null,
+              firstSession.scheduled_start_at,
+              firstSession.scheduled_end_at,
+              supportsSync ? 1 : 0,
+              JSON.stringify({ mode: 'MANUAL_LINK', platform_name: extPlatformName, sync_notice: supportsSync ? null : EXTERNAL_NO_SYNC_NOTICE }),
+              user.id,
+              now,
+              now
+            );
+            for (const sid of created) {
+              db.prepare('UPDATE sessions SET virtual_room_id = ?, room_or_link = ? WHERE session_id = ?').run(roomId, joinUrl, sid);
+            }
+            if (isRecurring) {
+              db.prepare('UPDATE subject_classes SET default_virtual_room_id = ? WHERE id = ?').run(roomId, cls.id);
+            }
+          });
+          attachedRoomId = roomId;
+        } else {
+          const adapter = createProviderAdapter(provider, { db, log });
+          const meetingData = await adapter.createMeeting({
+            topic: roomTitle,
+            startTimeIso: firstSession.scheduled_start_at,
+            durationMinutes,
+            passcode,
+            isRecurring,
+          });
+          tx(db, () => {
+            db.prepare(
+              `INSERT INTO virtual_meeting_rooms (
+                 id, subject_class_id, session_id, provider, external_platform_name, creation_mode,
+                 is_recurring_room, room_title, external_meeting_id, external_meeting_uuid, join_url,
+                 encrypted_host_start_url, encrypted_passcode, scheduled_start_at, scheduled_end_at,
+                 room_status, supports_auto_sync, provider_metadata_json, created_by, created_at, updated_at
+               ) VALUES (?, ?, ?, ?, ?, 'AUTO_API', ?, ?, ?, ?, ?, ?, ?, ?, ?, 'SCHEDULED', ?, ?, ?, ?, ?)`
+            ).run(
+              roomId,
+              cls.id,
+              created[0],
+              provider,
+              provider === 'ZOOM' ? 'Zoom Meeting' : 'Google Meet',
+              isRecurring ? 1 : 0,
+              roomTitle,
+              meetingData.external_meeting_id,
+              meetingData.external_meeting_uuid,
+              meetingData.join_url,
+              meetingData.host_start_url ? encryptSecret(meetingData.host_start_url) : null,
+              meetingData.passcode ? encryptSecret(meetingData.passcode) : null,
+              firstSession.scheduled_start_at,
+              firstSession.scheduled_end_at,
+              meetingData.supports_auto_sync ? 1 : 0,
+              JSON.stringify(meetingData.provider_metadata || {}),
+              user.id,
+              now,
+              now
+            );
+            for (const sid of created) {
+              db.prepare('UPDATE sessions SET virtual_room_id = ?, room_or_link = ? WHERE session_id = ?').run(roomId, meetingData.join_url, sid);
+            }
+            if (isRecurring) {
+              db.prepare('UPDATE subject_classes SET default_virtual_room_id = ? WHERE id = ?').run(roomId, cls.id);
+            }
+          });
+          attachedRoomId = roomId;
+        }
+      }
+
+      log('INFO', `[teaching] ${created.length} session(s) created for ${cls.code} with virtual room ${attachedRoomId} by ${user.id}`);
+      return [201, { created_count: created.length, skipped_dates: skipped, created_ids: created, virtual_room_id: attachedRoomId }];
+    })();
   });
 
   route('PATCH', '/sessions/:id', ({ db, user, body, params }) => {
     const { session } = requireSession(db, user, params.id, 'can_manage_sessions');
     const f = {};
     if ('title' in body) f.session_title = text(body, 'title', { required: true, max: 200, label: 'nội dung buổi học' });
+    if ('teaching_content' in body) f.teaching_content = text(body, 'teaching_content', { max: 2000, label: 'nội dung giảng dạy chi tiết' });
+    if ('delivery_mode' in body) f.delivery_mode = oneOf(body, 'delivery_mode', DELIVERY_MODES, { required: true, label: 'hình thức học' });
     if ('room_or_link' in body) f.room_or_link = text(body, 'room_or_link', { max: 300, label: 'phòng học / đường dẫn' });
     if ('date' in body || 'start_time' in body || 'end_time' in body) {
       if (session.attendance_saved_at) fail(409, 'ATTENDANCE_EXISTS', 'Buổi học đã có dữ liệu điểm danh, không thể đổi thời gian.');
@@ -644,6 +800,7 @@ export function registerClassRoutes(route) {
       f.actual_end_at = f.scheduled_end_at;
       f.confirmation_deadline_at = vnIso(new Date(Date.parse(f.scheduled_end_at) + 24 * 3600 * 1000));
     }
+    // Chú ý: Không tự động tạo lại hay xóa virtual_room_id khi giảng viên chỉ chỉnh sửa tên/nội dung buổi học.
     const keys = Object.keys(f);
     if (keys.length) db.prepare(`UPDATE sessions SET ${keys.map((k) => `${k} = ?`).join(', ')} WHERE session_id = ?`).run(...keys.map((k) => f[k]), session.session_id);
     return sessionDto(db, db.prepare('SELECT * FROM sessions WHERE session_id = ?').get(session.session_id));

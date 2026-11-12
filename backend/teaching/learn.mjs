@@ -16,6 +16,7 @@ import {
   submitVideoMarkerAnswer,
 } from './studio.mjs';
 import { safeJson } from './scope.mjs';
+import { virtualRoomSummaryDto } from './virtualClassroom.mjs';
 
 function requireEnrollment(db, user, classId) {
   const cls = db.prepare('SELECT * FROM subject_classes WHERE id = ?').get(classId);
@@ -77,8 +78,13 @@ export function registerLearnRoutes(route, { jwtSecret = 'lmsplus-production-gra
         const prog = studentProgress(db, user.id, cls.id);
         const done = lessons.filter((l) => prog[l.id]?.status === 'COMPLETED').length;
         const next = db
-          .prepare(`SELECT session_id, session_title, scheduled_start_at, scheduled_end_at, room_or_link FROM sessions
-                    WHERE subject_class_id = ? AND session_status <> 'CANCELLED' AND scheduled_end_at >= ? ORDER BY scheduled_start_at LIMIT 1`)
+          .prepare(
+            `SELECT session_id, session_title, scheduled_start_at, scheduled_end_at, room_or_link,
+                    delivery_mode, virtual_room_id, live_status, attendance_sync_status
+             FROM sessions
+             WHERE subject_class_id = ? AND session_status <> 'CANCELLED' AND scheduled_end_at >= ?
+             ORDER BY scheduled_start_at LIMIT 1`
+          )
           .get(cls.id, now);
         const instructor = db
           .prepare(`SELECT u.full_name FROM teaching_staff_assignments t JOIN users u ON u.id = t.user_id
@@ -94,7 +100,7 @@ export function registerLearnRoutes(route, { jwtSecret = 'lmsplus-production-gra
           course: course ? { id: course.id, title: course.title, status: course.status, thumbnail_url: course.thumbnail_url || '' } : null,
           progress: { completed: done, total: lessons.length, pct: lessons.length ? Math.round((done / lessons.length) * 100) : 0 },
           resume_lesson_id: resume ? resume.id : null,
-          next_session: next || null,
+          next_session: next ? { ...next, virtual_room: virtualRoomSummaryDto(db, next) } : null,
         };
       }),
     };
@@ -121,11 +127,32 @@ export function registerLearnRoutes(route, { jwtSecret = 'lmsplus-production-gra
       : [];
     const all = chapters.flatMap((c) => c.lessons);
     const done = all.filter((l) => l.progress_status === 'COMPLETED').length;
+    const now = nowVn();
+    const upcomingSessions = db
+      .prepare(
+        `SELECT * FROM sessions
+         WHERE subject_class_id = ? AND session_status <> 'CANCELLED' AND scheduled_end_at >= ?
+         ORDER BY scheduled_start_at ASC LIMIT 6`
+      )
+      .all(cls.id, now)
+      .map((s) => ({
+        id: s.session_id,
+        title: s.session_title,
+        teaching_content: s.teaching_content || '',
+        start_at: s.scheduled_start_at,
+        end_at: s.scheduled_end_at,
+        room_or_link: s.room_or_link || '',
+        delivery_mode: s.delivery_mode || 'OFFLINE',
+        live_status: s.live_status || 'NOT_STARTED',
+        instructor_name: s.actual_instructor_name || s.scheduled_instructor_name || cls.instructor_name || '',
+        virtual_room: virtualRoomSummaryDto(db, s),
+      }));
     return {
-      class: { id: cls.id, code: cls.code, title: cls.title, room: cls.room || '', schedule_text: cls.schedule_text || '' },
+      class: { id: cls.id, code: cls.code, title: cls.title, room: cls.room || '', schedule_text: cls.schedule_text || '', instructor_name: cls.instructor_name || '' },
       course: course ? { id: course.id, title: course.title, description: course.description || '', objectives: course.objectives || '', status: course.status } : null,
       content_available: Boolean(available),
       chapters,
+      upcoming_sessions: upcomingSessions,
       progress: { completed: done, total: all.length, pct: all.length ? Math.round((done / all.length) * 100) : 0 },
     };
   });

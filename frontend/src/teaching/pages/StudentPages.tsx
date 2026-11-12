@@ -3,7 +3,7 @@ import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { LearnLesson, saveBlob, teachingApi } from '../api';
 import { BlockList } from '../BlockRenderer';
 import {
-  Badge, Btn, Card, EmptyState, ErrorState, Loading, PageHeader, ProgressMeter, SmartImage, StatCard, Tabs, Tone,
+  Badge, Btn, Card, EmptyState, ErrorState, Loading, Modal, PageHeader, ProgressMeter, SmartImage, StatCard, Tabs, Tone,
   displayClassTitle, errMsg, fmtDate, fmtDateTime, fmtPct, fmtTime, fmtWeekday, label, useAsync, useToast,
 } from '../ui';
 
@@ -14,6 +14,42 @@ export const StudentHomePage: React.FC = () => {
   const classesReq = useAsync(() => teachingApi.learnClasses(), []);
   const [code, setCode] = useState('');
   const [checkingIn, setCheckingIn] = useState(false);
+  const [joiningSessionId, setJoiningSessionId] = useState<string | null>(null);
+  const [joinResult, setJoinResult] = useState<{
+    sessionTitle: string;
+    join_url: string;
+    provider: string;
+    meeting_code: string | null;
+    passcode: string | null;
+    lms_join_token: string | null;
+  } | null>(null);
+
+  const handleJoinOnline = async (sessionId: string, sessionTitle: string) => {
+    setJoiningSessionId(sessionId);
+    try {
+      const res = await teachingApi.joinVirtualRoom(sessionId);
+      setJoinResult({
+        sessionTitle,
+        join_url: res.join_url,
+        provider: res.provider,
+        meeting_code: res.external_meeting_id,
+        passcode: res.passcode,
+        lms_join_token: res.lms_join_token,
+      });
+      toast({
+        tone: 'success',
+        title: 'Đã ghi nhận tham gia lớp học trực tuyến',
+        detail: `Hệ thống đã gắn mã định danh điểm danh tự động cho tài khoản của bạn.`,
+      });
+      if (res.join_url && typeof window !== 'undefined') {
+        window.open(res.join_url, '_blank', 'noopener,noreferrer');
+      }
+    } catch (err) {
+      toast({ tone: 'error', title: 'Không thể vào phòng trực tuyến', detail: errMsg(err) });
+    } finally {
+      setJoiningSessionId(null);
+    }
+  };
 
   const submitCheckIn = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -100,9 +136,34 @@ export const StudentHomePage: React.FC = () => {
                     <span className="t-sub">Giáo trình đang được giảng viên cập nhật</span>
                   )}
                   {cls.next_session && (
-                    <div className="t-notice" style={{ fontSize: 13 }}>
-                      <strong>Buổi học tới:</strong> {fmtDateTime(cls.next_session.scheduled_start_at)}
-                      {cls.next_session.room_or_link ? ` · ${cls.next_session.room_or_link}` : ''}
+                    <div className="t-notice" style={{ fontSize: 13, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                        <strong>Buổi học tới: {cls.next_session.session_title}</strong>
+                        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                          {cls.next_session.virtual_room && (
+                            <Badge kind="virtualProvider" value={cls.next_session.virtual_room.provider} />
+                          )}
+                          {cls.next_session.live_status && (
+                            <Badge kind="liveStatus" value={cls.next_session.live_status} />
+                          )}
+                        </div>
+                      </div>
+                      <span className="tabular-nums">
+                        {fmtDateTime(cls.next_session.scheduled_start_at)}
+                        {cls.next_session.room_or_link ? ` · ${cls.next_session.room_or_link}` : ''}
+                      </span>
+                      {cls.next_session.virtual_room && (
+                        <div>
+                          <Btn
+                            small
+                            variant="primary"
+                            loading={joiningSessionId === cls.next_session.session_id}
+                            onClick={() => handleJoinOnline(cls.next_session!.session_id, cls.next_session!.session_title)}
+                          >
+                            Tham gia lớp học trực tuyến
+                          </Btn>
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
@@ -121,6 +182,47 @@ export const StudentHomePage: React.FC = () => {
           </div>
         )
       )}
+
+      {joinResult && (
+        <Modal
+          title={`Vào phòng trực tuyến: ${joinResult.sessionTitle}`}
+          onClose={() => setJoinResult(null)}
+          width={520}
+          footer={
+            <>
+              <Btn variant="ghost" onClick={() => setJoinResult(null)}>Đóng</Btn>
+              <a
+                href={joinResult.join_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="t-btn t-btn--primary"
+              >
+                Mở phòng họp ({label('virtualProvider', joinResult.provider)})
+              </a>
+            </>
+          }
+        >
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <div className="t-notice">
+              Hệ thống đã ghi nhận lượt tham gia của bạn và gắn mã định danh điểm danh tự động.
+            </div>
+            <dl className="t-dl">
+              <dt>Nền tảng</dt>
+              <dd><Badge kind="virtualProvider" value={joinResult.provider} /></dd>
+              <dt>Mã phòng (Meeting ID)</dt>
+              <dd className="tabular-nums" style={{ fontFamily: 'var(--font-mono)', fontWeight: 700 }}>{joinResult.meeting_code || '—'}</dd>
+              <dt>Mật khẩu (Passcode)</dt>
+              <dd className="tabular-nums" style={{ fontFamily: 'var(--font-mono)', fontWeight: 700 }}>{joinResult.passcode || 'Không yêu cầu'}</dd>
+              <dt>Link tham gia</dt>
+              <dd style={{ wordBreak: 'break-all' }}>
+                <a href={joinResult.join_url} target="_blank" rel="noopener noreferrer" className="t-row-link">
+                  {joinResult.join_url}
+                </a>
+              </dd>
+            </dl>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 };
@@ -130,7 +232,9 @@ export const StudentHomePage: React.FC = () => {
 export const StudentClassPage: React.FC = () => {
   const { classId = '' } = useParams();
   const [sp, setSp] = useSearchParams();
+  const toast = useToast();
   const tab = sp.get('tab') === 'attendance' ? 'attendance' : 'lessons';
+  const [joiningSessionId, setJoiningSessionId] = useState<string | null>(null);
 
   const detailReq = useAsync(() => teachingApi.learnClass(classId), [classId]);
   const attReq = useAsync(
@@ -142,6 +246,26 @@ export const StudentClassPage: React.FC = () => {
   if (detailReq.error || !detailReq.data) return <ErrorState error={detailReq.error} onRetry={detailReq.reload} />;
 
   const d = detailReq.data;
+
+  const handleJoinClassSession = async (sessionId: string) => {
+    setJoiningSessionId(sessionId);
+    try {
+      const res = await teachingApi.joinVirtualRoom(sessionId);
+      toast({
+        tone: 'success',
+        title: `Đã kết nối phòng học (${label('virtualProvider', res.provider)})`,
+        detail: `Đường dẫn: ${res.join_url}`,
+      });
+      if (res.join_url && typeof window !== 'undefined') {
+        window.open(res.join_url, '_blank', 'noopener,noreferrer');
+      }
+      detailReq.reload();
+    } catch (err) {
+      toast({ tone: 'error', title: 'Không thể tham gia phòng học', detail: errMsg(err) });
+    } finally {
+      setJoiningSessionId(null);
+    }
+  };
 
   return (
     <div className="t-page">
@@ -155,6 +279,51 @@ export const StudentClassPage: React.FC = () => {
           </>
         }
       />
+
+      {d.upcoming_sessions && d.upcoming_sessions.length > 0 && (
+        <Card title="Buổi học sắp tới & Phòng học trực tuyến">
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            {d.upcoming_sessions.map((s) => (
+              <div
+                key={s.id}
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  gap: 16,
+                  flexWrap: 'wrap',
+                  padding: '12px 16px',
+                  borderRadius: 'var(--radius-md)',
+                  border: '1px solid var(--border-subtle)',
+                  backgroundColor: 'var(--bg-surface-subtle)',
+                }}
+              >
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                    <strong>{s.title}</strong>
+                    {s.virtual_room && <Badge kind="virtualProvider" value={s.virtual_room.provider} />}
+                    {s.live_status && <Badge kind="liveStatus" value={s.live_status} />}
+                  </div>
+                  <span className="t-sub tabular-nums">
+                    {fmtWeekday(s.start_at)}, {fmtDate(s.start_at)} · {fmtTime(s.start_at)}–{fmtTime(s.end_at)}
+                    {s.virtual_room?.external_meeting_id ? ` · Mã phòng: ${s.virtual_room.external_meeting_id}` : s.room_or_link ? ` · ${s.room_or_link}` : ''}
+                  </span>
+                </div>
+                {s.virtual_room && (
+                  <Btn
+                    variant="primary"
+                    small
+                    loading={joiningSessionId === s.id}
+                    onClick={() => handleJoinClassSession(s.id)}
+                  >
+                    Tham gia lớp học trực tuyến
+                  </Btn>
+                )}
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
 
       {d.progress.total > 0 && (
         <Card>

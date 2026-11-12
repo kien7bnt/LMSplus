@@ -1,9 +1,9 @@
 import React, { useState } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import {
-  ClassDetail, ClassQuizAnalytics, EnrollResult, saveBlob, SessionSummary, teachingApi,
+  ClassDetail, ClassQuizAnalytics, DeliveryMode, EnrollResult, saveBlob, SessionSummary, teachingApi, VirtualProviderType,
 } from '../api';
-import { attendanceLink, SessionRow } from '../components/SessionRow';
+import { attendanceLink, SessionRow, virtualSessionLink } from '../components/SessionRow';
 import {
   Badge, Btn, Card, ConfirmDialog, EmptyState, ErrorState, Field, Loading, Modal, PageHeader,
   ProgressMeter, SearchInput, StatCard, Tabs, Tone,
@@ -669,10 +669,22 @@ const CourseContentSection: React.FC<{ cls: ClassDetail; onOpenEditClass: () => 
 const ScheduleTab: React.FC<{ cls: ClassDetail; onChanged: () => void }> = ({ cls, onChanged }) => {
   const toast = useToast();
   const sessReq = useAsync(() => teachingApi.sessions(cls.id), [cls.id]);
+  const existingRoomsReq = useAsync(() => teachingApi.classVirtualRooms(cls.id), [cls.id]);
   const [modalMode, setModalMode] = useState<null | 'single' | 'recurring' | SessionSummary>(null);
   const [cancelTarget, setCancelTarget] = useState<SessionSummary | null>(null);
 
   const [title, setTitle] = useState('');
+  const [teachingContent, setTeachingContent] = useState('');
+  const [deliveryMode, setDeliveryMode] = useState<DeliveryMode>(cls.delivery_mode || 'OFFLINE');
+  const [virtualAction, setVirtualAction] = useState<'NONE' | 'KEEP' | 'CREATE_NEW' | 'RECURRING_CLASS' | 'REUSE_EXISTING' | 'EXTERNAL_LINK'>('NONE');
+  const [provider, setProvider] = useState<VirtualProviderType>('ZOOM');
+  const [roomName, setRoomName] = useState('');
+  const [existingRoomId, setExistingRoomId] = useState('');
+  const [externalUrl, setExternalUrl] = useState('');
+  const [externalCode, setExternalCode] = useState('');
+  const [externalPasscode, setExternalPasscode] = useState('');
+  const [externalPlatformName, setExternalPlatformName] = useState('Microsoft Teams');
+
   const [date, setDate] = useState(todayVn());
   const [startDate, setStartDate] = useState(cls.start_date || todayVn());
   const [endDate, setEndDate] = useState(cls.end_date || todayVn(28));
@@ -685,6 +697,15 @@ const ScheduleTab: React.FC<{ cls: ClassDetail; onChanged: () => void }> = ({ cl
 
   const openCreate = (mode: 'single' | 'recurring') => {
     setTitle('');
+    setTeachingContent('');
+    setDeliveryMode(cls.delivery_mode || 'OFFLINE');
+    setVirtualAction(cls.delivery_mode === 'ONLINE' || cls.delivery_mode === 'HYBRID' ? 'CREATE_NEW' : 'NONE');
+    setProvider('ZOOM');
+    setRoomName(`${cls.code} — ${cls.title}`);
+    setExistingRoomId(existingRoomsReq.data?.items[0]?.id || '');
+    setExternalUrl('');
+    setExternalCode('');
+    setExternalPasscode('');
     setDate(todayVn());
     setStartDate(cls.start_date || todayVn());
     setEndDate(cls.end_date || todayVn(28));
@@ -697,6 +718,15 @@ const ScheduleTab: React.FC<{ cls: ClassDetail; onChanged: () => void }> = ({ cl
 
   const openEdit = (s: SessionSummary) => {
     setTitle(s.title);
+    setTeachingContent(s.teaching_content || '');
+    setDeliveryMode(s.delivery_mode || cls.delivery_mode || 'OFFLINE');
+    setVirtualAction(s.virtual_room ? 'KEEP' : 'NONE');
+    setProvider(s.virtual_room?.provider || 'ZOOM');
+    setRoomName(s.virtual_room?.room_title || s.title);
+    setExistingRoomId(s.virtual_room?.id || existingRoomsReq.data?.items[0]?.id || '');
+    setExternalUrl(s.virtual_room?.join_url || '');
+    setExternalCode(s.virtual_room?.external_meeting_id || '');
+    setExternalPasscode('');
     setDate(isoToDateInput(s.start_at));
     setStartTime(isoToTimeInput(s.start_at));
     setEndTime(isoToTimeInput(s.end_at));
@@ -705,27 +735,51 @@ const ScheduleTab: React.FC<{ cls: ClassDetail; onChanged: () => void }> = ({ cl
     setModalMode(s);
   };
 
+  const buildVirtualRoomConfig = () => {
+    if (deliveryMode === 'OFFLINE' || virtualAction === 'NONE' || virtualAction === 'KEEP') {
+      return undefined;
+    }
+    return {
+      mode: virtualAction,
+      provider: virtualAction === 'EXTERNAL_LINK' ? ('EXTERNAL' as const) : provider,
+      room_name: roomName.trim() || title.trim() || `${cls.code} — ${cls.title}`,
+      existing_room_id: virtualAction === 'REUSE_EXISTING' ? existingRoomId : undefined,
+      join_url: virtualAction === 'EXTERNAL_LINK' ? externalUrl.trim() : undefined,
+      meeting_code: virtualAction === 'EXTERNAL_LINK' ? externalCode.trim() : undefined,
+      passcode: externalPasscode.trim() || undefined,
+      external_platform_name: virtualAction === 'EXTERNAL_LINK' ? externalPlatformName.trim() : undefined,
+      is_recurring: virtualAction === 'RECURRING_CLASS',
+    };
+  };
+
   const submitSession = async (e: React.FormEvent) => {
     e.preventDefault();
     setFormErr(null);
     setBusy(true);
     try {
+      const virtualConfig = buildVirtualRoomConfig();
       if (modalMode === 'single') {
         await teachingApi.createSessions(cls.id, {
           title: title.trim(),
+          teaching_content: teachingContent.trim() || undefined,
+          delivery_mode: deliveryMode,
           date,
           start_time: startTime,
           end_time: endTime,
           room_or_link: room.trim(),
+          virtual_room_config: virtualConfig,
         });
         toast({ tone: 'success', title: 'Đã tạo buổi học mới' });
       } else if (modalMode === 'recurring') {
         const res = await teachingApi.createSessions(cls.id, {
           title: title.trim(),
+          teaching_content: teachingContent.trim() || undefined,
+          delivery_mode: deliveryMode,
           start_time: startTime,
           end_time: endTime,
           room_or_link: room.trim(),
           recurrence: { start_date: startDate, end_date: endDate, weekdays },
+          virtual_room_config: virtualConfig,
         });
         toast({
           tone: 'success',
@@ -735,6 +789,8 @@ const ScheduleTab: React.FC<{ cls: ClassDetail; onChanged: () => void }> = ({ cl
       } else if (modalMode) {
         const payload: Record<string, unknown> = {
           title: title.trim(),
+          teaching_content: teachingContent.trim(),
+          delivery_mode: deliveryMode,
           room_or_link: room.trim(),
         };
         if (!modalMode.attendance_saved_at) {
@@ -743,10 +799,14 @@ const ScheduleTab: React.FC<{ cls: ClassDetail; onChanged: () => void }> = ({ cl
           payload.end_time = endTime;
         }
         await teachingApi.updateSession(modalMode.id, payload);
+        if (virtualConfig) {
+          await teachingApi.createVirtualRoom(modalMode.id, virtualConfig);
+        }
         toast({ tone: 'success', title: 'Đã cập nhật buổi học' });
       }
       setModalMode(null);
       sessReq.reload();
+      existingRoomsReq.reload();
       onChanged();
     } catch (err) {
       setFormErr(errMsg(err));
@@ -757,12 +817,12 @@ const ScheduleTab: React.FC<{ cls: ClassDetail; onChanged: () => void }> = ({ cl
 
   return (
     <Card
-      title="Lịch các buổi học"
+      title="Lịch các buổi học & Phòng học trực tuyến"
       actions={
         cls.capabilities.can_manage_sessions && (
           <>
             <Btn small onClick={() => openCreate('recurring')}>+ Tạo lịch lặp theo tuần</Btn>
-            <Btn small variant="primary" onClick={() => openCreate('single')}>+ Thêm buổi học</Btn>
+            <Btn small variant="primary" onClick={() => openCreate('single')}>+ Tạo buổi học</Btn>
           </>
         )
       }
@@ -773,7 +833,7 @@ const ScheduleTab: React.FC<{ cls: ClassDetail; onChanged: () => void }> = ({ cl
         (sessReq.data?.items.length || 0) === 0 ? (
           <EmptyState
             title="Lớp chưa có buổi học nào"
-            text="Tạo từng buổi lẻ hoặc sinh tự động lịch học hàng tuần để bắt đầu điểm danh."
+            text="Tạo từng buổi lẻ hoặc sinh tự động lịch học hàng tuần để bắt đầu giảng dạy và điểm danh."
           />
         ) : (
           <div>
@@ -787,9 +847,14 @@ const ScheduleTab: React.FC<{ cls: ClassDetail; onChanged: () => void }> = ({ cl
                   <>
                     <Badge kind="attendanceState" value={s.attendance_state} />
                     {s.session_status !== 'CANCELLED' && (
-                      <Link className={`t-btn t-btn--small ${s.attendance_state === 'NEEDS_ATTENDANCE' ? 't-btn--primary' : ''}`} to={attendanceLink(s)}>
-                        Điểm danh
-                      </Link>
+                      <>
+                        <Link className="t-btn t-btn--small" to={virtualSessionLink(s)}>
+                          {s.virtual_room ? 'Phòng trực tuyến' : 'Tạo phòng online'}
+                        </Link>
+                        <Link className={`t-btn t-btn--small ${s.attendance_state === 'NEEDS_ATTENDANCE' ? 't-btn--primary' : ''}`} to={attendanceLink(s)}>
+                          Điểm danh
+                        </Link>
+                      </>
                     )}
                     {cls.capabilities.can_manage_sessions && s.session_status !== 'CANCELLED' && (
                       <>
@@ -826,23 +891,42 @@ const ScheduleTab: React.FC<{ cls: ClassDetail; onChanged: () => void }> = ({ cl
         <Modal
           title={
             modalMode === 'single'
-              ? 'Thêm buổi học'
+              ? 'Tạo buổi học'
               : modalMode === 'recurring'
               ? 'Tạo lịch buổi học lặp theo tuần'
               : 'Chỉnh sửa buổi học'
           }
           onClose={() => setModalMode(null)}
-          width={560}
+          width={640}
           footer={
             <>
               <Btn variant="ghost" onClick={() => setModalMode(null)} disabled={busy}>Hủy</Btn>
-              <Btn variant="primary" onClick={submitSession} loading={busy}>Lưu</Btn>
+              <Btn variant="primary" onClick={submitSession} loading={busy}>Lưu buổi học</Btn>
             </>
           }
         >
           <form onSubmit={submitSession} className="t-form-grid">
-            <Field label="Chủ đề / Nội dung buổi học" wide hint="Nếu để trống khi tạo mới, hệ thống tự đặt theo ngày học.">
-              <input className="t-input" value={title} maxLength={200} onChange={(e) => setTitle(e.target.value)} placeholder="vd: Chương 2 — Phép cộng số thập phân" />
+            <Field label="Lớp học">
+              <input className="t-input" value={`${cls.code} — ${cls.title}`} disabled />
+            </Field>
+            <Field label="Môn học & Giảng viên phụ trách">
+              <input
+                className="t-input"
+                value={`${cls.subject || 'Chưa gắn môn'} · ${cls.staff.map((st) => st.full_name).join(', ') || '—'}`}
+                disabled
+              />
+            </Field>
+            <Field label="Tên buổi học" wide hint="Nếu để trống khi tạo mới, hệ thống tự đặt theo ngày học.">
+              <input className="t-input" value={title} maxLength={200} onChange={(e) => setTitle(e.target.value)} placeholder="vd: Buổi 12 — Ôn tập trực tuyến Phân số & Số thập phân" />
+            </Field>
+            <Field label="Nội dung giảng dạy" wide>
+              <textarea
+                className="t-input"
+                rows={2}
+                value={teachingContent}
+                onChange={(e) => setTeachingContent(e.target.value)}
+                placeholder="Tóm tắt mục tiêu, học liệu và hoạt động chính trong buổi học…"
+              />
             </Field>
             {modalMode === 'recurring' ? (
               <>
@@ -906,9 +990,126 @@ const ScheduleTab: React.FC<{ cls: ClassDetail; onChanged: () => void }> = ({ cl
                 onChange={(e) => setEndTime(e.target.value)}
               />
             </Field>
-            <Field label="Phòng học / Đường dẫn trực tuyến" wide>
-              <input className="t-input" value={room} maxLength={300} onChange={(e) => setRoom(e.target.value)} />
+
+            <Field label="Hình thức học" required>
+              <select
+                className="t-input"
+                value={deliveryMode}
+                onChange={(e) => {
+                  const nextMode = e.target.value as DeliveryMode;
+                  setDeliveryMode(nextMode);
+                  if ((nextMode === 'ONLINE' || nextMode === 'HYBRID') && virtualAction === 'NONE') {
+                    setVirtualAction(typeof modalMode === 'object' && modalMode.virtual_room ? 'KEEP' : 'CREATE_NEW');
+                  }
+                }}
+              >
+                <option value="OFFLINE">Trực tiếp (Offline)</option>
+                <option value="ONLINE">Trực tuyến (Online)</option>
+                <option value="HYBRID">Kết hợp (Hybrid)</option>
+              </select>
             </Field>
+
+            <Field label="Phòng học vật lý / Ghi chú địa điểm">
+              <input className="t-input" value={room} maxLength={300} onChange={(e) => setRoom(e.target.value)} placeholder="vd: Phòng 5A1 - Dãy B" />
+            </Field>
+
+            {(deliveryMode === 'ONLINE' || deliveryMode === 'HYBRID') && (
+              <>
+                <Field
+                  label="Tùy chọn phòng học trực tuyến"
+                  wide
+                  hint={
+                    typeof modalMode === 'object' && modalMode.virtual_room
+                      ? 'Khi chỉ sửa tên hoặc nội dung buổi học, hệ thống giữ nguyên phòng đã tạo (không tự tạo phòng mới).'
+                      : undefined
+                  }
+                >
+                  <select
+                    className="t-input"
+                    value={virtualAction}
+                    onChange={(e) => setVirtualAction(e.target.value as typeof virtualAction)}
+                  >
+                    {typeof modalMode === 'object' && modalMode.virtual_room && (
+                      <option value="KEEP">
+                        Giữ nguyên phòng hiện tại ({label('virtualProvider', modalMode.virtual_room.provider)}: {modalMode.virtual_room.room_title})
+                      </option>
+                    )}
+                    <option value="CREATE_NEW">Tạo phòng mới tự động (Zoom / Google Meet)</option>
+                    <option value="RECURRING_CLASS">Sử dụng phòng cố định cho nhiều buổi của lớp</option>
+                    <option value="REUSE_EXISTING">Sử dụng phòng đã tạo trước đó</option>
+                    <option value="EXTERNAL_LINK">Nhập link phòng có sẵn bên ngoài</option>
+                    <option value="NONE">Thiết lập phòng sau</option>
+                  </select>
+                </Field>
+
+                {(virtualAction === 'CREATE_NEW' || virtualAction === 'RECURRING_CLASS') && (
+                  <>
+                    <Field label="Nền tảng họp trực tuyến" required>
+                      <select
+                        className="t-input"
+                        value={provider}
+                        onChange={(e) => setProvider(e.target.value as VirtualProviderType)}
+                      >
+                        <option value="ZOOM">Tạo phòng Zoom (REST API + Webhooks)</option>
+                        <option value="GOOGLE_MEET">Tạo phòng Google Meet (Spaces API)</option>
+                      </select>
+                    </Field>
+                    <Field label="Tên phòng trực tuyến">
+                      <input
+                        className="t-input"
+                        value={roomName}
+                        onChange={(e) => setRoomName(e.target.value)}
+                        placeholder={`${cls.code} — ${title || 'Buổi học trực tuyến'}`}
+                      />
+                    </Field>
+                  </>
+                )}
+
+                {virtualAction === 'REUSE_EXISTING' && (
+                  <Field label="Chọn phòng đã tạo của lớp" wide required>
+                    <select className="t-input" value={existingRoomId} onChange={(e) => setExistingRoomId(e.target.value)}>
+                      {(existingRoomsReq.data?.items || []).map((r) => (
+                        <option key={r.id} value={r.id}>
+                          [{label('virtualProvider', r.provider)}] {r.room_title} ({r.external_meeting_id || r.join_url})
+                        </option>
+                      ))}
+                    </select>
+                  </Field>
+                )}
+
+                {virtualAction === 'EXTERNAL_LINK' && (
+                  <>
+                    <div className="t-notice t-notice--warning t-field--wide">
+                      <strong>Chưa hỗ trợ đồng bộ điểm danh tự động với nền tảng này:</strong> Khi gắn link phòng bên ngoài không qua API, hệ thống sẽ không tự động đếm người tham gia hoặc tự động chốt điểm danh.
+                    </div>
+                    <Field label="Nền tảng">
+                      <input
+                        className="t-input"
+                        value={externalPlatformName}
+                        onChange={(e) => setExternalPlatformName(e.target.value)}
+                        placeholder="Microsoft Teams / Webex"
+                      />
+                    </Field>
+                    <Field label="Mã phòng (Meeting ID)">
+                      <input className="t-input tabular-nums" value={externalCode} onChange={(e) => setExternalCode(e.target.value)} />
+                    </Field>
+                    <Field label="Meeting URL" wide required>
+                      <input
+                        className="t-input"
+                        type="url"
+                        value={externalUrl}
+                        onChange={(e) => setExternalUrl(e.target.value)}
+                        placeholder="https://teams.microsoft.com/..."
+                      />
+                    </Field>
+                    <Field label="Mật khẩu phòng (nếu cần)" wide>
+                      <input className="t-input tabular-nums" value={externalPasscode} onChange={(e) => setExternalPasscode(e.target.value)} />
+                    </Field>
+                  </>
+                )}
+              </>
+            )}
+
             {formErr && <p className="t-field__error t-field--wide" role="alert">{formErr}</p>}
           </form>
         </Modal>
@@ -1084,9 +1285,14 @@ const AttendanceAndResultsTab: React.FC<{ cls: ClassDetail; mode: 'attendance' |
                 <>
                   <Badge kind="attendanceState" value={s.attendance_state} />
                   {s.session_status !== 'CANCELLED' && (
-                    <Link className={`t-btn t-btn--small ${s.attendance_state === 'NEEDS_ATTENDANCE' ? 't-btn--primary' : ''}`} to={attendanceLink(s)}>
-                      {s.attendance_state === 'NEEDS_ATTENDANCE' ? 'Điểm danh ngay' : 'Mở bảng điểm danh'}
-                    </Link>
+                    <>
+                      <Link className="t-btn t-btn--small" to={virtualSessionLink(s)}>
+                        Phòng trực tuyến
+                      </Link>
+                      <Link className={`t-btn t-btn--small ${s.attendance_state === 'NEEDS_ATTENDANCE' ? 't-btn--primary' : ''}`} to={attendanceLink(s)}>
+                        {s.attendance_state === 'NEEDS_ATTENDANCE' ? 'Điểm danh ngay' : 'Mở bảng điểm danh'}
+                      </Link>
+                    </>
                   )}
                 </>
               }

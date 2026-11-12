@@ -126,16 +126,32 @@ export function imageUrlField(body, field, { label = field } = {}) {
   return normalized.url;
 }
 
-/** Thực thi trong transaction; tự rollback nếu lỗi. */
+/** Thực thi trong transaction; hỗ trợ gọi lồng nhau an toàn và tự rollback nếu lỗi. */
 export function tx(db, fn) {
+  const depth = Number(db.__txDepth || 0);
+  if (depth > 0) {
+    db.__txDepth = depth + 1;
+    try {
+      return fn();
+    } finally {
+      db.__txDepth = depth;
+    }
+  }
   db.exec('BEGIN');
+  db.__txDepth = 1;
   try {
     const result = fn();
     db.exec('COMMIT');
     return result;
   } catch (err) {
-    db.exec('ROLLBACK');
+    try {
+      db.exec('ROLLBACK');
+    } catch {
+      // ignore if already rolled back
+    }
     throw err;
+  } finally {
+    db.__txDepth = 0;
   }
 }
 

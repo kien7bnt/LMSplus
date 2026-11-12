@@ -8,6 +8,7 @@ import { registerClassRoutes } from './classes.mjs';
 import { registerAttendanceRoutes } from './attendance.mjs';
 import { registerLearnRoutes } from './learn.mjs';
 import { registerStudioRoutes } from './studio.mjs';
+import { registerVirtualClassroomRoutes } from './virtualClassroom.mjs';
 
 export const TEACHING_PREFIX = '/api/v1/teaching';
 
@@ -27,6 +28,7 @@ export function createTeachingRouter({
   registerAttendanceRoutes(route);
   registerLearnRoutes(route, { jwtSecret });
   registerStudioRoutes(route, { uploadsDir, jwtSecret });
+  registerVirtualClassroomRoutes(route, { jwtSecret });
 
   /**
    * @returns {undefined | Promise<void>} Promise khi handler bất đồng bộ (ví dụ kiểm tra YouTube).

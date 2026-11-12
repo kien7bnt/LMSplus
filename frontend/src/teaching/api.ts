@@ -486,6 +486,13 @@ export interface SessionSummary {
   class_code: string;
   class_title?: string;
   title: string;
+  teaching_content?: string;
+  delivery_mode?: DeliveryMode;
+  live_status?: 'NOT_STARTED' | 'LIVE' | 'ENDED';
+  live_started_at?: string | null;
+  live_ended_at?: string | null;
+  attendance_sync_status?: VirtualSyncStatus;
+  virtual_room?: VirtualRoomSummary | null;
   start_at: string;
   end_at: string;
   room_or_link: string;
@@ -502,6 +509,236 @@ export interface SessionSummary {
   confirmation_deadline_at: string;
   confirmed_at: string | null;
   is_late_confirmation: boolean;
+}
+
+export type VirtualProviderType = 'ZOOM' | 'GOOGLE_MEET' | 'EXTERNAL';
+export type VirtualAttendanceStatus = 'PRESENT' | 'LATE' | 'PARTIAL' | 'ABSENT' | 'EXCUSED' | 'UNKNOWN' | 'MANUAL_REVIEW';
+export type VirtualSyncStatus = 'IDLE' | 'WAITING_PROVIDER_DATA' | 'SYNCING' | 'ATTENDANCE_CALCULATED' | 'NEEDS_REVIEW' | 'CONFIRMED';
+
+export interface VirtualRoomSummary {
+  id: string;
+  provider: VirtualProviderType;
+  external_platform_name: string;
+  creation_mode: 'AUTO_API' | 'MANUAL_LINK' | 'REUSED_ROOM';
+  is_recurring_room: boolean;
+  room_title: string;
+  external_meeting_id: string | null;
+  join_url: string;
+  has_passcode: boolean;
+  room_status: string;
+  live_status: 'NOT_STARTED' | 'LIVE' | 'ENDED';
+  live_started_at: string | null;
+  live_ended_at: string | null;
+  attendance_sync_status: VirtualSyncStatus;
+  supports_auto_sync: boolean;
+  sync_notice: string | null;
+  current_in_room: number;
+  total_joined: number;
+  matched_students: number;
+  unknown_count: number;
+}
+
+export interface VirtualProviderConfig {
+  provider: VirtualProviderType;
+  display_name: string;
+  auth_mode: string;
+  account_id: string;
+  client_id: string;
+  has_client_secret: boolean;
+  masked_client_secret: string;
+  has_webhook_secret: boolean;
+  masked_webhook_secret: string;
+  scopes: string[];
+  capabilities: Record<string, boolean>;
+  connection_status: string;
+  last_verified_at: string | null;
+  status_message: string;
+  webhook_endpoint: string;
+  updated_at: string;
+}
+
+export interface VirtualParticipantSession {
+  id: string;
+  external_participant_id: string | null;
+  participant_email: string | null;
+  display_name: string;
+  matched_student_id: string | null;
+  matched_student_code: string | null;
+  matched_student_name: string | null;
+  identity_match_method: string;
+  join_at: string;
+  leave_at: string | null;
+  duration_sec: number;
+  duration_minutes: number;
+  is_currently_in_room: boolean;
+  device_info: string | null;
+  source: string;
+}
+
+export interface VirtualMergedInterval {
+  start_at: string;
+  end_at: string;
+  durationSec: number;
+}
+
+export interface VirtualAttendanceRow {
+  index: number;
+  student_id: string;
+  code: string;
+  full_name: string;
+  email: string;
+  first_join_at: string | null;
+  last_leave_at: string | null;
+  raw_sessions_count: number;
+  raw_sessions: VirtualParticipantSession[];
+  merged_intervals: VirtualMergedInterval[];
+  total_duration_sec: number;
+  total_duration_minutes: number;
+  valid_duration_sec: number;
+  valid_duration_minutes: number;
+  attendance_ratio_pct: number;
+  late_minutes: number;
+  calculated_status: VirtualAttendanceStatus;
+  final_status: VirtualAttendanceStatus;
+  identity_match_method: string;
+  is_manually_adjusted: boolean;
+  adjustment_reason: string | null;
+  adjusted_by_name: string | null;
+  adjusted_at: string | null;
+}
+
+export interface VirtualAttendanceRules {
+  late_grace_minutes: number;
+  min_duration_minutes: number;
+  min_attendance_pct: number;
+  min_valid_seconds: number;
+  attendance_window_start_at: string;
+  attendance_window_end_at: string;
+  window_duration_sec: number;
+  window_duration_minutes: number;
+  allow_instructor_adjustment: boolean;
+}
+
+export interface VirtualSessionDetail {
+  session: {
+    id: string;
+    class_id: string;
+    class_code: string;
+    class_title: string;
+    subject: string;
+    title: string;
+    teaching_content: string;
+    instructor_name: string;
+    start_at: string;
+    end_at: string;
+    delivery_mode: DeliveryMode;
+    session_status: string;
+    live_status: 'NOT_STARTED' | 'LIVE' | 'ENDED';
+    live_started_at: string | null;
+    live_ended_at: string | null;
+    attendance_sync_status: VirtualSyncStatus;
+    attendance_saved_at: string | null;
+    attendance_locked_at: string | null;
+  };
+  room: {
+    id: string;
+    provider: VirtualProviderType;
+    external_platform_name: string;
+    creation_mode: string;
+    is_recurring_room: boolean;
+    room_title: string;
+    external_meeting_id: string | null;
+    raw_meeting_id: string | null;
+    join_url: string;
+    passcode: string | null;
+    has_host_start_url: boolean;
+    room_status: string;
+    supports_auto_sync: boolean;
+    sync_notice: string | null;
+    provider_metadata: Record<string, any>;
+    updated_at: string;
+  } | null;
+  live_stats: {
+    roster_size: number;
+    current_in_room: number | null;
+    total_unique_joined: number | null;
+    matched_students_count: number | null;
+    unknown_participants_count: number | null;
+    status_counts: Record<VirtualAttendanceStatus, number>;
+  };
+  rules: VirtualAttendanceRules;
+  participant_sessions: VirtualParticipantSession[];
+  unknown_participants: VirtualParticipantSession[];
+  attendance_rows: VirtualAttendanceRow[];
+  capabilities: {
+    can_manage_room: boolean;
+    can_start_host: boolean;
+    can_sync_attendance: boolean;
+    can_adjust_attendance: boolean;
+    can_confirm_attendance: boolean;
+    can_lock_attendance: boolean;
+  };
+}
+
+export interface VirtualJoinResult {
+  session_id: string;
+  session_title: string;
+  class_code: string;
+  class_title: string;
+  provider: VirtualProviderType;
+  external_platform_name: string;
+  external_meeting_id: string | null;
+  join_url: string;
+  passcode: string | null;
+  registrant_id: string | null;
+  lms_join_token: string | null;
+  verified_identity: {
+    user_id: string;
+    code: string;
+    full_name: string;
+    email: string;
+  };
+  supports_auto_sync: boolean;
+  sync_notice: string | null;
+}
+
+export interface VirtualAttendanceHistory {
+  adjustments: Array<{
+    id: string;
+    session_id: string;
+    student_id: string | null;
+    student_code?: string | null;
+    student_name?: string | null;
+    action_type: string;
+    previous_status: string | null;
+    new_status: string;
+    reason: string;
+    actor_id: string;
+    actor_name: string;
+    created_at: string;
+  }>;
+  sync_jobs: Array<{
+    id: string;
+    provider: string;
+    trigger_source: string;
+    status: string;
+    attempt_count: number;
+    participants_fetched: number;
+    matched_students: number;
+    unknown_participants: number;
+    started_at: string;
+    completed_at: string | null;
+  }>;
+  webhook_events: Array<{
+    id: string;
+    event_key: string;
+    provider: string;
+    event_type: string;
+    external_meeting_id: string | null;
+    signature_verified: number;
+    processing_status: string;
+    received_at: string;
+  }>;
 }
 
 export interface ClassCapabilities {
@@ -673,14 +910,35 @@ export interface LearnClass {
   course: { id: string; title: string; status: CourseStatus; thumbnail_url: string } | null;
   progress: { completed: number; total: number; pct: number };
   resume_lesson_id: string | null;
-  next_session: { session_id: string; session_title: string; scheduled_start_at: string; scheduled_end_at: string; room_or_link: string } | null;
+  next_session: {
+    session_id: string;
+    session_title: string;
+    scheduled_start_at: string;
+    scheduled_end_at: string;
+    room_or_link: string;
+    delivery_mode?: DeliveryMode;
+    live_status?: 'NOT_STARTED' | 'LIVE' | 'ENDED';
+    virtual_room?: VirtualRoomSummary | null;
+  } | null;
 }
 
 export interface LearnClassDetail {
-  class: { id: string; code: string; title: string; room: string; schedule_text: string };
+  class: { id: string; code: string; title: string; room: string; schedule_text: string; instructor_name?: string };
   course: { id: string; title: string; description: string; objectives: string; status: CourseStatus } | null;
   content_available: boolean;
   chapters: Array<{ id: string; title: string; description: string; lessons: Array<{ id: string; title: string; duration_minutes: number; progress_status: 'NOT_STARTED' | 'IN_PROGRESS' | 'COMPLETED' }> }>;
+  upcoming_sessions?: Array<{
+    id: string;
+    title: string;
+    teaching_content?: string;
+    start_at: string;
+    end_at: string;
+    room_or_link: string;
+    delivery_mode: DeliveryMode;
+    live_status: 'NOT_STARTED' | 'LIVE' | 'ENDED';
+    instructor_name: string;
+    virtual_room: VirtualRoomSummary | null;
+  }>;
   progress: { completed: number; total: number; pct: number };
 }
 
@@ -961,6 +1219,61 @@ export const teachingApi = {
     send<{ next_lesson: { id: string; title: string } | null }>('POST', `/learn/classes/${classId}/lessons/${lessonId}/complete`, { answers }),
   myAttendance: (classId: string) =>
     get<{ items: Array<{ session_id: string; session_title: string; scheduled_start_at: string; session_status: string; attendance_saved_at: string | null; attendance_status: AttendanceStatus | null; check_in_at: string | null; check_in_method: string | null; note: string | null }>; counts: Record<string, number>; rate: number | null; policy: AttendancePolicy }>(`/learn/classes/${classId}/attendance`),
+
+  // Phòng học trực tuyến & Điểm danh tự động (Virtual Classroom & Auto-Attendance)
+  virtualProviders: () => get<{ items: VirtualProviderConfig[] }>('/virtual-providers'),
+  updateVirtualProvider: (provider: VirtualProviderType, body: Record<string, unknown>) =>
+    send<unknown>('PUT', `/virtual-providers/${provider}`, body),
+  validateVirtualProvider: (provider: VirtualProviderType) =>
+    send<{ provider: string; connected: boolean; mode: string; connection_status: string; message: string }>(
+      'POST',
+      `/virtual-providers/${provider}/validate`
+    ),
+  classVirtualRooms: (classId: string) =>
+    get<{
+      items: Array<{
+        id: string;
+        provider: VirtualProviderType;
+        external_platform_name: string;
+        room_title: string;
+        external_meeting_id: string | null;
+        join_url: string;
+        is_recurring_room: boolean;
+        supports_auto_sync: boolean;
+        created_at: string;
+      }>;
+    }>(`/classes/${classId}/virtual-rooms`),
+  virtualSession: (sessionId: string) => get<VirtualSessionDetail>(`/sessions/${sessionId}/virtual-room`),
+  createVirtualRoom: (sessionId: string, body: Record<string, unknown>) =>
+    send<VirtualSessionDetail>('POST', `/sessions/${sessionId}/virtual-room`, body),
+  updateVirtualRoom: (sessionId: string, body: Record<string, unknown>) =>
+    send<VirtualSessionDetail>('PATCH', `/sessions/${sessionId}/virtual-room`, body),
+  deleteVirtualRoom: (sessionId: string) =>
+    send<{ detached: boolean; session_id: string }>('DELETE', `/sessions/${sessionId}/virtual-room`),
+  startVirtualRoomHost: (sessionId: string) =>
+    send<{ session_id: string; live_status: string; live_started_at: string; host_start_url: string; join_url: string }>(
+      'POST',
+      `/sessions/${sessionId}/virtual-room/start`
+    ),
+  joinVirtualRoom: (sessionId: string) => send<VirtualJoinResult>('POST', `/sessions/${sessionId}/virtual-room/join`),
+  endVirtualRoom: (sessionId: string, body?: { wait_for_provider_report?: boolean }) =>
+    send<VirtualSessionDetail>('POST', `/sessions/${sessionId}/virtual-room/end`, body || {}),
+  simulateVirtualEvent: (sessionId: string, body: Record<string, unknown>) =>
+    send<VirtualSessionDetail>('POST', `/sessions/${sessionId}/virtual-room/simulate-event`, body),
+  syncVirtualAttendance: (sessionId: string) =>
+    send<VirtualSessionDetail>('POST', `/sessions/${sessionId}/virtual-attendance/sync`),
+  saveVirtualAttendanceRules: (sessionId: string, body: Partial<VirtualAttendanceRules> & { apply_to_class?: boolean }) =>
+    send<VirtualSessionDetail>('PUT', `/sessions/${sessionId}/virtual-attendance/rules`, body),
+  mapUnknownParticipant: (sessionId: string, body: { participant_session_id: string; student_id: string; reason?: string }) =>
+    send<VirtualSessionDetail>('POST', `/sessions/${sessionId}/virtual-attendance/map-participant`, body),
+  adjustVirtualAttendance: (sessionId: string, studentId: string, body: { status: VirtualAttendanceStatus; reason: string }) =>
+    send<VirtualSessionDetail>('PATCH', `/sessions/${sessionId}/virtual-attendance/records/${studentId}`, body),
+  confirmVirtualAttendance: (sessionId: string, body?: { resolve_unmatched_as_absent?: boolean }) =>
+    send<VirtualSessionDetail>('POST', `/sessions/${sessionId}/virtual-attendance/confirm`, body || {}),
+  virtualAttendanceHistory: (sessionId: string) =>
+    get<VirtualAttendanceHistory>(`/sessions/${sessionId}/virtual-attendance/history`),
+  exportVirtualAttendance: (sessionId: string) =>
+    apiDownload(`${T}/sessions/${sessionId}/virtual-attendance/export`),
 };
 
 /** Tải Blob xuống máy người dùng. */

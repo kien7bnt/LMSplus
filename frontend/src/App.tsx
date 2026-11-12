@@ -13,6 +13,7 @@ import { CourseListPage } from './teaching/pages/CourseListPage';
 import { SchedulePage } from './teaching/pages/SchedulePage';
 import { StudentClassPage, StudentHomePage, StudentLessonPage } from './teaching/pages/StudentPages';
 import { TeachingDashboard } from './teaching/pages/TeachingDashboard';
+import { VirtualSessionPage } from './teaching/pages/VirtualSessionPage';
 import { LessonStudioPage } from './teaching/studio/LessonStudioPage';
 import { Btn, useToast } from './teaching/ui';
 import { ThemeMode, UserRole } from './types/elearning';
@@ -302,6 +303,7 @@ export const App: React.FC = () => {
           <Route path="/teaching/classes/:classId" element={isStudentOnly ? <Navigate to="/learn" replace /> : <ClassDetailPage />} />
           <Route path="/teaching/classes/:classId/studio" element={isStudentOnly ? <Navigate to="/learn" replace /> : <LessonStudioPage mode="CLASS" />} />
           <Route path="/teaching/classes/:classId/attendance" element={isStudentOnly ? <Navigate to="/learn" replace /> : <AttendancePage />} />
+          <Route path="/teaching/classes/:classId/sessions/:sessionId/live" element={isStudentOnly ? <Navigate to="/learn" replace /> : <VirtualSessionPage />} />
           <Route path="/teaching/schedule" element={isStudentOnly ? <Navigate to="/learn" replace /> : <SchedulePage />} />
 
           {/* Cổng Học viên */}

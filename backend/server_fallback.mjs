@@ -627,6 +627,7 @@ function handleApiRequestInner(req, res, bodyData) {
 
   let body = {};
   let bodyError = false;
+  req.__rawBody = bodyData || '';
   if (bodyData) {
     try {
       body = JSON.parse(bodyData);
@@ -812,6 +813,19 @@ function handleApiRequestInner(req, res, bodyData) {
       data: { access_token: token, token_type: 'Bearer', user: userObj },
     });
     return;
+  }
+
+  // Webhook từ nhà cung cấp phòng học trực tuyến (Zoom / Google Meet) xác thực bằng chữ ký HMAC-SHA256 riêng
+  if (pathname.startsWith(`${TEACHING_PREFIX}/webhooks/`)) {
+    const webhookUser = resolveUser(req, url, pathname, method) || {
+      id: 'webhook_system',
+      code: 'WEBHOOK',
+      email: 'webhook@lmsplus.edu.vn',
+      full_name: 'Provider Webhook Verifier',
+      roles: ['SYSTEM_WEBHOOK'],
+      department_id: null,
+    };
+    return handleTeaching({ req, method, pathname, url, body, bodyError, user: webhookUser, res, sendJson });
   }
 
   const user = resolveUser(req, url, pathname, method);

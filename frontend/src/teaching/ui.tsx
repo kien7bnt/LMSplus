@@ -255,6 +255,33 @@ const LABELS: Record<string, Record<string, [string, string]>> = {
     CO_INSTRUCTOR: ['Đồng giảng dạy', 'neutral'],
     TEACHING_ASSISTANT: ['Trợ giảng', 'neutral'],
   },
+  virtualAttendance: {
+    PRESENT: ['Có mặt đủ điều kiện', 'success'],
+    LATE: ['Tham gia muộn', 'warning'],
+    PARTIAL: ['Tham gia một phần', 'warning'],
+    ABSENT: ['Vắng mặt', 'danger'],
+    EXCUSED: ['Vắng có phép', 'info'],
+    UNKNOWN: ['Chưa xác định danh tính', 'warning'],
+    MANUAL_REVIEW: ['Cần giảng viên xác nhận', 'warning'],
+  },
+  syncStatus: {
+    IDLE: ['Chưa đồng bộ', 'neutral'],
+    WAITING_PROVIDER_DATA: ['Đang chờ dữ liệu từ nền tảng', 'info'],
+    SYNCING: ['Đang đồng bộ thời gian thực', 'info'],
+    ATTENDANCE_CALCULATED: ['Đã tính điểm danh tự động', 'success'],
+    NEEDS_REVIEW: ['Cần giảng viên đối soát', 'warning'],
+    CONFIRMED: ['Đã xác nhận & chốt điểm danh', 'success'],
+  },
+  liveStatus: {
+    NOT_STARTED: ['Chưa bắt đầu', 'neutral'],
+    LIVE: ['Đang diễn ra trực tiếp', 'success'],
+    ENDED: ['Đã kết thúc', 'muted'],
+  },
+  virtualProvider: {
+    ZOOM: ['Zoom Meeting', 'info'],
+    GOOGLE_MEET: ['Google Meet', 'success'],
+    EXTERNAL: ['Link phòng học ngoài', 'neutral'],
+  },
 };
 export const label = (kind: keyof typeof LABELS | string, value: string | null | undefined) =>
   (value && LABELS[kind]?.[value]?.[0]) || value || '—';
