@@ -14,6 +14,7 @@
 
 import crypto from 'node:crypto';
 import { encryptSecret, encryptJsonCredentials } from './virtualProviders.mjs';
+import { ensureMasterLmsSchema, clearMasterLmsData, seedMasterLmsStarterData } from './masterSchema.mjs';
 
 export const TEACHING_SEED_MARKER = 'teaching_seed_v1';
 export const STUDIO_SEED_MARKER = 'studio_seed_v1';
@@ -656,10 +657,12 @@ export function ensureTeachingSchema(db) {
     );
   `);
   addColumn(db, 'class_lesson_customs', 'published_snapshot_json', 'TEXT');
+  ensureMasterLmsSchema(db);
 }
 
 /** Xóa dữ liệu module giảng dạy (chỉ dùng khi reset seed cho môi trường phát triển/kiểm thử). */
 export function clearTeachingData(db) {
+  clearMasterLmsData(db);
   db.exec(`
     DELETE FROM virtual_sync_jobs;
     DELETE FROM virtual_attendance_adjustments;
@@ -759,6 +762,7 @@ export function seedTeachingData(db, { seed, hashPassword }) {
   if (marker) {
     seedStudioStarterData(db);
     seedVirtualClassroomStarterData(db);
+    seedMasterLmsStarterData(db);
     return;
   }
 

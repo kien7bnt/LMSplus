@@ -23,6 +23,7 @@ import {
   clearTeachingData,
   seedTeachingData,
 } from './teaching/schema.mjs';
+import { seedMasterLmsStarterData } from './teaching/masterSchema.mjs';
 import { createTeachingRouter, TEACHING_PREFIX } from './teaching/routes.mjs';
 import { verifyMediaStreamToken } from './teaching/studio.mjs';
 
@@ -325,6 +326,7 @@ export function initSchemaAndSeed(forceReset = false) {
 
   if (!forceReset && userCount > 0 && wikiCount > 0) {
     seedTeachingData(db, { seed: JSON.parse(fs.readFileSync(SEED_PATH, 'utf8')), hashPassword });
+    seedMasterLmsStarterData(db);
     return;
   }
 
@@ -524,6 +526,7 @@ export function initSchemaAndSeed(forceReset = false) {
   }
 
   seedTeachingData(db, { seed, hashPassword });
+  seedMasterLmsStarterData(db);
 }
 
 initSchemaAndSeed(false);

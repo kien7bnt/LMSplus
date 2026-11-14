@@ -6,12 +6,14 @@ import crypto from 'node:crypto';
 import { CLASS_STATUSES, DELIVERY_MODES, insertClassSession, vnIso, vnDate, vnDateTime } from './schema.mjs';
 import {
   canCreateClass, classCapabilities, classScopeSql, canViewCourse, courseScopeSql,
-  isAdmin, isStaff, isInstructor, isStudent, INSTRUCTOR_CAN_MANAGE_ROSTER, staffAssignments,
+  isAdmin, isStaff, isInstructor, isStudent, INSTRUCTOR_CAN_MANAGE_ROSTER, staffAssignments, safeJson,
 } from './scope.mjs';
 import {
   fail, pageParams, nowIso, nowVn, text, intField, oneOf, dateField, timeField, tx, publicUser,
   compareVietnameseName,
 } from './http.mjs';
+import { getClassContentVersionKey } from './masterSchema.mjs';
+import { syncCohortRosterToClasses } from './curriculaAndCohorts.mjs';
 import { getAttendancePolicy, rateFromCounts } from './attendance.mjs';
 import { virtualRoomSummaryDto } from './virtualClassroom.mjs';
 import {
@@ -100,6 +102,10 @@ function classCounters(db, cls) {
 
 export function classDto(db, cls, user = null) {
   const course = cls.course_id ? db.prepare('SELECT id, code, title, status FROM courses WHERE id = ?').get(cls.course_id) : null;
+  const cohort = cls.cohort_id ? db.prepare('SELECT id, code, title, status FROM program_cohorts WHERE id = ?').get(cls.cohort_id) : null;
+  const courseVersion = cls.course_version_id
+    ? db.prepare('SELECT id, version_number, version_label, published_at FROM course_versions WHERE id = ?').get(cls.course_version_id)
+    : null;
   return {
     id: cls.id,
     code: cls.code,
@@ -107,6 +113,11 @@ export function classDto(db, cls, user = null) {
     subject: cls.subject || '',
     description: cls.description || '',
     course: course || null,
+    cohort_id: cls.cohort_id || null,
+    cohort: cohort || null,
+    course_version_id: cls.course_version_id || null,
+    course_version_number: cls.course_version_number || null,
+    course_version: courseVersion || null,
     start_date: cls.start_date,
     end_date: cls.end_date,
     max_students: cls.max_students,
@@ -216,7 +227,7 @@ function findUsersByIdentifiers(db, identifiers) {
   return { found, notFound };
 }
 
-function enrollStudents(db, user, cls, identifiers, log) {
+function enrollStudents(db, user, cls, identifiers, log, enrollmentSource = 'ACADEMIC_ASSIGNED') {
   if (identifiers.length === 0) fail(422, 'VALIDATION_ERROR', 'Danh sách học viên trống.');
   if (identifiers.length > 1000) fail(422, 'VALIDATION_ERROR', 'Tối đa 1000 học viên mỗi lần.');
   const { found, notFound } = findUsersByIdentifiers(db, identifiers);
@@ -233,19 +244,19 @@ function enrollStudents(db, user, cls, identifiers, log) {
         if (n >= cls.max_students) fail(422, 'CLASS_FULL', `Lớp đã đủ sĩ số tối đa (${cls.max_students}).`);
       }
       if (e) {
-        db.prepare(`UPDATE class_enrollments SET status = 'ACTIVE', dropped_at = NULL, enrolled_at = ?, updated_by = ? WHERE id = ?`)
-          .run(nowIso(), user.id, e.id);
+        db.prepare(`UPDATE class_enrollments SET status = 'ACTIVE', enrollment_source = ?, dropped_at = NULL, enrolled_at = ?, updated_by = ? WHERE id = ?`)
+          .run(enrollmentSource, nowIso(), user.id, e.id);
         result.reactivated.push(u.code);
       } else {
         db.prepare(
           `INSERT INTO class_enrollments (id, subject_class_id, student_id, enrollment_source, status, enrolled_at, updated_by)
-           VALUES (?, ?, ?, 'ACADEMIC_ASSIGNED', 'ACTIVE', ?, ?)`
-        ).run(crypto.randomUUID(), cls.id, u.id, nowIso(), user.id);
+           VALUES (?, ?, ?, ?, 'ACTIVE', ?, ?)`
+        ).run(crypto.randomUUID(), cls.id, u.id, enrollmentSource, nowIso(), user.id);
         result.added.push(u.code);
       }
     }
   });
-  log('INFO', `[teaching] roster ${cls.code}: +${result.added.length} ~${result.reactivated.length} by ${user.id}`);
+  log('INFO', `[teaching] roster ${cls.code}: +${result.added.length} ~${result.reactivated.length} (${enrollmentSource}) by ${user.id}`);
   return result;
 }
 
@@ -342,19 +353,46 @@ export function registerClassRoutes(route) {
     const id = `sc_${crypto.randomBytes(5).toString('hex')}`;
     const now = nowIso();
     const course = f.course_id ? db.prepare('SELECT * FROM courses WHERE id = ?').get(f.course_id) : null;
+
+    let cohortId = text(body, 'cohort_id', { max: 80, label: 'lớp khóa học' }) || null;
+    if (cohortId) {
+      const cohort = db.prepare('SELECT * FROM program_cohorts WHERE id = ?').get(cohortId);
+      if (!cohort) fail(404, 'COHORT_NOT_FOUND', 'Không tìm thấy lớp khóa học liên kết.');
+      if (!isAdmin(user) && cohort.department_id && user.department_id && cohort.department_id !== user.department_id) {
+        fail(403, 'OUT_OF_SCOPE', 'Lớp khóa học không thuộc đơn vị của bạn.');
+      }
+    }
+
+    let courseVersionId = null;
+    let courseVersionNumber = null;
+    if (f.course_id) {
+      const requestedVerId = text(body, 'course_version_id', { max: 80, label: 'phiên bản môn học' }) || null;
+      const verRow = requestedVerId
+        ? db.prepare('SELECT id, version_number FROM course_versions WHERE id = ? AND course_id = ?').get(requestedVerId, f.course_id)
+        : db.prepare('SELECT id, version_number FROM course_versions WHERE course_id = ? ORDER BY version_number DESC LIMIT 1').get(f.course_id);
+      if (requestedVerId && !verRow) fail(404, 'COURSE_VERSION_NOT_FOUND', 'Không tìm thấy phiên bản môn học được chọn.');
+      if (verRow) {
+        courseVersionId = verRow.id;
+        courseVersionNumber = verRow.version_number;
+      }
+    }
+
     tx(db, () => {
       db.prepare(
-        `INSERT INTO subject_classes (id, course_id, code, title, subject, description, instructor_name, ta_names_json,
+        `INSERT INTO subject_classes (id, course_id, cohort_id, course_version_id, course_version_number, code, title, subject, description, instructor_name, ta_names_json,
            schedule_text, room, student_count, start_date, end_date, max_students, delivery_mode, status, department_id,
            created_by, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, '[]', ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      ).run(id, f.course_id || null, f.code, f.title, f.subject || (course ? course.subject : null), f.description,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run(id, f.course_id || null, cohortId, courseVersionId, courseVersionNumber, f.code, f.title, f.subject || (course ? course.subject : null), f.description,
         instructor.full_name, f.schedule_text, f.room, f.start_date, f.end_date, f.max_students, f.delivery_mode,
         status, instructor.department_id || user.department_id || (course ? course.department_id : null), user.id, now, now);
       db.prepare(
         `INSERT INTO teaching_staff_assignments (id, subject_class_id, user_id, staff_role, permissions_json, is_active,
            assigned_by, created_at, updated_at) VALUES (?, ?, ?, 'PRIMARY_INSTRUCTOR', ?, 1, ?, ?, ?)`
       ).run(crypto.randomUUID(), id, instructor.id, '{"can_manage_materials":true,"can_take_attendance":true}', user.id, now, now);
+      if (cohortId) {
+        syncCohortRosterToClasses(db, cohortId, user, [id]);
+      }
     });
     log('INFO', `[teaching] class created ${f.code} by ${user.id}`);
     return [201, classDto(db, getClass(db, id), user)];
@@ -449,7 +487,7 @@ export function registerClassRoutes(route) {
     const q = (url.searchParams.get('q') || '').trim().toLowerCase();
     let rows = db
       .prepare(
-        `SELECT e.student_id, e.status, e.enrolled_at, e.dropped_at, u.code, u.full_name, u.email
+        `SELECT e.student_id, e.enrollment_source, e.status, e.enrolled_at, e.dropped_at, u.code, u.full_name, u.email
          FROM class_enrollments e JOIN users u ON u.id = e.student_id WHERE e.subject_class_id = ?`
       )
       .all(cls.id);
@@ -467,13 +505,26 @@ export function registerClassRoutes(route) {
     for (const a of att) (attMap[a.student_id] ||= {})[a.st] = a.n;
     let totalLessons = 0;
     const doneMap = {};
-    if (cls.course_id) {
+    const verKey = getClassContentVersionKey(cls);
+    if (cls.course_version_id) {
+      const cv = db.prepare('SELECT snapshot_json FROM course_versions WHERE id = ?').get(cls.course_version_id);
+      const snap = safeJson(cv?.snapshot_json, null);
+      if (snap && Array.isArray(snap.lessons)) {
+        totalLessons = snap.lessons.length;
+        const allowedIds = new Set(snap.lessons.map((l) => l.id));
+        for (const r of db
+          .prepare(`SELECT student_id, lesson_id FROM lesson_progress WHERE subject_class_id = ? AND content_version_key = ? AND status = 'COMPLETED'`)
+          .all(cls.id, verKey)) {
+          if (allowedIds.has(r.lesson_id)) doneMap[r.student_id] = (doneMap[r.student_id] || 0) + 1;
+        }
+      }
+    } else if (cls.course_id) {
       totalLessons = db
         .prepare(`SELECT COUNT(*) n FROM lessons l JOIN chapters ch ON ch.id = l.chapter_id WHERE ch.course_id = ? AND ch.status = 'PUBLISHED' AND l.publish_status = 'PUBLISHED'`)
         .get(cls.course_id).n;
       for (const r of db
-        .prepare(`SELECT p.student_id, COUNT(*) n FROM lesson_progress p JOIN lessons l ON l.id = p.lesson_id AND l.publish_status = 'PUBLISHED' WHERE p.subject_class_id = ? AND p.status = 'COMPLETED' GROUP BY p.student_id`)
-        .all(cls.id)) doneMap[r.student_id] = r.n;
+        .prepare(`SELECT p.student_id, COUNT(*) n FROM lesson_progress p JOIN lessons l ON l.id = p.lesson_id AND l.publish_status = 'PUBLISHED' WHERE p.subject_class_id = ? AND p.content_version_key = ? AND p.status = 'COMPLETED' GROUP BY p.student_id`)
+        .all(cls.id, verKey)) doneMap[r.student_id] = r.n;
     }
     rows.sort((a, b) => compareVietnameseName(a.full_name, b.full_name));
     return {
@@ -484,6 +535,7 @@ export function registerClassRoutes(route) {
           code: r.code,
           full_name: r.full_name,
           email: r.email,
+          enrollment_source: r.enrollment_source || 'ACADEMIC_ASSIGNED',
           status: r.status,
           enrolled_at: r.enrolled_at,
           dropped_at: r.dropped_at,
@@ -504,7 +556,11 @@ export function registerClassRoutes(route) {
   route('POST', '/classes/:id/students', ({ db, user, body, params, log }) => {
     const { cls } = requireClassAccess(db, user, params.id, 'can_manage_roster');
     const ids = Array.isArray(body.students) ? body.students : [];
-    return enrollStudents(db, user, cls, ids, log);
+    const src = oneOf(body, 'enrollment_source', ['ACADEMIC_ASSIGNED', 'COHORT_SYNCED', 'MAKEUP', 'RETAKE', 'SUPPLEMENTAL'], {
+      fallback: 'ACADEMIC_ASSIGNED',
+      label: 'nguồn ghi danh',
+    });
+    return enrollStudents(db, user, cls, ids, log, src);
   });
 
   route('POST', '/classes/:id/students/import', ({ db, user, body, params, log }) => {
@@ -515,7 +571,11 @@ export function registerClassRoutes(route) {
       .split(/[\r\n,;\t]+/)
       .map((s) => s.trim().replace(/^"|"$/g, ''))
       .filter((s) => s && !/^(mã|ma|code|email|stt)/i.test(s));
-    return enrollStudents(db, user, cls, [...new Set(identifiers)], log);
+    const src = oneOf(body, 'enrollment_source', ['ACADEMIC_ASSIGNED', 'COHORT_SYNCED', 'MAKEUP', 'RETAKE', 'SUPPLEMENTAL'], {
+      fallback: 'ACADEMIC_ASSIGNED',
+      label: 'nguồn ghi danh',
+    });
+    return enrollStudents(db, user, cls, [...new Set(identifiers)], log, src);
   });
 
   route('DELETE', '/classes/:id/students/:studentId', ({ db, user, params, log }) => {
@@ -951,6 +1011,20 @@ export function registerClassRoutes(route) {
       }
       lowAttendance.sort((a, b) => a.rate - b.rate);
     }
+    let assignmentsToGrade = 0;
+    let leaveRequestsPending = 0;
+    if (classIds.length) {
+      const pendingSubs = db
+        .prepare(`SELECT COUNT(*) n FROM class_assignment_submissions WHERE subject_class_id IN (${inList}) AND status = 'SUBMITTED'`)
+        .get(...classIds).n;
+      const pendingExams = db
+        .prepare(`SELECT COUNT(*) n FROM class_exam_attempts WHERE subject_class_id IN (${inList}) AND grading_status = 'PENDING_MANUAL'`)
+        .get(...classIds).n;
+      assignmentsToGrade = pendingSubs + pendingExams;
+      leaveRequestsPending = db
+        .prepare(`SELECT COUNT(*) n FROM leave_requests WHERE subject_class_id IN (${inList}) AND status = 'PENDING'`)
+        .get(...classIds).n;
+    }
     return {
       counts: { courses, classes: classIds.length, students, sessions_today: todaySessions.length },
       today_sessions: todaySessions,
@@ -958,7 +1032,8 @@ export function registerClassRoutes(route) {
       sessions_need_attendance: needAttendance,
       logs_unconfirmed: logsUnconfirmed,
       low_attendance: lowAttendance.slice(0, 10),
-      assignments_to_grade: null, // Module bài tập chưa chạy ở môi trường hiện tại
+      assignments_to_grade: assignmentsToGrade,
+      leave_requests_pending: leaveRequestsPending,
       attendance_policy: policy,
     };
   });

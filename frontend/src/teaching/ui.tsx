@@ -282,6 +282,64 @@ const LABELS: Record<string, Record<string, [string, string]>> = {
     GOOGLE_MEET: ['Google Meet', 'success'],
     EXTERNAL: ['Link phòng học ngoài', 'neutral'],
   },
+  curriculum: {
+    DRAFT: ['Bản nháp', 'neutral'],
+    ACTIVE: ['Đang áp dụng', 'success'],
+    ARCHIVED: ['Đã lưu trữ', 'muted'],
+  },
+  cohort: {
+    PLANNING: ['Đang lập kế hoạch', 'neutral'],
+    ACTIVE: ['Đang đào tạo', 'success'],
+    COMPLETED: ['Đã hoàn thành', 'info'],
+    ARCHIVED: ['Đã lưu trữ', 'muted'],
+  },
+  enrollmentSource: {
+    COHORT_SYNCED: ['Đồng bộ từ khóa', 'info'],
+    ACADEMIC_ASSIGNED: ['Giáo vụ phân công', 'neutral'],
+    MAKEUP: ['Học bù', 'warning'],
+    RETAKE: ['Học lại', 'danger'],
+    SUPPLEMENTAL: ['Bổ sung riêng', 'success'],
+  },
+  cohortStudent: {
+    ACTIVE: ['Đang học', 'success'],
+    WITHDRAWN: ['Đã rút tên', 'danger'],
+    TRANSFERRED: ['Đã chuyển lớp khóa', 'warning'],
+    COMPLETED: ['Đã hoàn thành', 'info'],
+  },
+  examStatus: {
+    DRAFT: ['Bản nháp', 'neutral'],
+    PUBLISHED: ['Đang mở', 'success'],
+    CLOSED: ['Đã đóng', 'muted'],
+  },
+  gradingStatus: {
+    IN_PROGRESS: ['Đang làm bài', 'warning'],
+    PENDING_MANUAL: ['Chờ chấm tự luận', 'warning'],
+    AUTO_GRADED: ['Đã tự động chấm', 'success'],
+    SUBMITTED: ['Chờ chấm điểm', 'warning'],
+    GRADED: ['Đã chấm điểm', 'success'],
+    RETURNED: ['Yêu cầu chỉnh sửa', 'danger'],
+    DRAFT: ['Bản nháp', 'neutral'],
+    NOT_SUBMITTED: ['Chưa nộp', 'muted'],
+  },
+  leaveStatus: {
+    PENDING: ['Chờ duyệt', 'warning'],
+    APPROVED: ['Đã duyệt', 'success'],
+    REJECTED: ['Từ chối', 'danger'],
+    CANCELLED: ['Đã hủy', 'muted'],
+  },
+  leaveReason: {
+    ILLNESS: ['Ốm đau / Y tế', 'warning'],
+    FAMILY: ['Việc gia đình', 'info'],
+    WORK: ['Công tác / Làm việc', 'neutral'],
+    ACADEMIC_CONFLICT: ['Trùng lịch học/thi', 'warning'],
+    OTHER: ['Lý do khác', 'neutral'],
+  },
+  forumCategory: {
+    QA: ['Hỏi đáp bài học', 'info'],
+    DISCUSSION: ['Thảo luận chuyên môn', 'neutral'],
+    ANNOUNCEMENT: ['Thông báo giảng viên', 'warning'],
+    EXPERIENCE: ['Chia sẻ kinh nghiệm', 'success'],
+  },
 };
 export const label = (kind: keyof typeof LABELS | string, value: string | null | undefined) =>
   (value && LABELS[kind]?.[value]?.[0]) || value || '—';

@@ -9,6 +9,12 @@ import { registerAttendanceRoutes } from './attendance.mjs';
 import { registerLearnRoutes } from './learn.mjs';
 import { registerStudioRoutes } from './studio.mjs';
 import { registerVirtualClassroomRoutes } from './virtualClassroom.mjs';
+import { registerStrictVideoRoutes } from './strictVideo.mjs';
+import { registerCurriculaAndCohortRoutes } from './curriculaAndCohorts.mjs';
+import { registerContentTreeAndSnapshotRoutes } from './contentTreeAndSnapshots.mjs';
+import { registerBankRoutes } from './banks.mjs';
+import { registerAssessmentAndAssignmentRoutes } from './assessmentsAndAssignments.mjs';
+import { registerLeaveAndForumRoutes } from './leaveAndForums.mjs';
 
 export const TEACHING_PREFIX = '/api/v1/teaching';
 
@@ -29,6 +35,12 @@ export function createTeachingRouter({
   registerLearnRoutes(route, { jwtSecret });
   registerStudioRoutes(route, { uploadsDir, jwtSecret });
   registerVirtualClassroomRoutes(route, { jwtSecret });
+  registerStrictVideoRoutes(route);
+  registerCurriculaAndCohortRoutes(route);
+  registerContentTreeAndSnapshotRoutes(route);
+  registerBankRoutes(route);
+  registerAssessmentAndAssignmentRoutes(route);
+  registerLeaveAndForumRoutes(route);
 
   /**
    * @returns {undefined | Promise<void>} Promise khi handler bất đồng bộ (ví dụ kiểm tra YouTube).
@@ -89,7 +101,7 @@ export function createTeachingRouter({
     };
 
     try {
-      const out = matched.r.handler({ req, db, user, body, url, params: matched.params, res, raw, log });
+      const out = matched.r.handler({ req, db, user, body, url, query: url.searchParams, params: matched.params, res, raw, log });
       if (out && typeof out.then === 'function') {
         return out.then(finish, onError);
       }

@@ -70,6 +70,16 @@ export interface InteractiveVideoPlayerProps {
     last_position_sec: number;
     watched_seconds: number;
     duration_sec: number;
+    playback_rate?: number;
+    is_visible?: boolean;
+    segments?: Array<{ start_sec: number; end_sec: number; is_visible?: boolean }>;
+    events?: Array<{
+      idempotency_key: string;
+      start_sec: number;
+      end_sec: number;
+      playback_rate?: number;
+      is_visible?: boolean;
+    }>;
   }) => Promise<unknown>;
   onSubmitMarker?: (
     markerId: string,
@@ -99,6 +109,51 @@ type LocalMarkerRuntime = {
   lastFeedback: string;
   explanation?: string;
 };
+
+type QueuedWatchEvent = {
+  idempotency_key: string;
+  start_sec: number;
+  end_sec: number;
+  playback_rate: number;
+  is_visible: boolean;
+};
+
+function mergeWatchedIntervals(intervals: Array<[number, number]>): Array<[number, number]> {
+  const valid = intervals
+    .map(([s, e]): [number, number] => [Math.max(0, Math.round(s * 10) / 10), Math.max(0, Math.round(e * 10) / 10)])
+    .filter(([s, e]) => e > s + 0.05)
+    .sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const out: Array<[number, number]> = [];
+  for (const [s, e] of valid) {
+    if (!out.length || s > out[out.length - 1][1] + 0.35) out.push([s, e]);
+    else out[out.length - 1][1] = Math.max(out[out.length - 1][1], e);
+  }
+  return out;
+}
+
+function sumWatchedIntervals(intervals: Array<[number, number]>): number {
+  return intervals.reduce((acc, [s, e]) => acc + Math.max(0, e - s), 0);
+}
+
+function readOfflineVideoQueue(key: string): QueuedWatchEvent[] {
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeOfflineVideoQueue(key: string, events: QueuedWatchEvent[]): void {
+  try {
+    if (!events.length) window.localStorage.removeItem(key);
+    else window.localStorage.setItem(key, JSON.stringify(events.slice(-200)));
+  } catch {
+    // ignore storage quota errors
+  }
+}
 
 export const InteractiveVideoPlayer: React.FC<InteractiveVideoPlayerProps> = ({
   blockId,
@@ -143,13 +198,72 @@ export const InteractiveVideoPlayer: React.FC<InteractiveVideoPlayerProps> = ({
       : null
   );
 
-  // Watch progress accumulators
-  const watchedSecondsRef = useRef<number>(initialProgress?.watched_seconds || 0);
+  const strictSeekBlocked =
+    mode === 'LEARNER' && (!allowSeekingAhead || initialProgress?.strict_mode !== false);
+  const queueStorageKey = `lmsplus_strict_vid_queue_${blockId}`;
+
+  // Watch progress accumulators & STRICT interval union tracking
+  const initialIntervals = mergeWatchedIntervals(
+    Array.isArray(initialProgress?.watched_intervals) ? initialProgress!.watched_intervals : []
+  );
+  const watchedIntervalsRef = useRef<Array<[number, number]>>(initialIntervals);
+  const [watchedIntervals, setWatchedIntervals] = useState<Array<[number, number]>>(initialIntervals);
+  const [uniqueWatchedSec, setUniqueWatchedSec] = useState<number>(
+    initialProgress?.unique_watched_sec ??
+      initialProgress?.watched_seconds ??
+      sumWatchedIntervals(initialIntervals)
+  );
+  const pendingEventsRef = useRef<QueuedWatchEvent[]>(
+    mode === 'LEARNER' && typeof window !== 'undefined' ? readOfflineVideoQueue(queueStorageKey) : []
+  );
+  const inFlightKeysRef = useRef<Set<string>>(new Set());
+  const eventSeqRef = useRef<number>(0);
+  const watchedSecondsRef = useRef<number>(
+    initialProgress?.unique_watched_sec ?? initialProgress?.watched_seconds ?? 0
+  );
   const maxAllowedPosRef = useRef<number>(
-    Math.max(startSeconds || 0, initialProgress?.max_watched_sec || 0, initialProgress?.last_position_sec || 0)
+    Math.max(
+      startSeconds || 0,
+      initialProgress?.max_contiguous_watched_sec || 0,
+      initialProgress?.max_watched_sec || 0,
+      initialProgress?.last_position_sec || 0
+    )
   );
   const lastTickTimeRef = useRef<number>(startSeconds || 0);
   const lastSavedAtMsRef = useRef<number>(0);
+  const pbRef = useRef<VideoPlaybackState>(pb);
+  pbRef.current = pb;
+
+  useEffect(() => {
+    const merged = mergeWatchedIntervals(
+      Array.isArray(initialProgress?.watched_intervals) ? initialProgress!.watched_intervals : []
+    );
+    if (merged.length > watchedIntervalsRef.current.length) {
+      watchedIntervalsRef.current = merged;
+      setWatchedIntervals(merged);
+    }
+    const nextUnique =
+      initialProgress?.unique_watched_sec ??
+      initialProgress?.watched_seconds ??
+      sumWatchedIntervals(watchedIntervalsRef.current);
+    if (nextUnique > watchedSecondsRef.current) {
+      watchedSecondsRef.current = nextUnique;
+      setUniqueWatchedSec(nextUnique);
+    }
+    maxAllowedPosRef.current = Math.max(
+      maxAllowedPosRef.current,
+      initialProgress?.max_contiguous_watched_sec || 0,
+      initialProgress?.max_watched_sec || 0,
+      initialProgress?.last_position_sec || 0
+    );
+  }, [
+    initialProgress?.watched_intervals,
+    initialProgress?.unique_watched_sec,
+    initialProgress?.watched_seconds,
+    initialProgress?.max_contiguous_watched_sec,
+    initialProgress?.max_watched_sec,
+    initialProgress?.last_position_sec,
+  ]);
 
   // Normalize markers sorted by timestamp & sort_order
   const unifiedMarkers = useMemo<UnifiedVideoMarker[]>(() => {
@@ -278,19 +392,113 @@ export const InteractiveVideoPlayer: React.FC<InteractiveVideoPlayerProps> = ({
       if (mode !== 'LEARNER' || !onSaveProgress) return;
       const now = Date.now();
       if (!force && now - lastSavedAtMsRef.current < 5000) return;
+
+      const unsent = pendingEventsRef.current.filter((ev) => !inFlightKeysRef.current.has(ev.idempotency_key));
+      if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+        writeOfflineVideoQueue(queueStorageKey, pendingEventsRef.current);
+        return;
+      }
+
       lastSavedAtMsRef.current = now;
       const dur = Math.max(1, Math.round(duration || fallbackDuration || 0));
+      const isVisible = typeof document === 'undefined' ? true : document.visibilityState !== 'hidden';
+      const rate = Math.round((pbRef.current.playbackRate || 1) * 100) / 100;
+      unsent.forEach((ev) => inFlightKeysRef.current.add(ev.idempotency_key));
+
       void onSaveProgress({
         block_id: blockId,
         last_position_sec: Math.max(0, Math.round(currentTime * 10) / 10),
         watched_seconds: Math.round(watchedSecondsRef.current),
         duration_sec: dur,
-      }).catch(() => {
-        // non-blocking background heartbeat
-      });
+        playback_rate: rate,
+        is_visible: isVisible,
+        ...(unsent.length
+          ? {
+              events: unsent,
+              segments: unsent.map((ev) => ({
+                start_sec: ev.start_sec,
+                end_sec: ev.end_sec,
+                is_visible: ev.is_visible,
+              })),
+            }
+          : {}),
+      })
+        .then((res) => {
+          const sentSet = new Set(unsent.map((ev) => ev.idempotency_key));
+          sentSet.forEach((k) => inFlightKeysRef.current.delete(k));
+          pendingEventsRef.current = pendingEventsRef.current.filter((ev) => !sentSet.has(ev.idempotency_key));
+          writeOfflineVideoQueue(queueStorageKey, pendingEventsRef.current);
+
+          if (res && typeof res === 'object') {
+            const p = res as Partial<VideoWatchProgress>;
+            if (Array.isArray(p.watched_intervals)) {
+              const merged = mergeWatchedIntervals(p.watched_intervals);
+              watchedIntervalsRef.current = merged;
+              setWatchedIntervals(merged);
+            }
+            if (typeof p.unique_watched_sec === 'number') {
+              watchedSecondsRef.current = p.unique_watched_sec;
+              setUniqueWatchedSec(p.unique_watched_sec);
+            }
+            if (typeof p.max_contiguous_watched_sec === 'number' || typeof p.max_watched_sec === 'number') {
+              maxAllowedPosRef.current = Math.max(
+                maxAllowedPosRef.current,
+                p.max_contiguous_watched_sec || 0,
+                p.max_watched_sec || 0
+              );
+            }
+          }
+        })
+        .catch((err: unknown) => {
+          const sentSet = new Set(unsent.map((ev) => ev.idempotency_key));
+          sentSet.forEach((k) => inFlightKeysRef.current.delete(k));
+          const status = (err as { status?: number })?.status;
+          if (status === 422) {
+            pendingEventsRef.current = pendingEventsRef.current.filter((ev) => !sentSet.has(ev.idempotency_key));
+            writeOfflineVideoQueue(queueStorageKey, pendingEventsRef.current);
+            setSeekNotice((err as Error).message || 'Chế độ STRICT: từ chối tua nhanh hoặc tốc độ bất thường.');
+            if (adapterRef.current && strictSeekBlocked) {
+              adapterRef.current.seek(maxAllowedPosRef.current);
+              lastTickTimeRef.current = maxAllowedPosRef.current;
+            }
+          } else {
+            // Transient network/offline error: keep in localStorage queue for retry on reconnect
+            writeOfflineVideoQueue(queueStorageKey, pendingEventsRef.current);
+          }
+        });
     },
-    [mode, onSaveProgress, blockId, fallbackDuration]
+    [mode, onSaveProgress, blockId, fallbackDuration, queueStorageKey, strictSeekBlocked]
   );
+
+  // Sync queued segments on reconnect, pause/flush when tab becomes hidden, flush on unmount
+  useEffect(() => {
+    if (mode !== 'LEARNER' || typeof window === 'undefined') return;
+    if (pendingEventsRef.current.length > 0 && navigator.onLine !== false) {
+      flushSaveProgress(pbRef.current.currentTime, pbRef.current.duration || fallbackDuration, true);
+    }
+    const handleVisibility = () => {
+      if (document.visibilityState === 'hidden') {
+        flushSaveProgress(pbRef.current.currentTime, pbRef.current.duration || fallbackDuration, true);
+        if (pbRef.current.playing) {
+          setSeekNotice('Tab đang ẩn — thời gian xem không được cộng vào tiến độ STRICT.');
+        }
+      } else {
+        lastTickTimeRef.current = pbRef.current.currentTime;
+      }
+    };
+    const handleOnline = () => {
+      if (pendingEventsRef.current.length > 0) {
+        flushSaveProgress(pbRef.current.currentTime, pbRef.current.duration || fallbackDuration, true);
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+    window.addEventListener('online', handleOnline);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibility);
+      window.removeEventListener('online', handleOnline);
+      flushSaveProgress(pbRef.current.currentTime, pbRef.current.duration || fallbackDuration, true);
+    };
+  }, [mode, flushSaveProgress, fallbackDuration]);
 
   // Mount / destroy VideoPlayerAdapter cleanly
   useEffect(() => {
@@ -343,13 +551,67 @@ export const InteractiveVideoPlayer: React.FC<InteractiveVideoPlayerProps> = ({
         return;
       }
 
-      // Accumulate real watched seconds when playing normally (delta between 0 and 1.5s)
+      // Anti-tamper check for native scrub bypass & STRICT Interval Union tracking
       const prevTime = lastTickTimeRef.current;
       const delta = state.currentTime - prevTime;
-      if (state.playing && delta > 0 && delta <= 1.6) {
-        watchedSecondsRef.current += delta;
-        if (state.currentTime > maxAllowedPosRef.current) {
-          maxAllowedPosRef.current = state.currentTime;
+      const isVisible = typeof document === 'undefined' ? true : document.visibilityState !== 'hidden';
+      const maxExpectedDelta = Math.max(2.6, Math.min(2.0, state.playbackRate || 1) * 1.6);
+
+      if (strictSeekBlocked && delta > 3.5 && state.currentTime > maxAllowedPosRef.current + 2) {
+        const safePos = maxAllowedPosRef.current;
+        lastTickTimeRef.current = safePos;
+        adapter?.seek(safePos);
+        setSeekNotice('Chế độ STRICT: chỉ công nhận thời lượng thực xem, không thể tua qua đoạn chưa học.');
+        return;
+      }
+
+      if (state.playing && delta > 0 && delta <= maxExpectedDelta) {
+        if (!isVisible) {
+          // Tab hidden: do not accumulate intervals
+        } else if ((state.playbackRate || 1) > 2.0) {
+          setSeekNotice('Tốc độ vượt quá 2.0x — không tính vào tiến độ STRICT.');
+        } else if (mode === 'LEARNER') {
+          const nextMerged = mergeWatchedIntervals([
+            ...watchedIntervalsRef.current,
+            [prevTime, state.currentTime],
+          ]);
+          watchedIntervalsRef.current = nextMerged;
+          const totalUnique = sumWatchedIntervals(nextMerged);
+          watchedSecondsRef.current = totalUnique;
+          setWatchedIntervals(nextMerged);
+          setUniqueWatchedSec(totalUnique);
+          if (state.currentTime > maxAllowedPosRef.current) {
+            maxAllowedPosRef.current = state.currentTime;
+          }
+
+          const sSec = Math.max(0, Math.round(prevTime * 10) / 10);
+          const eSec = Math.max(sSec, Math.round(state.currentTime * 10) / 10);
+          if (eSec > sSec) {
+            const lastPending = pendingEventsRef.current[pendingEventsRef.current.length - 1];
+            const canCoalesce =
+              lastPending &&
+              !inFlightKeysRef.current.has(lastPending.idempotency_key) &&
+              Math.abs(lastPending.end_sec - sSec) <= 0.6 &&
+              lastPending.end_sec - lastPending.start_sec < 8;
+            if (canCoalesce) {
+              lastPending.end_sec = Math.max(lastPending.end_sec, eSec);
+              lastPending.playback_rate = Math.round((state.playbackRate || 1) * 100) / 100;
+            } else {
+              eventSeqRef.current += 1;
+              pendingEventsRef.current.push({
+                idempotency_key: `vid_${blockId}_${Date.now()}_${eventSeqRef.current}`,
+                start_sec: sSec,
+                end_sec: eSec,
+                playback_rate: Math.round((state.playbackRate || 1) * 100) / 100,
+                is_visible: true,
+              });
+            }
+          }
+        } else {
+          watchedSecondsRef.current += delta;
+          if (state.currentTime > maxAllowedPosRef.current) {
+            maxAllowedPosRef.current = state.currentTime;
+          }
         }
       }
       lastTickTimeRef.current = state.currentTime;
@@ -612,9 +874,10 @@ export const InteractiveVideoPlayer: React.FC<InteractiveVideoPlayerProps> = ({
         return;
       }
 
-      if (!allowSeekingAhead && targetSeconds > maxAllowedPosRef.current + 2) {
+      if (strictSeekBlocked && targetSeconds > maxAllowedPosRef.current + 1.5) {
         adapterRef.current.seek(maxAllowedPosRef.current);
-        setSeekNotice('Giảng viên đã bật chế độ xem tuần tự cho video này.');
+        lastTickTimeRef.current = maxAllowedPosRef.current;
+        setSeekNotice('Chế độ STRICT: chỉ công nhận phần video đã xem, không thể tua vượt tiến độ.');
         return;
       }
     }
@@ -1003,8 +1266,21 @@ export const InteractiveVideoPlayer: React.FC<InteractiveVideoPlayerProps> = ({
             }
           }}
         >
-          <div className="ls-scrub-bar">
-            <div className="ls-scrub-fill" style={{ width: `${progressPct}%` }} />
+          <div className="ls-scrub-bar" style={{ position: 'relative' }}>
+            {effectiveDuration > 0 &&
+              watchedIntervals.map(([s, e], idx) => {
+                const left = Math.max(0, Math.min(100, (s / effectiveDuration) * 100));
+                const width = Math.max(0, Math.min(100 - left, ((e - s) / effectiveDuration) * 100));
+                if (width <= 0) return null;
+                return (
+                  <span
+                    key={`${s}-${e}-${idx}`}
+                    className="m-strict-interval"
+                    style={{ left: `${left}%`, width: `${width}%`, zIndex: 1, opacity: 0.45 }}
+                  />
+                );
+              })}
+            <div className="ls-scrub-fill" style={{ width: `${progressPct}%`, position: 'relative', zIndex: 2 }} />
           </div>
 
           {effectiveDuration > 0 &&

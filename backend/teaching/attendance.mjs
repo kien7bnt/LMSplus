@@ -32,13 +32,14 @@ export function getAttendancePolicy(db) {
   return policy;
 }
 
-export function rateFromCounts(counts, policy) {
+export function rateFromCounts(counts, policy = DEFAULT_POLICY) {
+  const safePolicy = policy || DEFAULT_POLICY;
   const p = counts.PRESENT || 0;
   const l = counts.LATE || 0;
   const e = counts.EXCUSED_ABSENCE || 0;
   const a = counts.UNEXCUSED_ABSENCE || 0;
-  const num = p + (policy.late_counts_as_present ? l : 0);
-  const den = p + l + a + (policy.excused_in_denominator ? e : 0);
+  const num = p + (safePolicy.late_counts_as_present ? l : 0);
+  const den = p + l + a + (safePolicy.excused_in_denominator ? e : 0);
   return den > 0 ? Math.round((num / den) * 1000) / 10 : null;
 }
 

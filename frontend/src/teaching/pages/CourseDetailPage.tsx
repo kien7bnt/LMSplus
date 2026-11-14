@@ -1,18 +1,22 @@
 import React, { useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { CourseDetail, CourseStatus, OutlineChapter, teachingApi } from '../api';
+import { CourseDetail, CourseStatus, OutlineChapter, masterApi, saveBlob, teachingApi } from '../api';
 import {
   Badge, Btn, Card, ConfirmDialog, EmptyState, ErrorState, Field, Loading, Modal, PageHeader, ProgressMeter, SmartImage, Tone,
-  errMsg, fmtBytes, fmtDate, useAsync, useToast,
+  errMsg, fmtBytes, fmtDate, fmtDateTime, useAsync, useToast,
 } from '../ui';
 import { CourseFormModal } from './CourseFormModal';
-import { saveBlob } from '../api';
+import { CourseWikiPanel } from './WikiPanel';
+import { ForumWorkspace } from './ForumPanel';
 
-type Section = 'overview' | 'content' | 'resources' | 'classes' | 'stats';
+type Section = 'overview' | 'content' | 'versions' | 'resources' | 'wiki' | 'forum' | 'classes' | 'stats';
 const SECTIONS: Array<{ id: Section; label: string }> = [
   { id: 'overview', label: 'Tổng quan' },
   { id: 'content', label: 'Chương & bài học' },
+  { id: 'versions', label: 'Phiên bản Snapshot' },
   { id: 'resources', label: 'Tài liệu' },
+  { id: 'wiki', label: 'Wiki môn học' },
+  { id: 'forum', label: 'Diễn đàn môn học' },
   { id: 'classes', label: 'Lớp học sử dụng' },
   { id: 'stats', label: 'Thống kê' },
 ];
@@ -23,11 +27,16 @@ const OutlineEditor: React.FC<{ course: CourseDetail; onChanged: () => void; set
   const toast = useToast();
   const canManage = course.capabilities.can_manage;
   const [newChapter, setNewChapter] = useState('');
+  const [newChapterTopicId, setNewChapterTopicId] = useState('');
+  const [newTopicTitle, setNewTopicTitle] = useState('');
+  const [newTopicCode, setNewTopicCode] = useState('');
   const [newLesson, setNewLesson] = useState<Record<string, string>>({});
   const [editing, setEditing] = useState<{ id: string; title: string } | null>(null);
   const [drag, setDrag] = useState<{ type: 'chapter' | 'lesson'; id: string; from: string } | null>(null);
   const [over, setOver] = useState<string | null>(null);
   const [confirm, setConfirm] = useState<null | { title: string; message: string; label: string; danger?: boolean; run: () => Promise<unknown> }>(null);
+  const treeReq = useAsync(() => masterApi.getCourseTree(course.id), [course.id]);
+  const topics = treeReq.data?.topics || course.topics || [];
   const outline = course.outline;
 
   const persist = async (next: OutlineChapter[]) => {
@@ -68,9 +77,24 @@ const OutlineEditor: React.FC<{ course: CourseDetail; onChanged: () => void; set
     }
   };
 
+  const addTopic = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newTopicTitle.trim()) return;
+    await run(
+      () => masterApi.createTopic(course.id, { title: newTopicTitle.trim(), code: newTopicCode.trim() || undefined }),
+      'Đã thêm chủ đề 4 cấp'
+    );
+    setNewTopicTitle('');
+    setNewTopicCode('');
+    treeReq.reload();
+  };
+
   const addChapter = async () => {
     if (!newChapter.trim()) return;
-    await run(() => teachingApi.createChapter(course.id, { title: newChapter.trim() }), 'Đã thêm chương');
+    await run(
+      () => teachingApi.createChapter(course.id, { title: newChapter.trim(), topic_id: newChapterTopicId || null }),
+      'Đã thêm chương'
+    );
     setNewChapter('');
   };
   const addLesson = async (chapterId: string) => {
@@ -102,10 +126,90 @@ const OutlineEditor: React.FC<{ course: CourseDetail; onChanged: () => void; set
     >
       {course.classes.length > 1 && (
         <div className="t-notice" style={{ marginBottom: 16 }}>
-          Khóa học đang được <strong>{course.classes.length} lớp</strong> sử dụng chung. Bài học sau khi xuất bản sẽ hiển thị cho học viên của tất cả các lớp này.
-          Nếu cần nội dung riêng cho một lớp, hãy dùng chức năng <strong>Sao chép khóa học</strong>.
+          Khóa học đang được <strong>{course.classes.length} lớp</strong> sử dụng chung. Lớp đang hoạt động ghim theo Snapshot phiên bản đã cấp; khi muốn cập nhật giáo án mới cho các lớp mới, hãy xuất bản phiên bản Snapshot mới.
         </div>
       )}
+
+      {/* Cây cấu trúc Chủ đề (Cấp Chủ đề -> Chương -> Bài học) */}
+      <div style={{ marginBottom: 20, padding: 14, borderRadius: 'var(--radius-md)', backgroundColor: 'var(--bg-surface-subtle)', border: '1px solid var(--border-subtle)' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: topics.length || canManage ? 10 : 0 }}>
+          <div>
+            <strong style={{ fontSize: 14 }}>Chủ đề học tập (Cấp 1 của cây nội dung 4 cấp)</strong>
+            <span className="t-sub" style={{ margin: '2px 0 0' }}>Nhóm các chương theo chủ đề để đồng bộ với 3 Ngân hàng học liệu.</span>
+          </div>
+          <Link className="t-btn t-btn--small" to={`/teaching/banks?course_id=${course.id}`}>
+            Mở Ngân hàng theo cây
+          </Link>
+        </div>
+        {topics.length > 0 && (
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: canManage ? 10 : 0 }}>
+            {topics.map((tp) => (
+              <span
+                key={tp.id}
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  padding: '4px 10px',
+                  borderRadius: 'var(--radius-pill)',
+                  border: '1px solid var(--border-subtle)',
+                  backgroundColor: 'var(--bg-surface)',
+                  fontSize: 13,
+                }}
+              >
+                <strong className="tabular-nums">{tp.code}</strong>
+                <span>{tp.title}</span>
+                {canManage && (
+                  <button
+                    type="button"
+                    aria-label={`Xóa chủ đề ${tp.title}`}
+                    style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--status-danger)', fontWeight: 700, padding: '0 4px' }}
+                    onClick={() =>
+                      setConfirm({
+                        title: `Xóa chủ đề "${tp.title}"?`,
+                        message: 'Chủ đề sẽ bị xóa; các chương gắn với chủ đề này sẽ chuyển về chưa phân nhóm.',
+                        label: 'Xóa chủ đề',
+                        danger: true,
+                        run: async () => {
+                          await masterApi.deleteTopic(tp.id);
+                          treeReq.reload();
+                        },
+                      })
+                    }
+                  >
+                    ×
+                  </button>
+                )}
+              </span>
+            ))}
+          </div>
+        )}
+        {canManage && (
+          <form onSubmit={addTopic} style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <input
+              className="t-input"
+              style={{ width: 130 }}
+              value={newTopicCode}
+              maxLength={40}
+              onChange={(e) => setNewTopicCode(e.target.value)}
+              placeholder="Mã chủ đề…"
+              aria-label="Mã chủ đề mới"
+            />
+            <input
+              className="t-input"
+              style={{ flex: '1 1 220px' }}
+              value={newTopicTitle}
+              maxLength={180}
+              onChange={(e) => setNewTopicTitle(e.target.value)}
+              placeholder="Tên chủ đề mới (ví dụ: Đại số tuyến tính)…"
+              aria-label="Tên chủ đề mới"
+            />
+            <Btn type="submit" small disabled={!newTopicTitle.trim()}>
+              + Thêm chủ đề
+            </Btn>
+          </form>
+        )}
+      </div>
       {outline.length === 0 && <EmptyState title="Chưa có chương nào" text="Thêm chương đầu tiên, sau đó thêm bài học vào chương." />}
       {outline.map((ch, ci) => (
         <div
@@ -152,6 +256,30 @@ const OutlineEditor: React.FC<{ course: CourseDetail; onChanged: () => void; set
               </h3>
             )}
             <Badge kind="lesson" value={ch.status} />
+            {canManage && topics.length > 0 && editing?.id !== ch.id && (
+              <select
+                className="t-input"
+                style={{ width: 'auto', minWidth: 150, paddingBlock: 6, fontSize: 13 }}
+                aria-label={`Chủ đề của chương ${ci + 1}`}
+                value={ch.topic_id || ''}
+                onChange={(e) =>
+                  run(
+                    async () => {
+                      await teachingApi.updateChapter(ch.id, { topic_id: e.target.value || null });
+                      treeReq.reload();
+                    },
+                    'Đã cập nhật chủ đề chương'
+                  )
+                }
+              >
+                <option value="">-- Chưa gắn chủ đề --</option>
+                {topics.map((tp) => (
+                  <option key={tp.id} value={tp.id}>
+                    {tp.code} — {tp.title}
+                  </option>
+                ))}
+              </select>
+            )}
             {canManage && editing?.id !== ch.id && (
               <div className="t-actions">
                 <button type="button" className="t-icon-btn" aria-label="Chuyển chương lên" disabled={ci === 0} onClick={() => moveChapter(ci, ci - 1)}>↑</button>
@@ -310,6 +438,20 @@ const OutlineEditor: React.FC<{ course: CourseDetail; onChanged: () => void; set
             addChapter();
           }}
         >
+          {topics.length > 0 && (
+            <select
+              className="t-input"
+              style={{ width: 200 }}
+              aria-label="Chủ đề cho chương mới"
+              value={newChapterTopicId}
+              onChange={(e) => setNewChapterTopicId(e.target.value)}
+            >
+              <option value="">-- Chủ đề (tùy chọn) --</option>
+              {topics.map((tp) => (
+                <option key={tp.id} value={tp.id}>{tp.title}</option>
+              ))}
+            </select>
+          )}
           <input className="t-input" style={{ flex: '1 1 300px' }} value={newChapter} maxLength={200} onChange={(e) => setNewChapter(e.target.value)} placeholder="Tên chương mới…" aria-label="Tên chương mới" />
           <Btn type="submit" variant="primary" disabled={!newChapter.trim()}>
             + Thêm chương
@@ -509,6 +651,146 @@ const ResourcesSection: React.FC<{ courseId: string }> = ({ courseId }) => {
   );
 };
 
+// ------------------------------------------------------------------ Snapshot Versions (Immutable Release)
+
+const VersionsSection: React.FC<{ course: CourseDetail; onCourseChanged: () => void }> = ({ course, onCourseChanged }) => {
+  const toast = useToast();
+  const canManage = course.capabilities.can_manage;
+  const req = useAsync(() => masterApi.listCourseVersions(course.id), [course.id]);
+  const [label, setLabel] = useState('');
+  const [note, setNote] = useState('');
+  const [publishing, setPublishing] = useState(false);
+  const [cloneTarget, setCloneTarget] = useState<{ id: string; label: string } | null>(null);
+
+  const publish = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setPublishing(true);
+    try {
+      const created = await masterApi.publishCourseVersion(course.id, {
+        version_label: label.trim() || undefined,
+        changelog_note: note.trim() || undefined,
+      });
+      setLabel('');
+      setNote('');
+      toast({
+        tone: 'success',
+        title: `Đã xuất bản Snapshot ${created.version_label}`,
+        detail: 'Các lớp đang hoạt động vẫn giữ nguyên bản ghim cũ cho tới khi chủ động nâng cấp.',
+      });
+      req.reload();
+      onCourseChanged();
+    } catch (ex) {
+      toast({ tone: 'error', title: 'Không xuất bản được phiên bản', detail: errMsg(ex) });
+    } finally {
+      setPublishing(false);
+    }
+  };
+
+  if (req.loading) return <Loading rows={4} />;
+  if (req.error || !req.data) return <ErrorState error={req.error} onRetry={req.reload} />;
+
+  const items = req.data.items;
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+      <div className="m-semantic-notice" data-tone={req.data.has_unpublished_snapshot_changes ? 'warning' : 'info'}>
+        <div>
+          <strong>Quy tắc phiên bản Snapshot bất biến:</strong> Mọi lớp học đang mở được ghim vào một bản Snapshot cụ thể. Khi bạn chỉnh sửa bài giảng ở bản nháp hiện tại, lớp đang chạy <strong>không bị tự động thay đổi</strong>; học viên chỉ nhận phiên bản mới cho các lớp mở sau hoặc khi được nâng cấp có kiểm soát.
+          {req.data.has_unpublished_snapshot_changes && (
+            <span style={{ display: 'block', marginTop: 6, fontWeight: 600 }}>
+              Lưu ý: Khóa học hiện có thay đổi mới chưa đóng gói thành bản Snapshot.
+            </span>
+          )}
+        </div>
+      </div>
+
+      {canManage && (
+        <Card title="Xuất bản Snapshot mới từ cấu trúc hiện tại">
+          <form onSubmit={publish} className="t-form-grid">
+            <Field label="Nhãn phiên bản (tùy chọn)" hint="Nếu để trống, hệ thống tự đặt vN theo thứ tự">
+              <input className="t-input" value={label} onChange={(e) => setLabel(e.target.value)} placeholder="VD: v2.0 — Học kỳ Spring 2027" />
+            </Field>
+            <Field label="Ghi chú thay đổi (Changelog)">
+              <input className="t-input" value={note} onChange={(e) => setNote(e.target.value)} placeholder="Mô tả nội dung cập nhật..." />
+            </Field>
+            <div style={{ gridColumn: '1 / -1' }}>
+              <Btn type="submit" variant="primary" loading={publishing}>
+                Đóng gói & Xuất bản Snapshot mới
+              </Btn>
+            </div>
+          </form>
+        </Card>
+      )}
+
+      <Card title="Lịch sử Snapshot đã xuất bản" padded={false}>
+        {items.length === 0 ? (
+          <EmptyState title="Chưa có bản Snapshot nào" text="Hãy xuất bản phiên bản Snapshot đầu tiên (v1) để các lớp học có thể ghim nội dung ổn định." />
+        ) : (
+          <div className="t-table-wrap">
+            <table className="t-table">
+              <thead>
+                <tr>
+                  <th>Phiên bản</th>
+                  <th>Ghi chú thay đổi</th>
+                  <th>Ngày xuất bản</th>
+                  <th>Người xuất bản</th>
+                  <th className="num">Số lớp đang ghim</th>
+                  {canManage && <th className="actions">Thao tác</th>}
+                </tr>
+              </thead>
+              <tbody>
+                {items.map((v) => (
+                  <tr key={v.id}>
+                    <td>
+                      <strong className="tabular-nums">{v.version_label}</strong>
+                      <span className="t-sub tabular-nums">#{v.version_number}</span>
+                    </td>
+                    <td>{v.changelog_note || <span className="t-sub">Không có ghi chú</span>}</td>
+                    <td className="tabular-nums">{fmtDateTime(v.published_at)}</td>
+                    <td>{v.published_by_name || '—'}</td>
+                    <td className="num tabular-nums">{v.classes_using?.length ?? 0}</td>
+                    {canManage && (
+                      <td className="actions">
+                        <Btn small variant="ghost" onClick={() => setCloneTarget({ id: v.id, label: v.version_label })}>
+                          Khôi phục về bản nháp
+                        </Btn>
+                      </td>
+                    )}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Card>
+
+      {cloneTarget && (
+        <ConfirmDialog
+          title={`Khôi phục Snapshot ${cloneTarget.label} về bản nháp?`}
+          message="Hệ thống sẽ đồng bộ cấu trúc bài học nháp hiện tại theo đúng ảnh chụp của phiên bản này (không làm thay đổi các lớp đang chạy)."
+          confirmLabel="Khôi phục bản nháp"
+          onCancel={() => setCloneTarget(null)}
+          onConfirm={async () => {
+            try {
+              const r = await masterApi.cloneVersionToDraft(course.id, cloneTarget.id);
+              toast({
+                tone: 'success',
+                title: `Đã khôi phục bản nháp từ ${cloneTarget.label}`,
+                detail: `${r.restored_lessons} bài học đã được nạp lại.`,
+              });
+              setCloneTarget(null);
+              req.reload();
+              onCourseChanged();
+            } catch (ex) {
+              toast({ tone: 'error', title: 'Không thể khôi phục bản nháp', detail: errMsg(ex) });
+            }
+          }}
+        />
+      )}
+    </div>
+  );
+};
+
 // ------------------------------------------------------------------ Page
 
 export const CourseDetailPage: React.FC = () => {
@@ -554,6 +836,9 @@ export const CourseDetailPage: React.FC = () => {
           <>
             <Link className="t-btn t-btn--primary" to={`/teaching/courses/${c.id}/studio`}>
               🎬 Mở Lesson Studio
+            </Link>
+            <Link className="t-btn" to={`/teaching/banks?course_id=${c.id}`}>
+              Ngân hàng học liệu
             </Link>
             {canManage && c.status !== 'PUBLISHED' && <Btn variant="secondary" onClick={() => setStatusConfirm('PUBLISHED')}>Xuất bản khóa học</Btn>}
             {canManage && <Btn onClick={() => setEditOpen(true)}>Sửa thông tin</Btn>}
@@ -621,7 +906,10 @@ export const CourseDetailPage: React.FC = () => {
           )}
 
           {section === 'content' && <OutlineEditor course={c} onChanged={reload} setOutline={(o) => setData({ ...c, outline: o })} />}
+          {section === 'versions' && <VersionsSection course={c} onCourseChanged={reload} />}
           {section === 'resources' && <ResourcesSection courseId={c.id} />}
+          {section === 'wiki' && <CourseWikiPanel courseId={c.id} />}
+          {section === 'forum' && <ForumWorkspace mode="course" targetId={c.id} />}
 
           {section === 'classes' && (
             <Card

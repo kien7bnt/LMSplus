@@ -77,6 +77,8 @@ const expectedMigrations = [
   '006_teaching_workspace_extensions_down.sql',
   '007_lesson_studio_and_video_quiz_up.sql',
   '007_lesson_studio_and_video_quiz_down.sql',
+  '008_master_lms_architecture_up.sql',
+  '008_master_lms_architecture_down.sql',
 ];
 
 logInfo('Step 2/3: Validating PostgreSQL Migration SQL files in database/migrations/...');

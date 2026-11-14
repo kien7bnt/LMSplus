@@ -90,8 +90,22 @@ export interface OutlineLesson {
   has_class_note?: boolean;
 }
 
+export type EnrollmentSource = 'ACADEMIC_ASSIGNED' | 'COHORT_SYNCED' | 'MAKEUP' | 'RETAKE' | 'SUPPLEMENTAL';
+
+export interface CourseTopicSummary {
+  id: string;
+  course_id: string;
+  code: string;
+  title: string;
+  description: string;
+  sort_order: number;
+  status: LessonStatus;
+}
+
 export interface OutlineChapter {
   id: string;
+  topic_id?: string | null;
+  code?: string;
   title: string;
   description: string;
   status: LessonStatus;
@@ -100,6 +114,8 @@ export interface OutlineChapter {
 }
 
 export interface CourseDetail extends Course {
+  topics?: CourseTopicSummary[];
+  versions_count?: number;
   outline: OutlineChapter[];
   classes: Array<{ id: string; code: string; title: string; status: ClassStatus; student_count: number }>;
   resources_count: number;
@@ -251,8 +267,13 @@ export interface VideoWatchProgress {
   last_position_sec: number;
   max_watched_sec: number;
   watched_seconds: number;
+  unique_watched_sec?: number;
+  max_contiguous_watched_sec?: number;
+  watched_intervals?: Array<[number, number]>;
   duration_sec: number;
   watch_pct: number;
+  required_pct?: number;
+  strict_mode?: boolean;
   is_completed: boolean;
 }
 
@@ -761,6 +782,11 @@ export interface ClassSummary {
   subject: string;
   description: string;
   course: { id: string; code: string; title: string; status: CourseStatus } | null;
+  cohort_id?: string | null;
+  cohort?: { id: string; code: string; title: string; status?: string } | null;
+  course_version_id?: string | null;
+  course_version_number?: number | null;
+  course_version?: { id: string; version_number: number; version_label: string; published_at?: string } | null;
   start_date: string | null;
   end_date: string | null;
   max_students: number | null;
@@ -793,6 +819,7 @@ export interface RosterStudent {
   code: string;
   full_name: string;
   email: string;
+  enrollment_source?: 'ACADEMIC_ASSIGNED' | 'COHORT_SYNCED' | 'MAKEUP' | 'RETAKE' | 'SUPPLEMENTAL';
   status: 'ACTIVE' | 'DROPPED';
   enrolled_at: string;
   dropped_at: string | null;
@@ -898,6 +925,7 @@ export interface Dashboard {
   logs_unconfirmed: SessionSummary[];
   low_attendance: Array<{ class_id: string; class_code: string; student_id: string; full_name: string; code: string; rate: number }>;
   assignments_to_grade: number | null;
+  leave_requests_pending?: number;
   attendance_policy: AttendancePolicy;
 }
 
@@ -906,6 +934,9 @@ export interface LearnClass {
   code: string;
   title: string;
   subject: string;
+  enrollment_source?: string;
+  cohort?: { id: string; code: string; title: string } | null;
+  course_version?: { id: string; version_number: number; version_label: string } | null;
   instructor_name: string;
   course: { id: string; title: string; status: CourseStatus; thumbnail_url: string } | null;
   progress: { completed: number; total: number; pct: number };
@@ -923,10 +954,21 @@ export interface LearnClass {
 }
 
 export interface LearnClassDetail {
-  class: { id: string; code: string; title: string; room: string; schedule_text: string; instructor_name?: string };
+  class: {
+    id: string;
+    code: string;
+    title: string;
+    room: string;
+    schedule_text: string;
+    instructor_name?: string;
+    enrollment_source?: string;
+    cohort?: { id: string; code: string; title: string } | null;
+    course_version?: { id: string; version_number: number; version_label: string } | null;
+  };
   course: { id: string; title: string; description: string; objectives: string; status: CourseStatus } | null;
   content_available: boolean;
-  chapters: Array<{ id: string; title: string; description: string; lessons: Array<{ id: string; title: string; duration_minutes: number; progress_status: 'NOT_STARTED' | 'IN_PROGRESS' | 'COMPLETED' }> }>;
+  topics?: Array<{ id: string; code: string; title: string; description?: string; sort_order: number }>;
+  chapters: Array<{ id: string; topic_id?: string | null; title: string; description: string; lessons: Array<{ id: string; title: string; duration_minutes: number; progress_status: 'NOT_STARTED' | 'IN_PROGRESS' | 'COMPLETED' }> }>;
   upcoming_sessions?: Array<{
     id: string;
     title: string;
@@ -951,6 +993,7 @@ export interface LearnLesson {
   completion_rule: CompletionRule;
   min_video_watch_pct?: number;
   require_video_quizzes?: boolean;
+  course_version?: { id: string; version_number: number; version_label: string } | null;
   chapter: { id: string; title: string };
   class_custom_note?: { instructor_note: string; custom_objectives: string } | null;
   blocks: LessonBlock[];
@@ -1016,8 +1059,8 @@ export const teachingApi = {
     send<{ outline: OutlineChapter[] }>('PUT', `/courses/${id}/outline`, { chapters }),
 
   // Chương & bài học
-  createChapter: (courseId: string, body: { title: string; description?: string }) => send<OutlineChapter>('POST', `/courses/${courseId}/chapters`, body),
-  updateChapter: (id: string, body: Partial<{ title: string; description: string; status: LessonStatus }>) => send<OutlineChapter>('PATCH', `/chapters/${id}`, body),
+  createChapter: (courseId: string, body: { title: string; description?: string; topic_id?: string | null }) => send<OutlineChapter>('POST', `/courses/${courseId}/chapters`, body),
+  updateChapter: (id: string, body: Partial<{ title: string; description: string; status: LessonStatus; topic_id: string | null }>) => send<OutlineChapter>('PATCH', `/chapters/${id}`, body),
   duplicateChapter: (id: string) => send<{ id: string; outline: OutlineChapter[] }>('POST', `/chapters/${id}/duplicate`),
   deleteChapter: (id: string) => send<{ deleted_id: string }>('DELETE', `/chapters/${id}`),
   createLesson: (chapterId: string, body: { title: string; description?: string; duration_minutes?: number; completion_rule?: CompletionRule }) =>
@@ -1159,8 +1202,10 @@ export const teachingApi = {
   updateClass: (id: string, body: Record<string, unknown>) => send<ClassSummary>('PATCH', `/classes/${id}`, body),
   students: (id: string, p: { q?: string; status?: string }) =>
     get<{ items: RosterStudent[]; capabilities: ClassCapabilities }>(`/classes/${id}/students${qs(p)}`),
-  addStudents: (id: string, students: string[]) => send<EnrollResult>('POST', `/classes/${id}/students`, { students }),
-  importStudents: (id: string, text: string) => send<EnrollResult>('POST', `/classes/${id}/students/import`, { text }),
+  addStudents: (id: string, students: string[], enrollment_source: EnrollmentSource = 'ACADEMIC_ASSIGNED') =>
+    send<EnrollResult>('POST', `/classes/${id}/students`, { students, enrollment_source }),
+  importStudents: (id: string, text: string, enrollment_source: EnrollmentSource = 'ACADEMIC_ASSIGNED') =>
+    send<EnrollResult>('POST', `/classes/${id}/students/import`, { text, enrollment_source }),
   dropStudent: (id: string, studentId: string) => send<unknown>('DELETE', `/classes/${id}/students/${studentId}`),
   addStaff: (id: string, body: { user_id: string; staff_role: string; permissions?: Record<string, boolean> }) =>
     send<{ items: StaffMember[] }>('POST', `/classes/${id}/staff`, body),
@@ -1199,7 +1244,16 @@ export const teachingApi = {
   saveVideoProgress: (
     classId: string,
     lessonId: string,
-    body: { block_id: string; last_position_sec: number; watched_seconds: number; duration_sec: number }
+    body: {
+      block_id: string;
+      last_position_sec: number;
+      watched_seconds?: number;
+      duration_sec: number;
+      playback_rate?: number;
+      is_visible?: boolean;
+      segments?: Array<{ start_sec: number; end_sec: number; is_visible?: boolean }>;
+      events?: Array<{ idempotency_key: string; start_sec: number; end_sec: number; playback_rate?: number; is_visible?: boolean }>;
+    }
   ) => send<VideoWatchProgress & { block_id: string }>('PUT', `/learn/classes/${classId}/lessons/${lessonId}/video-progress`, body),
   submitVideoMarker: (
     classId: string,
@@ -1274,6 +1328,816 @@ export const teachingApi = {
     get<VirtualAttendanceHistory>(`/sessions/${sessionId}/virtual-attendance/history`),
   exportVirtualAttendance: (sessionId: string) =>
     apiDownload(`${T}/sessions/${sessionId}/virtual-attendance/export`),
+};
+
+// ============================================================================
+// MASTER LMS EXTENSIONS (Curricula, Cohorts, Tree, Snapshots, Banks, Exams, Assignments, Leave, Forums)
+// ============================================================================
+
+export type CurriculumStatus = 'DRAFT' | 'ACTIVE' | 'ARCHIVED';
+export type CohortStatus = 'PLANNING' | 'ACTIVE' | 'COMPLETED' | 'ARCHIVED';
+export type ExamScopeType = 'COURSE' | 'TOPIC' | 'CHAPTER' | 'LESSON';
+export type ScoringPolicy = 'HIGHEST' | 'LATEST' | 'AVERAGE';
+export type AssignmentSubmissionType = 'TEXT' | 'FILE' | 'LINK' | 'MIXED';
+export type LeaveRequestStatus = 'PENDING' | 'APPROVED' | 'REJECTED' | 'CANCELLED';
+export type LeaveReasonCategory = 'ILLNESS' | 'FAMILY' | 'WORK' | 'ACADEMIC_CONFLICT' | 'OTHER';
+export type ForumCategory = 'QA' | 'DISCUSSION' | 'ANNOUNCEMENT' | 'EXPERIENCE';
+
+export interface CurriculumItem {
+  id: string;
+  code: string;
+  title: string;
+  description: string;
+  version: string;
+  effective_date: string | null;
+  department_id: string | null;
+  status: CurriculumStatus;
+  subjects_count: number;
+  cohorts_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CurriculumSubjectItem {
+  id: string;
+  course_id: string;
+  course_code: string;
+  course_title: string;
+  subject_name: string;
+  course_status: CourseStatus;
+  instructor_name: string;
+  latest_version_number: number | null;
+  semester_order: number;
+  sort_order: number;
+  planned_periods: number;
+  planned_hours: number;
+  is_mandatory: boolean;
+  note: string;
+}
+
+export interface CohortSummary {
+  id: string;
+  code: string;
+  title: string;
+  curriculum: { id: string; code: string; title: string; version: string } | null;
+  academic_year: string;
+  semester: string;
+  start_date: string | null;
+  end_date: string | null;
+  delivery_mode: DeliveryMode;
+  location_note: string;
+  coordinator_id: string | null;
+  coordinator_name: string;
+  max_students: number | null;
+  department_id: string | null;
+  status: CohortStatus;
+  active_students_count: number;
+  subject_classes_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CurriculumDetail extends CurriculumItem {
+  subjects: CurriculumSubjectItem[];
+  cohorts: CohortSummary[];
+  audit_logs: Array<{ id: string; action: string; actor_name: string; payload: Record<string, any>; created_at: string }>;
+  capabilities: { can_manage: boolean };
+}
+
+export interface CohortStudentProgressRow {
+  student_id: string;
+  code: string;
+  full_name: string;
+  email: string;
+  status: 'ACTIVE' | 'WITHDRAWN' | 'TRANSFERRED' | 'COMPLETED';
+  enrolled_at: string;
+  ended_at: string | null;
+  note: string;
+  attendance_rate: number | null;
+  completed_lessons: number;
+  total_lessons: number;
+  completion_pct: number;
+}
+
+export interface CohortDetail extends CohortSummary {
+  students: CohortStudentProgressRow[];
+  curriculum_subjects: CurriculumSubjectItem[];
+  subject_classes: Array<{
+    id: string;
+    code: string;
+    title: string;
+    subject: string;
+    course_id: string;
+    course_code: string;
+    course_title: string;
+    instructor_name: string;
+    delivery_mode: DeliveryMode;
+    status: ClassStatus;
+    course_version_id: string | null;
+    pinned_version_number: number | null;
+    pinned_version_label: string;
+    latest_version_number: number | null;
+    has_newer_version: boolean;
+    synced_students_count: number;
+    extra_students_count: number;
+    total_students_count: number;
+  }>;
+  instructors: Array<{ id: string; full_name: string; email: string; staff_role: string; class_codes: string[] }>;
+  schedule: Array<{
+    id: string;
+    class_id: string;
+    class_code: string;
+    class_title: string;
+    title: string;
+    start_at: string;
+    end_at: string;
+    delivery_mode: DeliveryMode;
+    session_status: string;
+    room_or_link: string;
+  }>;
+  progress: CohortStudentProgressRow[];
+  statistics: {
+    distinct_active_students: number;
+    distinct_synced_to_classes: number;
+    distinct_extra_subject_students: number;
+    subject_classes_count: number;
+    avg_completion_pct: number;
+    transferred_count: number;
+    withdrawn_count: number;
+    no_double_counting_note: string;
+  };
+  audit_logs: Array<{ id: string; action: string; actor_name: string; payload: Record<string, any>; created_at: string }>;
+  capabilities: { can_manage: boolean };
+}
+
+export interface ContentTreeLesson {
+  id: string;
+  chapter_id: string;
+  code: string;
+  title: string;
+  description: string;
+  duration_minutes: number;
+  sort_order: number;
+  publish_status: LessonStatus;
+  published_version: number;
+  completion_rule: CompletionRule;
+  questions_count: number;
+  assignments_count: number;
+  resources_count: number;
+  wiki_count: number;
+}
+
+export interface ContentTreeChapter {
+  id: string;
+  topic_id: string | null;
+  code: string;
+  title: string;
+  description: string;
+  status: LessonStatus;
+  sort_order: number;
+  lessons: ContentTreeLesson[];
+  questions_count: number;
+  assignments_count: number;
+  resources_count: number;
+}
+
+export interface ContentTreeTopic {
+  id: string;
+  course_id: string;
+  code: string;
+  title: string;
+  description: string;
+  sort_order: number;
+  status: LessonStatus;
+  chapters: ContentTreeChapter[];
+  questions_count: number;
+  assignments_count: number;
+  resources_count: number;
+}
+
+export interface CourseVersionSummary {
+  id: string;
+  version_number: number;
+  version_label: string;
+  status: string;
+  changelog_note: string;
+  published_by: string;
+  published_by_name: string;
+  published_at: string;
+  topics_count: number;
+  chapters_count: number;
+  lessons_count: number;
+  classes_using: Array<{ id: string; code: string; title: string; status: ClassStatus }>;
+}
+
+export interface WikiPageItem {
+  id: string;
+  course_id: string;
+  topic_id: string | null;
+  chapter_id: string | null;
+  lesson_id: string | null;
+  topic_title?: string;
+  chapter_title?: string;
+  lesson_title?: string;
+  slug: string;
+  title: string;
+  summary: string;
+  content_markdown: string;
+  tags: string[];
+  related_page_ids: string[];
+  status: 'DRAFT' | 'PUBLISHED' | 'ARCHIVED';
+  updated_at: string;
+}
+
+export interface WikiPageDetail extends WikiPageItem {
+  related_pages: Array<{ id: string; title: string; slug: string; summary: string }>;
+  revisions: Array<{ id: string; revision_number: number; title: string; change_note: string; edited_by_name: string; created_at: string }>;
+  can_edit: boolean;
+}
+
+export interface BankTreeCourse {
+  id: string;
+  code: string;
+  title: string;
+  subject: string;
+  questions_count: number;
+  assignments_count: number;
+  resources_count: number;
+  can_edit: boolean;
+  topics: ContentTreeTopic[];
+}
+
+export interface BankQuestionRow extends QuestionBankItem {
+  course_code: string;
+  course_title: string;
+  topic_id: string | null;
+  topic_title: string;
+  chapter_id: string | null;
+  chapter_title: string;
+  lesson_id: string | null;
+  lesson_title: string;
+}
+
+export interface AssignmentBankItem {
+  id: string;
+  course_id: string;
+  course_code?: string;
+  course_title?: string;
+  topic_id: string | null;
+  topic_title?: string;
+  chapter_id: string | null;
+  chapter_title?: string;
+  lesson_id: string | null;
+  lesson_title?: string;
+  title: string;
+  description: string;
+  instructions: string;
+  submission_type: AssignmentSubmissionType;
+  max_score: number;
+  max_attempts: number;
+  allow_resubmit: boolean;
+  tags: string[];
+  updated_at: string;
+}
+
+export interface BankResourceItem {
+  id: string;
+  course_id: string;
+  course_code: string;
+  course_title: string;
+  topic_id: string | null;
+  topic_title: string;
+  chapter_id: string | null;
+  chapter_title: string;
+  lesson_id: string | null;
+  lesson_title: string;
+  title: string;
+  description: string;
+  resource_type: 'LINK' | 'VIDEO' | 'PDF' | 'FILE';
+  storage_provider: string;
+  url: string | null;
+  file_name: string | null;
+  visibility: 'ENROLLED' | 'INSTRUCTOR_ONLY';
+  updated_at: string;
+}
+
+export interface ClassExamItem {
+  id: string;
+  class_id: string;
+  course_id: string;
+  scope_type: ExamScopeType;
+  topic_id: string | null;
+  topic_title: string | null;
+  chapter_id: string | null;
+  chapter_title: string | null;
+  lesson_id: string | null;
+  lesson_title: string | null;
+  title: string;
+  description: string;
+  time_limit_minutes: number;
+  max_attempts: number;
+  shuffle_questions: boolean;
+  scoring_policy: ScoringPolicy;
+  pass_score_pct: number;
+  open_at: string | null;
+  close_at: string | null;
+  status: 'DRAFT' | 'PUBLISHED' | 'CLOSED';
+  question_count: number;
+  total_points: number;
+  attempt_count: number;
+  submitted_count: number;
+  pending_manual_count: number;
+  updated_at: string;
+}
+
+export interface StudentExamItem extends ClassExamItem {
+  class_code: string;
+  class_title: string;
+  course_title: string;
+  attempts_used: number;
+  in_progress_attempt_id: string | null;
+  effective_score: number | null;
+  effective_pct: number | null;
+  passed: boolean | null;
+  can_start: boolean;
+  attempts: Array<{
+    id: string;
+    attempt_number: number;
+    grading_status: 'IN_PROGRESS' | 'PENDING_MANUAL' | 'GRADED';
+    auto_score: number;
+    manual_score: number;
+    total_score: number;
+    max_score: number;
+    teacher_feedback: string;
+    started_at: string;
+    submitted_at: string | null;
+    graded_at: string | null;
+  }>;
+}
+
+export interface ClassAssignmentItem {
+  id: string;
+  class_id: string;
+  course_id: string;
+  assignment_bank_item_id: string | null;
+  topic_id: string | null;
+  topic_title: string | null;
+  chapter_id: string | null;
+  chapter_title: string | null;
+  lesson_id: string | null;
+  lesson_title: string | null;
+  title: string;
+  instructions: string;
+  submission_type: AssignmentSubmissionType;
+  max_score: number;
+  max_attempts: number;
+  allow_resubmit: boolean;
+  due_at: string | null;
+  attachments: Array<{ title: string; url: string }>;
+  status: 'DRAFT' | 'PUBLISHED' | 'CLOSED';
+  students_touched: number;
+  submissions_total: number;
+  pending_grade_count: number;
+  updated_at: string;
+}
+
+export interface AssignmentSubmissionRow {
+  id: string;
+  class_assignment_id: string;
+  student_id: string;
+  student_code?: string;
+  student_name?: string;
+  attempt_number: number;
+  submission_text: string;
+  submission_link: string;
+  attachments: Array<{ title?: string; name?: string; url: string }>;
+  status: 'DRAFT' | 'SUBMITTED' | 'GRADED' | 'RETURNED';
+  score: number | null;
+  teacher_feedback: string;
+  submitted_at: string | null;
+  graded_at: string | null;
+  updated_at: string;
+}
+
+export interface StudentAssignmentItem extends ClassAssignmentItem {
+  class_code: string;
+  class_title: string;
+  course_title: string;
+  latest_submission: AssignmentSubmissionRow | null;
+  submissions: AssignmentSubmissionRow[];
+  submitted_count: number;
+  can_submit: boolean;
+  is_overdue: boolean;
+}
+
+export interface LeaveRequestItem {
+  id: string | number;
+  class_id: string;
+  class_code: string;
+  class_title: string;
+  session_id: string | null;
+  session_title: string | null;
+  scheduled_start_at: string | null;
+  scheduled_end_at: string | null;
+  student_id: string | null;
+  student_code: string;
+  student_name: string;
+  reason_category: LeaveReasonCategory;
+  reason: string;
+  makeup_class_requested: string;
+  evidence_url: string | null;
+  evidence_name: string | null;
+  status: LeaveRequestStatus;
+  reviewed_by_name: string | null;
+  reviewed_at: string | null;
+  review_note: string;
+  created_at: string | null;
+  logs: Array<{ id: string; action: string; actor_name: string; note: string; created_at: string }>;
+}
+
+export interface ForumInfo {
+  id: string;
+  scope_type: 'COURSE' | 'CLASS';
+  course_id: string | null;
+  class_id: string | null;
+  title: string;
+  description: string;
+}
+
+export interface ForumThreadItem {
+  id: string;
+  forum_id: string;
+  lesson_id: string | null;
+  author_id: string;
+  author_name: string;
+  author_role: string;
+  category: ForumCategory;
+  title: string;
+  body: string;
+  is_pinned: boolean;
+  is_locked: boolean;
+  is_hidden: boolean;
+  helpful_count: number;
+  reply_count: number;
+  helpful_by_me: boolean;
+  last_activity_at: string;
+  created_at: string;
+}
+
+export interface ForumReplyItem {
+  id: string;
+  thread_id: string;
+  author_id: string;
+  author_name: string;
+  author_role: string;
+  body: string;
+  is_hidden: boolean;
+  is_endorsed: boolean;
+  helpful_count: number;
+  helpful_by_me: boolean;
+  created_at: string;
+}
+
+export interface NotificationItem {
+  id: string;
+  notif_type: string;
+  title: string;
+  body: string;
+  link_path: string | null;
+  is_read: boolean;
+  created_at: string;
+}
+
+export interface StudentOverviewData {
+  total_classes: number;
+  total_lessons: number;
+  completed_lessons: number;
+  overall_progress_pct: number;
+  upcoming_sessions: Array<{
+    session_id: string;
+    class_id: string;
+    class_code: string;
+    class_title: string;
+    session_title: string;
+    scheduled_start_at: string;
+    scheduled_end_at: string;
+    delivery_mode: DeliveryMode;
+    room_or_link: string;
+  }>;
+  pending_assignments: Array<{ id: string; class_id: string; class_code: string; class_title: string; title: string; due_at: string | null; max_score: number }>;
+  pending_assignments_count: number;
+  pending_exams: Array<{ id: string; class_id: string; class_code: string; class_title: string; title: string; time_limit_minutes: number; close_at: string | null }>;
+  pending_exams_count: number;
+  attendance_summary: { rate: number | null; present: number; late: number; excused: number; absent: number; total_sessions: number };
+  pending_leave_requests: number;
+  recent_grades: Array<{ id: string; class_id: string; class_code: string; class_title: string; source_type: string; title: string; score: number; max_score: number; updated_at: string }>;
+  continue_learning: { class_id: string; class_code: string; class_title: string; lesson_id: string; lesson_title: string } | null;
+  recent_forum_activity: Array<{ id: string; forum_id: string; title: string; author_name: string; reply_count: number; last_activity_at: string; forum_title: string }>;
+  notifications: { unread_count: number; items: NotificationItem[] };
+}
+
+function normalizeForum(f: any): ForumInfo {
+  return {
+    id: f.id,
+    scope_type: f.scope_type,
+    course_id: f.course_id || null,
+    class_id: f.subject_class_id || f.class_id || null,
+    title: f.title,
+    description: f.description || '',
+  };
+}
+
+export const masterApi = {
+  // Khung chương trình (Level 1)
+  listCurricula: (p: { q?: string; status?: string; page?: number; page_size?: number } = {}) =>
+    get<Paged<CurriculumItem>>(`/curricula${qs(p)}`),
+  getCurriculum: (id: string) => get<CurriculumDetail>(`/curricula/${id}`),
+  createCurriculum: (body: { code: string; title: string; description?: string; version?: string; effective_date?: string; status?: CurriculumStatus }) =>
+    send<CurriculumItem>('POST', '/curricula', body),
+  updateCurriculum: (id: string, body: Partial<{ title: string; description: string; version: string; effective_date: string; status: CurriculumStatus }>) =>
+    send<CurriculumItem>('PATCH', `/curricula/${id}`, body),
+  deleteCurriculum: (id: string) => send<{ deleted_id: string }>('DELETE', `/curricula/${id}`),
+  addCurriculumSubject: (id: string, body: { course_id: string; semester_order?: number; planned_periods?: number; planned_hours?: number; is_mandatory?: boolean; note?: string }) =>
+    send<unknown>('POST', `/curricula/${id}/subjects`, body),
+  updateCurriculumSubject: (id: string, itemId: string, body: Partial<{ semester_order: number; planned_periods: number; planned_hours: number; is_mandatory: boolean; note: string }>) =>
+    send<unknown>('PATCH', `/curricula/${id}/subjects/${itemId}`, body),
+  removeCurriculumSubject: (id: string, itemId: string) =>
+    send<{ deleted_id: string }>('DELETE', `/curricula/${id}/subjects/${itemId}`),
+
+  // Lớp khóa học (Level 2)
+  listCohorts: (p: { q?: string; status?: string; curriculum_id?: string; page?: number; page_size?: number } = {}) =>
+    get<Paged<CohortSummary>>(`/cohorts${qs(p)}`),
+  getCohort: (id: string) => get<CohortDetail>(`/cohorts/${id}`),
+  createCohort: (body: Record<string, unknown>) => send<CohortSummary>('POST', '/cohorts', body),
+  updateCohort: (id: string, body: Record<string, unknown>) => send<CohortSummary>('PATCH', `/cohorts/${id}`, body),
+  addCohortStudents: (id: string, students: string[], sync_to_classes = true) =>
+    send<EnrollResult & { sync_summary?: Record<string, number> }>('POST', `/cohorts/${id}/students`, { students, sync_to_classes }),
+  importCohortStudents: (id: string, text: string, sync_to_classes = true) =>
+    send<EnrollResult & { sync_summary?: Record<string, number> }>('POST', `/cohorts/${id}/students/import`, { text, sync_to_classes }),
+  exportCohortStudents: (id: string) => apiDownload(`${T}/cohorts/${id}/students/export`),
+  withdrawCohortStudent: (id: string, studentId: string, reason?: string) =>
+    send<{ status: string }>('POST', `/cohorts/${id}/students/${studentId}/withdraw`, { reason }),
+  transferCohortStudent: (id: string, studentId: string, target_cohort_id: string, reason?: string) =>
+    send<{ source_cohort_id: string; target_cohort_id: string }>('POST', `/cohorts/${id}/students/${studentId}/transfer`, { target_cohort_id, reason }),
+  syncCohortRoster: (id: string, class_ids?: string[]) =>
+    send<{ classes_synced: number; added: number; reactivated: number; dropped: number }>('POST', `/cohorts/${id}/sync-roster`, class_ids ? { class_ids } : {}),
+  generateCohortClasses: (id: string, body?: { course_ids?: string[] }) =>
+    send<{ created: Array<{ id: string; code: string }>; skipped: Array<{ course_code: string; reason: string }> }>('POST', `/cohorts/${id}/generate-classes`, body || {}),
+
+  // Cây 4 cấp, Snapshot phiên bản môn học & Wiki
+  getCourseTree: (courseId: string) => get<{ course_id: string; topics: ContentTreeTopic[] }>(`/courses/${courseId}/tree`),
+  createTopic: (courseId: string, body: { code?: string; title: string; description?: string; status?: LessonStatus }) =>
+    send<ContentTreeTopic>('POST', `/courses/${courseId}/topics`, body),
+  updateTopic: (topicId: string, body: Partial<{ title: string; description: string; status: LessonStatus; sort_order: number }>) =>
+    send<CourseTopicSummary>('PATCH', `/topics/${topicId}`, body),
+  deleteTopic: (topicId: string) => send<{ deleted_id: string }>('DELETE', `/topics/${topicId}`),
+  listCourseVersions: (courseId: string) =>
+    get<{ course_id: string; has_unpublished_snapshot_changes: boolean; items: CourseVersionSummary[] }>(`/courses/${courseId}/versions`),
+  publishCourseVersion: (courseId: string, body: { version_label?: string; changelog_note?: string }) =>
+    send<CourseVersionSummary>('POST', `/courses/${courseId}/versions`, body),
+  cloneVersionToDraft: (courseId: string, versionId: string) =>
+    send<{ version_label: string; restored_lessons: number }>('POST', `/courses/${courseId}/versions/${versionId}/clone-to-draft`, {}),
+  upgradeClassVersion: (classId: string, body: { target_version_id: string; upgrade_reason: string; confirmed: boolean }) =>
+    send<{ class_id: string; course_version_id: string; course_version_number: number; version_label: string }>('POST', `/classes/${classId}/upgrade-version`, body),
+
+  // Wiki môn học
+  listCourseWiki: (courseId: string, p: { q?: string; lesson_id?: string } = {}) =>
+    get<{ items: WikiPageItem[]; can_edit: boolean }>(`/courses/${courseId}/wiki${qs(p)}`),
+  createCourseWiki: (courseId: string, body: { title: string; summary?: string; content_markdown: string; tags?: string[]; lesson_id?: string | null; status?: 'DRAFT' | 'PUBLISHED' }) =>
+    send<WikiPageItem>('POST', `/courses/${courseId}/wiki`, body),
+  getWikiPage: (pageId: string) => get<WikiPageDetail>(`/wiki/${pageId}`),
+  updateWikiPage: (pageId: string, body: Partial<{ title: string; summary: string; content_markdown: string; tags: string[]; status: string; change_note: string }>) =>
+    send<WikiPageItem>('PATCH', `/wiki/${pageId}`, body),
+  deleteWikiPage: (pageId: string) => send<{ deleted_id: string }>('DELETE', `/wiki/${pageId}`),
+  listStudentClassWiki: (classId: string, p: { q?: string; lesson_id?: string } = {}) =>
+    get<{ items: WikiPageItem[] }>(`/learn/classes/${classId}/wiki${qs(p)}`),
+
+  // 3 Ngân hàng học liệu đồng bộ theo nút lá
+  getBanksTree: (course_id?: string) => get<{ courses: BankTreeCourse[] }>(`/banks/tree${qs({ course_id })}`),
+  listQuestionBank: (p: { course_id?: string; topic_id?: string; chapter_id?: string; lesson_id?: string; q?: string; question_type?: string; difficulty?: string; page?: number; page_size?: number } = {}) =>
+    get<Paged<BankQuestionRow>>(`/banks/questions${qs(p)}`),
+  createQuestionBankItem: (body: Record<string, unknown>) => send<BankQuestionRow>('POST', '/banks/questions', body),
+  updateQuestionBankItem: (id: string, body: Record<string, unknown>) => send<BankQuestionRow>('PATCH', `/banks/questions/${id}`, body),
+  deleteQuestionBankItem: (id: string) => send<{ deleted_id: string }>('DELETE', `/banks/questions/${id}`),
+  importQuestionBank: (body: { lesson_id: string; node_level: 'LESSON'; items: Array<Record<string, unknown>> }) =>
+    send<{ imported_count: number; lesson_id: string }>('POST', '/banks/questions/import', body),
+  exportQuestionBank: (p: { course_id?: string; topic_id?: string; chapter_id?: string; lesson_id?: string } = {}) =>
+    get<{ exported_at: string; total: number; items: Array<Record<string, unknown>> }>(`/banks/questions/export${qs(p)}`),
+
+  listAssignmentBank: (p: { course_id?: string; topic_id?: string; chapter_id?: string; lesson_id?: string; q?: string; page?: number; page_size?: number } = {}) =>
+    get<Paged<AssignmentBankItem>>(`/banks/assignments${qs(p)}`),
+  createAssignmentBankItem: (body: Record<string, unknown>) => send<AssignmentBankItem>('POST', '/banks/assignments', body),
+  updateAssignmentBankItem: (id: string, body: Record<string, unknown>) => send<AssignmentBankItem>('PATCH', `/banks/assignments/${id}`, body),
+  deleteAssignmentBankItem: (id: string) => send<{ deleted_id: string }>('DELETE', `/banks/assignments/${id}`),
+  importAssignmentBank: (body: { lesson_id: string; node_level: 'LESSON'; items: Array<Record<string, unknown>> }) =>
+    send<{ imported_count: number; lesson_id: string }>('POST', '/banks/assignments/import', body),
+
+  listResourceBank: (p: { course_id?: string; topic_id?: string; chapter_id?: string; lesson_id?: string; q?: string; resource_type?: string; page?: number; page_size?: number } = {}) =>
+    get<Paged<BankResourceItem>>(`/banks/resources${qs(p)}`),
+  createResourceBankItem: (body: Record<string, unknown>) => send<BankResourceItem>('POST', '/banks/resources', body),
+  updateResourceBankItem: (id: string, body: Record<string, unknown>) => send<BankResourceItem>('PATCH', `/banks/resources/${id}`, body),
+  deleteResourceBankItem: (id: string) => send<{ deleted_id: string }>('DELETE', `/banks/resources/${id}`),
+
+  // Bài kiểm tra riêng của Lớp (Class Exams)
+  listClassExams: (classId: string) => get<{ items: ClassExamItem[] }>(`/classes/${classId}/exams`),
+  createClassExam: (classId: string, body: Record<string, unknown>) => send<ClassExamItem>('POST', `/classes/${classId}/exams`, body),
+  getExam: (examId: string) => get<ClassExamItem & { questions: Array<{ id: string; bank_question_id: string | null; points: number; question: QuestionSpec }> }>(`/exams/${examId}`),
+  updateExam: (examId: string, body: Record<string, unknown>) => send<ClassExamItem>('PATCH', `/exams/${examId}`, body),
+  deleteExam: (examId: string) => send<{ deleted: boolean }>('DELETE', `/exams/${examId}`),
+  listExamAttempts: (examId: string) =>
+    get<{
+      exam: ClassExamItem;
+      questions: Array<{ id: string; bank_question_id: string | null; points: number; question: QuestionSpec }>;
+      attempts: Array<{
+        id: string;
+        exam_id: string;
+        student_id: string;
+        student_code: string;
+        student_name: string;
+        attempt_number: number;
+        grading_status: 'IN_PROGRESS' | 'PENDING_MANUAL' | 'GRADED';
+        auto_score: number;
+        manual_score: number;
+        total_score: number;
+        max_score: number;
+        teacher_feedback: string;
+        answers: Record<string, any>;
+        item_grades: Record<string, any>;
+        started_at: string;
+        submitted_at: string | null;
+        graded_at: string | null;
+      }>;
+    }>(`/exams/${examId}/attempts`),
+  gradeExamAttempt: (attemptId: string, body: { item_scores?: Record<string, number>; teacher_feedback?: string }) =>
+    send<unknown>('POST', `/exam-attempts/${attemptId}/grade`, body),
+
+  // Học viên làm bài kiểm tra
+  listStudentExams: (p: { class_id?: string } = {}) => get<{ items: StudentExamItem[] }>(`/learn/exams${qs(p)}`),
+  startStudentExam: (examId: string) =>
+    send<{
+      exam: ClassExamItem;
+      attempt: {
+        id: string;
+        attempt_number: number;
+        grading_status: string;
+        auto_score: number;
+        manual_score: number;
+        total_score: number;
+        max_score: number;
+        answers: Record<string, any>;
+        item_grades: Record<string, any>;
+        started_at: string;
+        submitted_at: string | null;
+        remaining_seconds?: number;
+        questions: Array<{ id: string; question_type: QuestionType; prompt: string; points: number; options: Array<{ id: string; text: string }> }>;
+      };
+    }>('POST', `/learn/exams/${examId}/start`, {}),
+  saveStudentExamAttempt: (attemptId: string, answers: Record<string, any>) =>
+    send<{ attempt_id: string; saved_at: string }>('PUT', `/learn/exam-attempts/${attemptId}/save`, { answers }),
+  submitStudentExamAttempt: (attemptId: string, answers: Record<string, any>) =>
+    send<{ exam: ClassExamItem; attempt: any }>('POST', `/learn/exam-attempts/${attemptId}/submit`, { answers }),
+
+  // Bài tập lớp & nộp bài
+  listClassAssignments: (classId: string) => get<{ items: ClassAssignmentItem[] }>(`/classes/${classId}/assignments`),
+  createClassAssignment: (classId: string, body: Record<string, unknown>) => send<ClassAssignmentItem>('POST', `/classes/${classId}/assignments`, body),
+  updateClassAssignment: (assignmentId: string, body: Record<string, unknown>) => send<ClassAssignmentItem>('PATCH', `/assignments/${assignmentId}`, body),
+  deleteClassAssignment: (assignmentId: string) => send<{ deleted: boolean }>('DELETE', `/assignments/${assignmentId}`),
+  listAssignmentSubmissions: (assignmentId: string) =>
+    get<{
+      assignment: ClassAssignmentItem;
+      submissions: AssignmentSubmissionRow[];
+      roster_status: Array<{ student_id: string; student_code: string; student_name: string; latest_status: string; latest_submission: AssignmentSubmissionRow | null; submissions_count: number }>;
+    }>(`/assignments/${assignmentId}/submissions`),
+  gradeAssignmentSubmission: (subId: string, body: { status: 'GRADED' | 'RETURNED'; score?: number; teacher_feedback?: string }) =>
+    send<AssignmentSubmissionRow>('POST', `/assignment-submissions/${subId}/grade`, body),
+  listStudentAssignments: (p: { class_id?: string } = {}) => get<{ items: StudentAssignmentItem[] }>(`/learn/assignments${qs(p)}`),
+  saveStudentAssignmentDraft: (assignmentId: string, body: { submission_text?: string; submission_link?: string; attachments?: Array<{ title: string; url: string }> }) =>
+    send<AssignmentSubmissionRow>('PUT', `/learn/assignments/${assignmentId}/draft`, body),
+  submitStudentAssignment: (assignmentId: string, body: { submission_text?: string; submission_link?: string; attachments?: Array<{ title: string; url: string }> }) =>
+    send<AssignmentSubmissionRow>('POST', `/learn/assignments/${assignmentId}/submit`, body),
+
+  // Bảng điểm lớp
+  getClassGradebook: (classId: string) =>
+    get<{
+      class_id: string;
+      columns: Array<{ key: string; source_type: 'EXAM' | 'ASSIGNMENT'; source_id: string; title: string; max_score?: number }>;
+      rows: Array<{ student_id: string; code: string; full_name: string; scores: Record<string, { score: number; max_score: number }>; graded_count: number; average_scale_10: number | null }>;
+    }>(`/classes/${classId}/gradebook`),
+  getStudentClassGrades: (classId: string) =>
+    get<{
+      class_id: string;
+      average_scale_10: number | null;
+      gradebook_entries: Array<{ id: string; source_type: string; title: string; score: number; max_score: number; weight: number; updated_at: string }>;
+    }>(`/learn/classes/${classId}/grades`),
+
+  // Đơn xin nghỉ phép
+  listStudentLeaveRequests: () => get<{ items: LeaveRequestItem[] }>('/learn/leave-requests'),
+  createStudentLeaveRequest: (body: { class_id: string; session_id?: string | null; reason_category?: LeaveReasonCategory; reason: string; makeup_class_requested?: string; evidence_url?: string }) =>
+    send<LeaveRequestItem>('POST', '/learn/leave-requests', body),
+  cancelStudentLeaveRequest: (id: string | number) => send<{ id: string | number; status: string }>('POST', `/learn/leave-requests/${id}/cancel`, {}),
+  listStaffLeaveRequests: (p: { class_id?: string; status?: string } = {}) => get<{ items: LeaveRequestItem[] }>(`/leave-requests${qs(p)}`),
+  reviewLeaveRequest: (id: string | number, body: { decision: 'APPROVED' | 'REJECTED'; review_note?: string }) =>
+    send<{ request: LeaveRequestItem; attendance_sync: string }>('POST', `/leave-requests/${id}/review`, body),
+
+  // Diễn đàn môn học & lớp học
+  getCourseForum: async (courseId: string, p: { category?: string; search?: string; lesson_id?: string } = {}) => {
+    const r = await get<{ forum: any; threads: ForumThreadItem[]; can_moderate: boolean; can_post: boolean }>(`/courses/${courseId}/forum${qs(p)}`);
+    return { ...r, forum: normalizeForum(r.forum) };
+  },
+  getClassForum: async (classId: string, p: { category?: string; search?: string; lesson_id?: string } = {}) => {
+    const r = await get<{ forum: any; threads: ForumThreadItem[]; can_moderate: boolean; can_post: boolean }>(`/classes/${classId}/forum${qs(p)}`);
+    return { ...r, forum: normalizeForum(r.forum) };
+  },
+  getStudentClassForums: async (classId: string, p: { category?: string; search?: string; lesson_id?: string } = {}) => {
+    const r = await get<{ class_forum: { forum: any; threads: ForumThreadItem[]; can_moderate: boolean }; course_forum: { forum: any; threads: ForumThreadItem[]; can_moderate: boolean } | null }>(`/learn/classes/${classId}/forums${qs(p)}`);
+    return {
+      class_forum: { ...r.class_forum, forum: normalizeForum(r.class_forum.forum) },
+      course_forum: r.course_forum ? { ...r.course_forum, forum: normalizeForum(r.course_forum.forum) } : null,
+    };
+  },
+  createForumThread: (forumId: string, body: { category: ForumCategory; title: string; body: string; lesson_id?: string | null; is_pinned?: boolean }) =>
+    send<ForumThreadItem>('POST', `/forums/${forumId}/threads`, body),
+  getForumThread: async (threadId: string) => {
+    const r = await get<{ forum: any; can_moderate: boolean; thread: ForumThreadItem; replies: ForumReplyItem[] }>(`/forum-threads/${threadId}`);
+    return { ...r, forum: normalizeForum(r.forum) };
+  },
+  createForumReply: (threadId: string, body: string) => send<ForumReplyItem>('POST', `/forum-threads/${threadId}/replies`, { body }),
+  moderateForumThread: (
+    threadId: string,
+    body: { is_pinned?: boolean; is_locked?: boolean; is_hidden?: boolean; action?: 'PIN' | 'UNPIN' | 'LOCK' | 'UNLOCK' | 'HIDE' | 'UNHIDE'; reason?: string },
+  ) => {
+    const action = body.action
+      ?? (body.is_pinned !== undefined ? (body.is_pinned ? 'PIN' : 'UNPIN')
+        : body.is_locked !== undefined ? (body.is_locked ? 'LOCK' : 'UNLOCK')
+        : body.is_hidden !== undefined ? (body.is_hidden ? 'HIDE' : 'UNHIDE')
+        : undefined);
+    return send<ForumThreadItem>('POST', `/forum-threads/${threadId}/moderate`, { action, reason: body.reason });
+  },
+  moderateForumReply: (
+    replyId: string,
+    body: { is_endorsed?: boolean; is_hidden?: boolean; action?: 'ENDORSE' | 'UNENDORSE' | 'HIDE' | 'UNHIDE'; reason?: string },
+  ) => {
+    const action = body.action
+      ?? (body.is_endorsed !== undefined ? (body.is_endorsed ? 'ENDORSE' : 'UNENDORSE')
+        : body.is_hidden !== undefined ? (body.is_hidden ? 'HIDE' : 'UNHIDE')
+        : undefined);
+    return send<ForumReplyItem>('POST', `/forum-replies/${replyId}/moderate`, { action, reason: body.reason });
+  },
+  toggleForumHelpful: (target_type: 'THREAD' | 'REPLY', target_id: string) =>
+    send<{ helpful_by_me: boolean; helpful_count: number }>('POST', '/forum-helpful', { target_type, target_id }),
+  createForumReport: (body: { target_type: 'THREAD' | 'REPLY'; target_id: string; reason: string }) =>
+    send<unknown>('POST', '/forum-reports', body),
+  listForumReports: (forumId: string) =>
+    get<{ items: Array<{ id: string; target_type: string; target_id: string; reporter_name: string; reason: string; status: string; created_at: string }> }>(`/forums/${forumId}/reports`),
+  resolveForumReport: (
+    reportId: string,
+    body: { action?: 'DISMISS' | 'HIDE_CONTENT'; status?: 'RESOLVED' | 'DISMISSED'; hide_target?: boolean; resolution_note?: string },
+  ) => {
+    const status = body.status ?? (body.action === 'DISMISS' ? 'DISMISSED' : 'RESOLVED');
+    const hide_target = body.hide_target ?? (body.action === 'HIDE_CONTENT');
+    return send<unknown>('POST', `/forum-reports/${reportId}/resolve`, {
+      status,
+      hide_target,
+      resolution_note: body.resolution_note,
+    });
+  },
+
+  // Thông báo, Tổng quan học viên 10 mục & Phân tích Video STRICT
+  listNotifications: () => get<{ unread_count: number; items: NotificationItem[] }>('/notifications'),
+  markNotificationRead: (id: string) => send<{ id: string; is_read: boolean }>('POST', `/notifications/${id}/read`, {}),
+  markAllNotificationsRead: () => send<{ marked_read: number }>('POST', '/notifications/read-all', {}),
+  getStudentOverview: async () => {
+    const r = await get<any>('/learn/overview');
+    return {
+      ...r,
+      upcoming_sessions: (r.upcoming_sessions || []).map((s: any) => ({ ...s, class_id: s.class_id || s.subject_class_id })),
+      recent_grades: (r.recent_grades || []).map((g: any) => ({ ...g, class_id: g.class_id || g.subject_class_id })),
+    } as StudentOverviewData;
+  },
+  getClassVideoAnalytics: (classId: string, p: { lesson_id?: string; student_id?: string } = {}) =>
+    get<{
+      class_id: string;
+      content_version_key: string;
+      summary: { records_count: number; completed_count: number; avg_watch_pct: number; total_tamper_rejected: number };
+      items: Array<{
+        id: string;
+        student_id: string;
+        student_code: string;
+        student_name: string;
+        lesson_id: string;
+        lesson_title: string;
+        block_id: string;
+        watched_intervals: Array<[number, number]>;
+        unique_watched_sec: number;
+        max_contiguous_watched_sec: number;
+        duration_sec: number;
+        watch_pct: number;
+        required_pct: number;
+        is_completed: boolean;
+        tamper_attempts_count: number;
+        updated_at: string;
+      }>;
+    }>(`/classes/${classId}/video-analytics${qs(p)}`),
 };
 
 /** Tải Blob xuống máy người dùng. */

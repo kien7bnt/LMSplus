@@ -1,16 +1,21 @@
 import React, { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { LearnLesson, saveBlob, teachingApi } from '../api';
+import { LearnLesson, masterApi, saveBlob, teachingApi } from '../api';
 import { BlockList } from '../BlockRenderer';
 import {
   Badge, Btn, Card, EmptyState, ErrorState, Loading, Modal, PageHeader, ProgressMeter, SmartImage, StatCard, Tabs, Tone,
   displayClassTitle, errMsg, fmtDate, fmtDateTime, fmtPct, fmtTime, fmtWeekday, label, useAsync, useToast,
 } from '../ui';
+import { StudentAssignmentsPage, StudentExamsPage } from './StudentAssessmentPages';
+import { StudentLeaveRequestsPage } from './LeaveRequestsPage';
+import { StudentWikiPanel } from './WikiPanel';
+import { ForumWorkspace } from './ForumPanel';
 
 // ------------------------------------------------------------------ /learn — Trang chủ học viên
 
 export const StudentHomePage: React.FC = () => {
   const toast = useToast();
+  const overviewReq = useAsync(() => masterApi.getStudentOverview(), []);
   const classesReq = useAsync(() => teachingApi.learnClasses(), []);
   const [code, setCode] = useState('');
   const [checkingIn, setCheckingIn] = useState(false);
@@ -74,12 +79,155 @@ export const StudentHomePage: React.FC = () => {
     }
   };
 
+  const ov = overviewReq.data;
+
   return (
     <div className="t-page">
       <PageHeader
         title="Không gian học tập của tôi"
-        subtitle="Theo dõi các lớp đang theo học, xem bài giảng video, tải tài liệu và điểm danh buổi học."
+        subtitle="Theo dõi tổng quan học tập 10 mục, lớp đang học, lịch thi, bài tập, điểm số và chuyên cần."
+        actions={
+          <div className="t-actions">
+            {ov?.continue_learning && (
+              <Link
+                className="t-btn t-btn--primary"
+                to={`/learn/classes/${ov.continue_learning.class_id}/lessons/${ov.continue_learning.lesson_id}`}
+              >
+                ▶ Tiếp tục học: {ov.continue_learning.lesson_title}
+              </Link>
+            )}
+            <Link className="t-btn" to="/learn/exams">Kiểm tra</Link>
+            <Link className="t-btn" to="/learn/assignments">Bài tập</Link>
+            <Link className="t-btn" to="/learn/leave-requests">Xin nghỉ phép</Link>
+          </div>
+        }
       />
+
+      {ov && (
+        <>
+          <div className="t-stats">
+            <StatCard label="Lớp đang học" value={ov.total_classes} />
+            <StatCard
+              label="Tiến độ bài học"
+              value={fmtPct(ov.overall_progress_pct)}
+              hint={`${ov.completed_lessons}/${ov.total_lessons} bài đã hoàn thành`}
+              tone="success"
+            />
+            <StatCard
+              label="Bài tập cần làm"
+              value={ov.pending_assignments_count}
+              tone={ov.pending_assignments_count > 0 ? 'warning' : 'default'}
+            />
+            <StatCard
+              label="Bài kiểm tra chờ thi"
+              value={ov.pending_exams_count}
+              tone={ov.pending_exams_count > 0 ? 'warning' : 'default'}
+            />
+            <StatCard
+              label="Tỷ lệ chuyên cần"
+              value={fmtPct(ov.attendance_summary.rate)}
+              hint={`${ov.attendance_summary.present} có mặt · ${ov.attendance_summary.absent} vắng`}
+            />
+            <StatCard label="Đơn nghỉ chờ duyệt" value={ov.pending_leave_requests} />
+          </div>
+
+          <div className="t-grid-2">
+            <Card
+              title="Lịch học sắp tới"
+              actions={<Link className="t-btn t-btn--small t-btn--ghost" to="/learn/schedule">Xem tất cả</Link>}
+            >
+              {ov.upcoming_sessions.length === 0 ? (
+                <EmptyState title="Không có buổi học nào sắp tới" />
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  {ov.upcoming_sessions.slice(0, 4).map((s) => (
+                    <div key={s.session_id} style={{ display: 'flex', justifyContent: 'space-between', gap: 12, paddingBottom: 8, borderBottom: '1px solid var(--border-subtle)' }}>
+                      <div>
+                        <Link className="t-row-link" to={`/learn/classes/${s.class_id}`}>{s.session_title}</Link>
+                        <span className="t-sub">{s.class_code} · {s.room_or_link || label('delivery', s.delivery_mode)}</span>
+                      </div>
+                      <span className="t-sub tabular-nums" style={{ whiteSpace: 'nowrap' }}>{fmtDateTime(s.scheduled_start_at)}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </Card>
+
+            <Card
+              title="Bài kiểm tra & Bài tập cần hoàn thành"
+              actions={
+                <div className="t-actions">
+                  <Link className="t-btn t-btn--small t-btn--ghost" to="/learn/exams">Thi</Link>
+                  <Link className="t-btn t-btn--small t-btn--ghost" to="/learn/assignments">Bài tập</Link>
+                </div>
+              }
+            >
+              {ov.pending_exams.length === 0 && ov.pending_assignments.length === 0 ? (
+                <EmptyState title="Bạn đã hoàn tất các bài kiểm tra & bài tập đến hạn" />
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  {ov.pending_exams.slice(0, 3).map((ex) => (
+                    <div key={ex.id} style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}>
+                      <div>
+                        <Tone tone="warning">Kiểm tra</Tone>{' '}
+                        <Link className="t-row-link" to={`/learn/classes/${ex.class_id}?tab=exams`}>{ex.title}</Link>
+                        <span className="t-sub tabular-nums">{ex.class_code} · {ex.time_limit_minutes} phút</span>
+                      </div>
+                      <span className="t-sub tabular-nums">{ex.close_at ? fmtDate(ex.close_at) : 'Đang mở'}</span>
+                    </div>
+                  ))}
+                  {ov.pending_assignments.slice(0, 3).map((asg) => (
+                    <div key={asg.id} style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}>
+                      <div>
+                        <Tone tone="info">Bài tập</Tone>{' '}
+                        <Link className="t-row-link" to={`/learn/classes/${asg.class_id}?tab=assignments`}>{asg.title}</Link>
+                        <span className="t-sub tabular-nums">{asg.class_code} · Tối đa {asg.max_score}đ</span>
+                      </div>
+                      <span className="t-sub tabular-nums">{asg.due_at ? fmtDate(asg.due_at) : 'Không hạn'}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </Card>
+
+            <Card title="Điểm số mới công bố">
+              {ov.recent_grades.length === 0 ? (
+                <EmptyState title="Chưa có điểm mới" />
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  {ov.recent_grades.slice(0, 4).map((g) => (
+                    <div key={g.id} style={{ display: 'flex', justifyContent: 'space-between', gap: 12, paddingBottom: 6, borderBottom: '1px solid var(--border-subtle)' }}>
+                      <div>
+                        <Link className="t-row-link" to={`/learn/classes/${g.class_id}?tab=grades`}>{g.title}</Link>
+                        <span className="t-sub">{g.class_code}</span>
+                      </div>
+                      <strong className="tabular-nums">{g.score}/{g.max_score}</strong>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </Card>
+
+            <Card title="Hoạt động diễn đàn gần đây">
+              {ov.recent_forum_activity.length === 0 ? (
+                <EmptyState title="Chưa có thảo luận mới" />
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  {ov.recent_forum_activity.slice(0, 4).map((f) => (
+                    <div key={f.id} style={{ display: 'flex', justifyContent: 'space-between', gap: 12, paddingBottom: 6, borderBottom: '1px solid var(--border-subtle)' }}>
+                      <div>
+                        <strong>{f.title}</strong>
+                        <span className="t-sub">{f.forum_title} · {f.author_name}</span>
+                      </div>
+                      <span className="t-sub tabular-nums">{f.reply_count} trả lời</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </Card>
+          </div>
+        </>
+      )}
 
       <Card title="Điểm danh nhanh tại lớp">
         <form onSubmit={submitCheckIn} style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -229,16 +377,24 @@ export const StudentHomePage: React.FC = () => {
 
 // ------------------------------------------------------------------ /learn/classes/:classId
 
+type StudentClassTab = 'lessons' | 'attendance' | 'exams' | 'assignments' | 'grades' | 'leave' | 'wiki' | 'forum';
+const VALID_STUDENT_TABS = new Set<StudentClassTab>(['lessons', 'attendance', 'exams', 'assignments', 'grades', 'leave', 'wiki', 'forum']);
+
 export const StudentClassPage: React.FC = () => {
   const { classId = '' } = useParams();
   const [sp, setSp] = useSearchParams();
   const toast = useToast();
-  const tab = sp.get('tab') === 'attendance' ? 'attendance' : 'lessons';
+  const rawTab = sp.get('tab') as StudentClassTab | null;
+  const tab: StudentClassTab = rawTab && VALID_STUDENT_TABS.has(rawTab) ? rawTab : 'lessons';
   const [joiningSessionId, setJoiningSessionId] = useState<string | null>(null);
 
   const detailReq = useAsync(() => teachingApi.learnClass(classId), [classId]);
   const attReq = useAsync(
     () => (tab === 'attendance' ? teachingApi.myAttendance(classId) : Promise.resolve(null)),
+    [classId, tab]
+  );
+  const gradesReq = useAsync(
+    () => (tab === 'grades' ? masterApi.getStudentClassGrades(classId) : Promise.resolve(null)),
     [classId, tab]
   );
 
@@ -273,10 +429,13 @@ export const StudentClassPage: React.FC = () => {
         breadcrumb={<><Link to="/learn">Lớp của tôi</Link><span>/</span><span>Lớp {d.class.code}</span></>}
         title={displayClassTitle({ ...d.class, course: d.course })}
         subtitle={
-          <>
-            {d.class.schedule_text || 'Lịch học theo thông báo lớp'}
-            {d.class.room ? ` · ${d.class.room}` : ''}
-          </>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <span>{d.class.schedule_text || 'Lịch học theo thông báo lớp'}</span>
+            {d.class.room ? <span>· {d.class.room}</span> : null}
+            {d.class.cohort ? <span>· Lớp khóa: {d.class.cohort.code}</span> : null}
+            {d.class.course_version ? <Tone tone="info">{d.class.course_version.version_label}</Tone> : null}
+            {d.class.enrollment_source ? <Badge kind="enrollmentSource" value={d.class.enrollment_source} /> : null}
+          </span>
         }
       />
 
@@ -349,7 +508,13 @@ export const StudentClassPage: React.FC = () => {
         }}
         tabs={[
           { id: 'lessons', label: 'Chương trình bài học', badge: d.progress.total || undefined },
-          { id: 'attendance', label: 'Chuyên cần của tôi' },
+          { id: 'attendance', label: 'Chuyên cần' },
+          { id: 'exams', label: 'Kiểm tra' },
+          { id: 'assignments', label: 'Bài tập' },
+          { id: 'grades', label: 'Bảng điểm' },
+          { id: 'leave', label: 'Xin nghỉ phép' },
+          { id: 'wiki', label: 'Wiki' },
+          { id: 'forum', label: 'Diễn đàn' },
         ]}
       />
 
@@ -450,6 +615,60 @@ export const StudentClassPage: React.FC = () => {
           </div>
         )
       )}
+
+      {tab === 'exams' && <StudentExamsPage classId={classId} />}
+      {tab === 'assignments' && <StudentAssignmentsPage classId={classId} />}
+      {tab === 'grades' && (
+        gradesReq.loading ? (
+          <Loading rows={4} />
+        ) : gradesReq.error || !gradesReq.data ? (
+          <ErrorState error={gradesReq.error} onRetry={gradesReq.reload} />
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+            <div className="t-stats">
+              <StatCard
+                label="Điểm trung bình lớp (Hệ 10)"
+                value={gradesReq.data.average_scale_10 !== null ? gradesReq.data.average_scale_10.toFixed(2) : '—'}
+                tone="success"
+              />
+              <StatCard label="Đầu điểm đã ghi nhận" value={gradesReq.data.gradebook_entries.length} />
+            </div>
+            <Card title="Chi tiết điểm thành phần" padded={false}>
+              {gradesReq.data.gradebook_entries.length === 0 ? (
+                <EmptyState title="Chưa có điểm nào được công bố" text="Điểm kiểm tra và bài tập của bạn sẽ hiển thị tại đây ngay khi có kết quả." />
+              ) : (
+                <div className="t-table-wrap">
+                  <table className="t-table">
+                    <thead>
+                      <tr>
+                        <th>Đầu điểm</th>
+                        <th>Loại</th>
+                        <th className="num">Điểm đạt</th>
+                        <th className="num">Hệ số</th>
+                        <th>Cập nhật</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {gradesReq.data.gradebook_entries.map((entry) => (
+                        <tr key={entry.id}>
+                          <td><strong>{entry.title}</strong></td>
+                          <td>{entry.source_type === 'EXAM' ? 'Kiểm tra' : 'Bài tập'}</td>
+                          <td className="num tabular-nums"><strong>{entry.score}/{entry.max_score}</strong></td>
+                          <td className="num tabular-nums">{entry.weight}</td>
+                          <td className="tabular-nums">{fmtDateTime(entry.updated_at)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </Card>
+          </div>
+        )
+      )}
+      {tab === 'leave' && <StudentLeaveRequestsPage fixedClassId={classId} />}
+      {tab === 'wiki' && <StudentWikiPanel classId={classId} />}
+      {tab === 'forum' && <ForumWorkspace mode="student_class" targetId={classId} />}
     </div>
   );
 };
@@ -466,6 +685,8 @@ export const StudentLessonPage: React.FC = () => {
   const [error, setError] = useState<unknown>(null);
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [completing, setCompleting] = useState(false);
+  const [leftOpen, setLeftOpen] = useState(true);
+  const [rightTab, setRightTab] = useState<'wiki' | 'forum' | 'hidden'>('wiki');
 
   const outlineReq = useAsync(() => teachingApi.learnClass(classId), [classId]);
 
@@ -535,55 +756,80 @@ export const StudentLessonPage: React.FC = () => {
           <>
             <span className="tabular-nums">Bài {lesson.position.index}/{lesson.position.total} · {lesson.duration_minutes} phút</span>{' '}
             · {lesson.progress_status === 'COMPLETED' ? <Tone tone="success">Đã hoàn thành</Tone> : <Tone tone="info">Đang học</Tone>}
+            {lesson.course_version ? <> · <Tone tone="neutral">{lesson.course_version.version_label}</Tone></> : null}
           </>
+        }
+        actions={
+          <div className="t-actions">
+            <Btn small onClick={() => setLeftOpen((v) => !v)}>
+              {leftOpen ? 'Thu gọn mục lục' : 'Hiện mục lục'}
+            </Btn>
+            <Btn small variant={rightTab === 'wiki' ? 'primary' : 'ghost'} onClick={() => setRightTab((t) => (t === 'wiki' ? 'hidden' : 'wiki'))}>
+              Wiki bài học
+            </Btn>
+            <Btn small variant={rightTab === 'forum' ? 'primary' : 'ghost'} onClick={() => setRightTab((t) => (t === 'forum' ? 'hidden' : 'forum'))}>
+              Hỏi đáp bài học
+            </Btn>
+          </div>
         }
       />
 
-      <div className="t-learn-layout">
-        <Card title="Mục lục khóa học">
-          {outlineReq.error ? (
-            <ErrorState error={outlineReq.error} onRetry={outlineReq.reload} />
-          ) : (
-          <nav className="t-learn-outline" aria-label="Danh sách bài học">
-            {(outlineReq.data?.chapters || []).map((ch, ci) => (
-              <div key={ch.id} style={{ marginBottom: 12 }}>
-                <strong style={{ display: 'block', fontSize: 13, color: 'var(--text-secondary)', padding: '4px 12px' }}>
-                  Chương {ci + 1}. {ch.title}
-                </strong>
-                {ch.lessons.map((l, li) => (
-                  <Link
-                    key={l.id}
-                    to={`/learn/classes/${classId}/lessons/${l.id}`}
-                    aria-current={l.id === lesson.id ? 'page' : undefined}
-                  >
-                    <span>{ci + 1}.{li + 1}. {l.title}</span>
-                    <span aria-label={l.progress_status === 'COMPLETED' ? 'Đã hoàn thành' : undefined}>
-                      {l.progress_status === 'COMPLETED' ? '✓' : ''}
-                    </span>
-                  </Link>
+      <div
+        className={`m-player-shell ${!leftOpen ? 'is-left-collapsed' : ''}`}
+        style={
+          rightTab === 'hidden'
+            ? { gridTemplateColumns: leftOpen ? '280px minmax(0, 1fr)' : 'minmax(0, 1fr)' }
+            : undefined
+        }
+      >
+        {leftOpen && (
+          <aside className="m-player-sidebar" aria-label="Mục lục khóa học">
+            <strong style={{ display: 'block', fontSize: 15, marginBottom: 12 }}>Mục lục khóa học</strong>
+            {outlineReq.error ? (
+              <ErrorState error={outlineReq.error} onRetry={outlineReq.reload} />
+            ) : (
+              <nav className="t-learn-outline" aria-label="Danh sách bài học">
+                {(outlineReq.data?.chapters || []).map((ch, ci) => (
+                  <div key={ch.id} style={{ marginBottom: 12 }}>
+                    <strong style={{ display: 'block', fontSize: 13, color: 'var(--text-secondary)', padding: '4px 12px' }}>
+                      Chương {ci + 1}. {ch.title}
+                    </strong>
+                    {ch.lessons.map((l, li) => (
+                      <Link
+                        key={l.id}
+                        to={`/learn/classes/${classId}/lessons/${l.id}`}
+                        aria-current={l.id === lesson.id ? 'page' : undefined}
+                      >
+                        <span>{ci + 1}.{li + 1}. {l.title}</span>
+                        <span aria-label={l.progress_status === 'COMPLETED' ? 'Đã hoàn thành' : undefined}>
+                          {l.progress_status === 'COMPLETED' ? '✓' : ''}
+                        </span>
+                      </Link>
+                    ))}
+                  </div>
                 ))}
+              </nav>
+            )}
+          </aside>
+        )}
+
+        <div className="m-player-center">
+          <Card>
+            {lesson.class_custom_note?.instructor_note && (
+              <div className="t-callout m-measure" style={{ marginBottom: 16 }}>
+                <strong>Dặn dò từ giảng viên lớp học</strong>
+                <span style={{ whiteSpace: 'pre-wrap' }}>{lesson.class_custom_note.instructor_note}</span>
               </div>
-            ))}
-          </nav>
-          )}
-        </Card>
+            )}
 
-        <Card>
-          {lesson.class_custom_note?.instructor_note && (
-            <div className="t-callout" style={{ marginBottom: 16, maxWidth: '75ch' }}>
-              <strong>Dặn dò từ giảng viên lớp học</strong>
-              <span style={{ whiteSpace: 'pre-wrap' }}>{lesson.class_custom_note.instructor_note}</span>
-            </div>
-          )}
-
-          {(lesson.class_custom_note?.custom_objectives || lesson.objectives) && (
-            <div className="t-callout" style={{ marginBottom: 24, maxWidth: '75ch' }}>
-              <strong>Mục tiêu bài học</strong>
-              <span style={{ whiteSpace: 'pre-wrap' }}>
-                {[lesson.objectives, lesson.class_custom_note?.custom_objectives].filter(Boolean).join('\n\n')}
-              </span>
-            </div>
-          )}
+            {(lesson.class_custom_note?.custom_objectives || lesson.objectives) && (
+              <div className="t-callout m-measure" style={{ marginBottom: 24 }}>
+                <strong>Mục tiêu bài học</strong>
+                <span style={{ whiteSpace: 'pre-wrap' }}>
+                  {[lesson.objectives, lesson.class_custom_note?.custom_objectives].filter(Boolean).join('\n\n')}
+                </span>
+              </div>
+            )}
 
           {lesson.blocks.length === 0 ? (
             <EmptyState title="Bài học chưa có nội dung chi tiết" />
@@ -709,7 +955,18 @@ export const StudentLessonPage: React.FC = () => {
               )}
             </div>
           </div>
-        </Card>
+          </Card>
+        </div>
+
+        {rightTab !== 'hidden' && (
+          <aside className="m-player-sidebar" aria-label="Ngữ cảnh bài học">
+            {rightTab === 'wiki' ? (
+              <StudentWikiPanel classId={classId} lessonId={lesson.id} />
+            ) : (
+              <ForumWorkspace mode="student_class" targetId={classId} lessonIdFilter={lesson.id} compact />
+            )}
+          </aside>
+        )}
       </div>
     </div>
   );

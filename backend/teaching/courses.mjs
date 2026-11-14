@@ -7,6 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { parseYouTubeUrl } from '../../shared/youtube.mjs';
 import { COURSE_STATUSES } from './schema.mjs';
+import { ensureCourseTopicsBackfill } from './masterSchema.mjs';
 import { validateBlocks, normalizeSnapshot, BLOCK_SCHEMA_VERSION } from './blocks.mjs';
 import {
   canCreateCourse, canManageCourse, canEditCourseDraft, canViewCourse, courseScopeSql,
@@ -152,6 +153,7 @@ function outline(db, courseId, { publishedOnly = false } = {}) {
   );
   return chapters.map((ch) => ({
     id: ch.id,
+    topic_id: ch.topic_id || null,
     title: ch.title,
     description: ch.description || '',
     status: ch.status,
@@ -300,6 +302,7 @@ export function registerCourseRoutes(route, { uploadsDir }) {
       f.description, f.thumbnail_url, f.subject, f.objectives, f.target_audience, f.prerequisites, f.intro,
       status, user.id, now
     );
+    ensureCourseTopicsBackfill(db, id);
     log('INFO', `[teaching] course created ${f.code} by ${user.id}`);
     return [201, loadCourseDto(db, id)];
   });
@@ -318,8 +321,14 @@ export function registerCourseRoutes(route, { uploadsDir }) {
     const resources = db
       .prepare('SELECT COUNT(*) n FROM learning_resources WHERE course_id = ? AND deleted_at IS NULL')
       .get(course.id).n;
+    const topics = db
+      .prepare("SELECT * FROM course_topics WHERE course_id = ? AND status <> 'ARCHIVED' ORDER BY sort_order, code")
+      .all(course.id);
+    const versionsCount = db.prepare('SELECT COUNT(*) n FROM course_versions WHERE course_id = ?').get(course.id).n;
     return {
       ...loadCourseDto(db, course.id),
+      topics,
+      versions_count: versionsCount,
       outline: outline(db, course.id),
       classes,
       resources_count: resources,
@@ -507,12 +516,25 @@ export function registerCourseRoutes(route, { uploadsDir }) {
     const title = text(body, 'title', { required: true, max: 200, label: 'tên chương' });
     const description = text(body, 'description', { max: 2000, label: 'mô tả' });
     const status = oneOf(body, 'status', ['DRAFT', 'PUBLISHED'], { fallback: 'PUBLISHED', label: 'trạng thái' });
+
+    let topicId = text(body, 'topic_id', { max: 80, label: 'chủ đề' }) || null;
+    if (topicId) {
+      const tp = db.prepare('SELECT id FROM course_topics WHERE id = ? AND course_id = ?').get(topicId, course.id);
+      if (!tp) fail(400, 'INVALID_TOPIC', 'Chủ đề không thuộc môn học này.');
+    } else {
+      ensureCourseTopicsBackfill(db, course.id);
+      const firstTopic = db
+        .prepare("SELECT id FROM course_topics WHERE course_id = ? AND status <> 'ARCHIVED' ORDER BY sort_order, id LIMIT 1")
+        .get(course.id);
+      topicId = firstTopic?.id || null;
+    }
+
     const max = db.prepare('SELECT COALESCE(MAX(sort_order), 0) m, COUNT(*) n FROM chapters WHERE course_id = ?').get(course.id);
     const id = `ch_${crypto.randomBytes(5).toString('hex')}`;
     db.prepare(
-      `INSERT INTO chapters (id, subject_class_id, code, title, progress_pct, course_id, description, sort_order, status, updated_at)
-       VALUES (?, '', ?, ?, 0, ?, ?, ?, ?, ?)`
-    ).run(id, `Chương ${max.n + 1}`, title, course.id, description, max.m + 10, status, nowIso());
+      `INSERT INTO chapters (id, subject_class_id, code, title, progress_pct, course_id, topic_id, description, sort_order, status, updated_at)
+       VALUES (?, '', ?, ?, 0, ?, ?, ?, ?, ?, ?)`
+    ).run(id, `Chương ${max.n + 1}`, title, course.id, topicId, description, max.m + 10, status, nowIso());
     touchCourse(db, course.id);
     return [201, outline(db, course.id).find((c) => c.id === id)];
   });

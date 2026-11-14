@@ -5,13 +5,17 @@
 
 import crypto from 'node:crypto';
 import { fail, nowIso, nowVn, text } from './http.mjs';
-import { outline, latestPublishedBlocks } from './courses.mjs';
+import { outline } from './courses.mjs';
 import { getAttendancePolicy, rateFromCounts } from './attendance.mjs';
+import { getClassContentVersionKey } from './masterSchema.mjs';
+import { recordStrictVideoProgress } from './strictVideo.mjs';
 import {
   buildStudentLessonPayload,
   filterActiveMarkerSubs,
+  getClassCourseSnapshot,
+  getEffectiveLessonBaseBlocks,
+  getEffectiveLessonBaseMarkers,
   getPublishedClassCustom,
-  latestPublishedMarkers,
   submitStandaloneQuizBlock,
   submitVideoMarkerAnswer,
 } from './studio.mjs';
@@ -27,36 +31,77 @@ function requireEnrollment(db, user, classId) {
   if (!e) fail(403, 'NOT_ENROLLED', 'Bạn chưa được ghi danh vào lớp học này.');
   if (['DRAFT', 'CANCELLED', 'ARCHIVED'].includes(cls.status)) fail(403, 'CLASS_NOT_AVAILABLE', 'Lớp học hiện không mở cho học viên.');
   const course = cls.course_id ? db.prepare('SELECT * FROM courses WHERE id = ?').get(cls.course_id) : null;
-  return { cls, course };
+  return { cls, course, enrollment: e };
 }
 
-function publishedLessonIds(db, courseId) {
-  return outline(db, courseId, { publishedOnly: true }).flatMap((ch) =>
-    ch.lessons.map((l) => ({ ...l, chapter_id: ch.id, chapter_title: ch.title }))
+function publishedOutlineForClass(db, cls, course) {
+  const snapCtx = getClassCourseSnapshot(db, cls);
+  if (snapCtx && Array.isArray(snapCtx.snapshot.chapters) && Array.isArray(snapCtx.snapshot.lessons)) {
+    const lessonsByChapter = new Map();
+    for (const l of snapCtx.snapshot.lessons) {
+      const arr = lessonsByChapter.get(l.chapter_id) || [];
+      arr.push(l);
+      lessonsByChapter.set(l.chapter_id, arr);
+    }
+    const chapters = snapCtx.snapshot.chapters.map((ch) => ({
+      id: ch.id,
+      topic_id: ch.topic_id || null,
+      title: ch.title,
+      description: ch.description || '',
+      sort_order: ch.sort_order,
+      lessons: (lessonsByChapter.get(ch.id) || []).map((l) => ({
+        ...l,
+        chapter_id: ch.id,
+        chapter_title: ch.title,
+      })),
+    }));
+    const topics = Array.isArray(snapCtx.snapshot.topics) ? snapCtx.snapshot.topics : [];
+    return { available: true, chapters, topics, snapCtx };
+  }
+  const available = Boolean(course && course.status === 'PUBLISHED');
+  if (!available) return { available: false, chapters: [], topics: [], snapCtx: null };
+  const chapters = outline(db, course.id, { publishedOnly: true });
+  const topics = db
+    .prepare("SELECT * FROM course_topics WHERE course_id = ? AND status <> 'ARCHIVED' ORDER BY sort_order, code")
+    .all(course.id);
+  return { available: true, chapters, topics, snapCtx: null };
+}
+
+function publishedLessonIdsForClass(db, cls, course) {
+  const { chapters } = publishedOutlineForClass(db, cls, course);
+  return chapters.flatMap((ch) =>
+    ch.lessons.map((l) => ({ ...l, chapter_id: ch.id, chapter_title: ch.title, topic_id: ch.topic_id || null }))
   );
 }
 
-function studentProgress(db, userId, classId) {
+function studentProgress(db, userId, cls) {
+  const verKey = getClassContentVersionKey(cls);
   return Object.fromEntries(
     db
-      .prepare('SELECT lesson_id, status, completed_at FROM lesson_progress WHERE student_id = ? AND subject_class_id = ?')
-      .all(userId, classId)
+      .prepare(
+        'SELECT lesson_id, status, completed_at FROM lesson_progress WHERE student_id = ? AND subject_class_id = ? AND content_version_key = ?'
+      )
+      .all(userId, cls.id, verKey)
       .map((r) => [r.lesson_id, r])
   );
 }
 
 function loadLessonForStudent(db, user, classId, lessonId) {
   const { cls, course } = requireEnrollment(db, user, classId);
-  if (!course || course.status !== 'PUBLISHED') fail(403, 'COURSE_NOT_PUBLISHED', 'Nội dung khóa học đang được chuẩn bị.');
-  const list = publishedLessonIds(db, course.id);
+  const { available, snapCtx } = publishedOutlineForClass(db, cls, course);
+  if (!available) fail(403, 'COURSE_NOT_PUBLISHED', 'Nội dung khóa học đang được chuẩn bị.');
+  const list = publishedLessonIdsForClass(db, cls, course);
   const idx = list.findIndex((l) => l.id === lessonId);
   if (idx === -1) fail(403, 'LESSON_NOT_AVAILABLE', 'Bài học chưa được xuất bản hoặc không thuộc lớp của bạn.');
-  return { cls, course, list, idx, lesson: db.prepare('SELECT * FROM lessons WHERE id = ?').get(lessonId) };
+  const dbLesson = db.prepare('SELECT * FROM lessons WHERE id = ?').get(lessonId);
+  const snapLesson = snapCtx?.snapshot?.lessons?.find((l) => l.id === lessonId);
+  const effectiveLesson = snapLesson ? { ...dbLesson, ...snapLesson } : dbLesson;
+  return { cls, course, list, idx, lesson: effectiveLesson };
 }
 
-function mergedPublishedBlocksForClass(db, lessonId, classId) {
-  const baseBlocks = latestPublishedBlocks(db, lessonId);
-  const publishedCustom = getPublishedClassCustom(db, classId, lessonId);
+function mergedPublishedBlocksForClass(db, lessonId, cls) {
+  const baseBlocks = getEffectiveLessonBaseBlocks(db, cls, lessonId);
+  const publishedCustom = getPublishedClassCustom(db, cls.id, lessonId);
   if (!publishedCustom) return baseBlocks;
   return [...baseBlocks, ...publishedCustom.blocks];
 }
@@ -65,7 +110,7 @@ export function registerLearnRoutes(route, { jwtSecret = 'lmsplus-production-gra
   route('GET', '/learn/classes', ({ db, user }) => {
     const rows = db
       .prepare(
-        `SELECT sc.* FROM class_enrollments e JOIN subject_classes sc ON sc.id = e.subject_class_id
+        `SELECT sc.*, e.enrollment_source FROM class_enrollments e JOIN subject_classes sc ON sc.id = e.subject_class_id
          WHERE e.student_id = ? AND e.status = 'ACTIVE' AND sc.status NOT IN ('DRAFT','CANCELLED','ARCHIVED')
          ORDER BY sc.code`
       )
@@ -74,8 +119,12 @@ export function registerLearnRoutes(route, { jwtSecret = 'lmsplus-production-gra
     return {
       items: rows.map((cls) => {
         const course = cls.course_id ? db.prepare('SELECT id, code, title, status, thumbnail_url FROM courses WHERE id = ?').get(cls.course_id) : null;
-        const lessons = course && course.status === 'PUBLISHED' ? publishedLessonIds(db, course.id) : [];
-        const prog = studentProgress(db, user.id, cls.id);
+        const cohort = cls.cohort_id ? db.prepare('SELECT id, code, title FROM program_cohorts WHERE id = ?').get(cls.cohort_id) : null;
+        const courseVersion = cls.course_version_id
+          ? db.prepare('SELECT id, version_number, version_label FROM course_versions WHERE id = ?').get(cls.course_version_id)
+          : null;
+        const lessons = publishedLessonIdsForClass(db, cls, course);
+        const prog = studentProgress(db, user.id, cls);
         const done = lessons.filter((l) => prog[l.id]?.status === 'COMPLETED').length;
         const next = db
           .prepare(
@@ -96,6 +145,9 @@ export function registerLearnRoutes(route, { jwtSecret = 'lmsplus-production-gra
           code: cls.code,
           title: cls.title,
           subject: cls.subject || '',
+          enrollment_source: cls.enrollment_source || 'ACADEMIC_ASSIGNED',
+          cohort,
+          course_version: courseVersion,
           instructor_name: instructor ? instructor.full_name : cls.instructor_name,
           course: course ? { id: course.id, title: course.title, status: course.status, thumbnail_url: course.thumbnail_url || '' } : null,
           progress: { completed: done, total: lessons.length, pct: lessons.length ? Math.round((done / lessons.length) * 100) : 0 },
@@ -107,13 +159,18 @@ export function registerLearnRoutes(route, { jwtSecret = 'lmsplus-production-gra
   });
 
   route('GET', '/learn/classes/:id', ({ db, user, params }) => {
-    const { cls, course } = requireEnrollment(db, user, params.id);
-    const prog = studentProgress(db, user.id, cls.id);
-    const available = course && course.status === 'PUBLISHED';
+    const { cls, course, enrollment } = requireEnrollment(db, user, params.id);
+    const prog = studentProgress(db, user.id, cls);
+    const { available, chapters: rawChapters, topics, snapCtx } = publishedOutlineForClass(db, cls, course);
+    const cohort = cls.cohort_id ? db.prepare('SELECT id, code, title FROM program_cohorts WHERE id = ?').get(cls.cohort_id) : null;
+    const courseVersion = snapCtx?.version
+      ? { id: snapCtx.version.id, version_number: snapCtx.version.version_number, version_label: snapCtx.version.version_label }
+      : null;
     const chapters = available
-      ? outline(db, course.id, { publishedOnly: true })
+      ? rawChapters
           .map((ch) => ({
             id: ch.id,
+            topic_id: ch.topic_id || null,
             title: ch.title,
             description: ch.description,
             lessons: ch.lessons.map((l) => ({
@@ -148,9 +205,20 @@ export function registerLearnRoutes(route, { jwtSecret = 'lmsplus-production-gra
         virtual_room: virtualRoomSummaryDto(db, s),
       }));
     return {
-      class: { id: cls.id, code: cls.code, title: cls.title, room: cls.room || '', schedule_text: cls.schedule_text || '', instructor_name: cls.instructor_name || '' },
+      class: {
+        id: cls.id,
+        code: cls.code,
+        title: cls.title,
+        room: cls.room || '',
+        schedule_text: cls.schedule_text || '',
+        instructor_name: cls.instructor_name || '',
+        enrollment_source: enrollment.enrollment_source || 'ACADEMIC_ASSIGNED',
+        cohort,
+        course_version: courseVersion,
+      },
       course: course ? { id: course.id, title: course.title, description: course.description || '', objectives: course.objectives || '', status: course.status } : null,
       content_available: Boolean(available),
+      topics,
       chapters,
       upcoming_sessions: upcomingSessions,
       progress: { completed: done, total: all.length, pct: all.length ? Math.round((done / all.length) * 100) : 0 },
@@ -159,12 +227,13 @@ export function registerLearnRoutes(route, { jwtSecret = 'lmsplus-production-gra
 
   route('GET', '/learn/classes/:id/lessons/:lessonId', ({ db, user, params }) => {
     const { cls, list, idx, lesson } = loadLessonForStudent(db, user, params.id, params.lessonId);
+    const verKey = getClassContentVersionKey(cls);
     const now = nowIso();
     db.prepare(
-      `INSERT INTO lesson_progress (id, student_id, subject_class_id, chapter_id, lesson_id, status, started_at, last_accessed_at)
-       VALUES (?, ?, ?, ?, ?, 'IN_PROGRESS', ?, ?)
-       ON CONFLICT(student_id, subject_class_id, lesson_id) DO UPDATE SET last_accessed_at = excluded.last_accessed_at`
-    ).run(crypto.randomUUID(), user.id, cls.id, list[idx].chapter_id, lesson.id, now, now);
+      `INSERT INTO lesson_progress (id, student_id, subject_class_id, chapter_id, lesson_id, content_version_key, status, started_at, last_accessed_at)
+       VALUES (?, ?, ?, ?, ?, ?, 'IN_PROGRESS', ?, ?)
+       ON CONFLICT(student_id, subject_class_id, lesson_id, content_version_key) DO UPDATE SET last_accessed_at = excluded.last_accessed_at`
+    ).run(crypto.randomUUID(), user.id, cls.id, list[idx].chapter_id, lesson.id, verKey, now, now);
 
     return buildStudentLessonPayload(db, {
       user,
@@ -177,81 +246,15 @@ export function registerLearnRoutes(route, { jwtSecret = 'lmsplus-production-gra
     });
   });
 
-  // Lưu tiến độ xem video & vị trí đang xem dở (Resume Playback)
+  // Lưu tiến độ xem video theo chế độ STRICT (Interval Union + chống tua vượt + hàng đợi idempotent)
   route('PUT', '/learn/classes/:id/lessons/:lessonId/video-progress', ({ db, user, body, params }) => {
     const { cls, lesson } = loadLessonForStudent(db, user, params.id, params.lessonId);
     const blockId = text(body, 'block_id', { required: true, max: 64, label: 'mã khối video' });
-    const allBlocks = mergedPublishedBlocksForClass(db, lesson.id, cls.id);
+    const allBlocks = mergedPublishedBlocksForClass(db, lesson.id, cls);
     const vBlock = allBlocks.find((b) => b.id === blockId && ['video', 'youtube'].includes(b.block_type));
     if (!vBlock) fail(404, 'VIDEO_BLOCK_NOT_FOUND', 'Không tìm thấy khối video trong bài học.');
 
-    const lastPos = Math.max(0, Math.round(Number(body.last_position_sec ?? 0) * 10) / 10);
-    const watchedIn = Math.max(0, Math.round(Number(body.watched_seconds ?? 0) * 10) / 10);
-    const durIn = Math.max(0, Math.round(Number(body.duration_sec ?? vBlock.content?.duration_seconds ?? 0) * 10) / 10);
-    if (!Number.isFinite(lastPos) || !Number.isFinite(watchedIn) || !Number.isFinite(durIn)) {
-      fail(422, 'INVALID_VIDEO_PROGRESS', 'Dữ liệu tiến độ video không hợp lệ.');
-    }
-
-    const existing = db
-      .prepare(
-        'SELECT * FROM video_watch_progress WHERE student_id = ? AND subject_class_id = ? AND lesson_id = ? AND block_id = ?'
-      )
-      .get(user.id, cls.id, lesson.id, blockId);
-
-    const maxWatched = Math.max(Number(existing?.max_watched_sec || 0), lastPos);
-    const totalWatched = Math.max(Number(existing?.watched_seconds || 0), watchedIn);
-    const durationSec = durIn > 0 ? durIn : Number(existing?.duration_sec || 0);
-
-    let computedPct = 0;
-    if (durationSec > 0) {
-      const covered = Math.max(maxWatched, Math.min(totalWatched, durationSec));
-      computedPct = Math.min(100, Math.round((covered / durationSec) * 100));
-    } else if (body.watch_pct != null && Number.isFinite(Number(body.watch_pct))) {
-      computedPct = Math.max(0, Math.min(100, Math.round(Number(body.watch_pct))));
-    }
-    const watchPct = Math.max(Number(existing?.watch_pct || 0), computedPct);
-    const configuredMinPct = Number(lesson.min_video_watch_pct || 0);
-    const threshold = configuredMinPct > 0 ? configuredMinPct : 85;
-    const isCompleted = watchPct >= threshold ? 1 : Number(existing?.is_completed || 0);
-    const now = nowIso();
-
-    db.prepare(
-      `INSERT INTO video_watch_progress (
-         id, student_id, subject_class_id, lesson_id, block_id,
-         last_position_sec, max_watched_sec, watched_seconds, duration_sec, watch_pct, is_completed, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(student_id, subject_class_id, lesson_id, block_id) DO UPDATE SET
-         last_position_sec = excluded.last_position_sec,
-         max_watched_sec = excluded.max_watched_sec,
-         watched_seconds = excluded.watched_seconds,
-         duration_sec = excluded.duration_sec,
-         watch_pct = excluded.watch_pct,
-         is_completed = excluded.is_completed,
-         updated_at = excluded.updated_at`
-    ).run(
-      crypto.randomUUID(),
-      user.id,
-      cls.id,
-      lesson.id,
-      blockId,
-      lastPos,
-      maxWatched,
-      totalWatched,
-      durationSec,
-      watchPct,
-      isCompleted,
-      now
-    );
-
-    return {
-      block_id: blockId,
-      last_position_sec: lastPos,
-      max_watched_sec: maxWatched,
-      watched_seconds: totalWatched,
-      duration_sec: durationSec,
-      watch_pct: watchPct,
-      is_completed: Boolean(isCompleted),
-    };
+    return recordStrictVideoProgress(db, { user, cls, lesson, vBlock, body });
   });
 
   // Nộp câu trả lời tại mốc tương tác trong video (có idempotency_key chống gửi trùng)
@@ -269,7 +272,7 @@ export function registerLearnRoutes(route, { jwtSecret = 'lmsplus-production-gra
   // Giữ nguyên tương thích ngược cho review_question / inline_mcq
   route('POST', '/learn/classes/:id/lessons/:lessonId/check', ({ db, user, body, params }) => {
     const { cls, lesson } = loadLessonForStudent(db, user, params.id, params.lessonId);
-    const block = mergedPublishedBlocksForClass(db, lesson.id, cls.id).find((b) => b.id === body.block_id);
+    const block = mergedPublishedBlocksForClass(db, lesson.id, cls).find((b) => b.id === body.block_id);
     if (!block || !['review_question', 'inline_mcq'].includes(block.block_type)) fail(404, 'QUESTION_NOT_FOUND', 'Không tìm thấy câu hỏi.');
     const opt = (block.content.options || []).find((o) => o.id === body.option_id);
     if (!opt) fail(422, 'VALIDATION_ERROR', 'Phương án không hợp lệ.');
@@ -278,8 +281,9 @@ export function registerLearnRoutes(route, { jwtSecret = 'lmsplus-production-gra
 
   route('POST', '/learn/classes/:id/lessons/:lessonId/complete', ({ db, user, body, params }) => {
     const { cls, list, idx, lesson } = loadLessonForStudent(db, user, params.id, params.lessonId);
+    const verKey = getClassContentVersionKey(cls);
     const rule = lesson.completion_rule || 'MANUAL';
-    const allBlocks = mergedPublishedBlocksForClass(db, lesson.id, cls.id);
+    const allBlocks = mergedPublishedBlocksForClass(db, lesson.id, cls);
 
     // 1. Điều kiện câu hỏi ôn tập cũ (REVIEW_CORRECT)
     if (rule === 'REVIEW_CORRECT') {
@@ -298,16 +302,16 @@ export function registerLearnRoutes(route, { jwtSecret = 'lmsplus-production-gra
       }
     }
 
-    // 2. Điều kiện tỷ lệ xem video tối thiểu
+    // 2. Điều kiện tỷ lệ xem video tối thiểu (chế độ STRICT theo content_version_key)
     const minWatchPct = Number(lesson.min_video_watch_pct || 0);
     if (minWatchPct > 0) {
       const videoBlocks = allBlocks.filter((b) => ['video', 'youtube'].includes(b.block_type) && !b.content?.display?.hidden);
       for (const vb of videoBlocks) {
         const vp = db
           .prepare(
-            'SELECT watch_pct FROM video_watch_progress WHERE student_id = ? AND subject_class_id = ? AND lesson_id = ? AND block_id = ?'
+            'SELECT watch_pct FROM video_watch_progress WHERE student_id = ? AND subject_class_id = ? AND lesson_id = ? AND block_id = ? AND content_version_key = ?'
           )
-          .get(user.id, cls.id, lesson.id, vb.id);
+          .get(user.id, cls.id, lesson.id, vb.id, verKey);
         const pct = Number(vp?.watch_pct || 0);
         if (pct < minWatchPct) {
           fail(
@@ -323,7 +327,7 @@ export function registerLearnRoutes(route, { jwtSecret = 'lmsplus-production-gra
     if (rule === 'VIDEO_AND_QUIZ' && Boolean(lesson.require_video_quizzes ?? 1)) {
       const publishedCustom = getPublishedClassCustom(db, cls.id, lesson.id);
       const reqMarkers = [
-        ...latestPublishedMarkers(db, lesson.id),
+        ...getEffectiveLessonBaseMarkers(db, cls, lesson.id),
         ...(publishedCustom ? publishedCustom.markers : []),
       ].filter((m) => m.behavior === 'PAUSE_AND_ASK' && Boolean(m.is_required));
 
@@ -331,9 +335,9 @@ export function registerLearnRoutes(route, { jwtSecret = 'lmsplus-production-gra
         const rawSubs = db
           .prepare(
             `SELECT is_correct, feedback_json, submitted_at FROM lesson_quiz_submissions
-             WHERE student_id = ? AND subject_class_id = ? AND target_type = 'VIDEO_MARKER' AND target_id = ?`
+             WHERE student_id = ? AND subject_class_id = ? AND target_type = 'VIDEO_MARKER' AND target_id = ? AND content_version_key = ?`
           )
-          .all(user.id, cls.id, m.id);
+          .all(user.id, cls.id, m.id, verKey);
         const subs = filterActiveMarkerSubs(rawSubs, m, allBlocks);
         if (subs.length === 0) return true;
         if (subs.some((s) => Boolean(s.is_correct))) return false;
@@ -356,9 +360,9 @@ export function registerLearnRoutes(route, { jwtSecret = 'lmsplus-production-gra
       const subs = db
         .prepare(
           `SELECT is_correct FROM lesson_quiz_submissions
-           WHERE student_id = ? AND subject_class_id = ? AND target_type = 'QUIZ_BLOCK' AND target_id = ?`
+           WHERE student_id = ? AND subject_class_id = ? AND target_type = 'QUIZ_BLOCK' AND target_id = ? AND content_version_key = ?`
         )
-        .all(user.id, cls.id, qb.id);
+        .all(user.id, cls.id, qb.id, verKey);
       const maxAtt = Number(qb.content?.max_attempts ?? 3);
       const passed = subs.some((s) => Boolean(s.is_correct));
       const exhausted = maxAtt > 0 && subs.length >= maxAtt;
@@ -373,11 +377,11 @@ export function registerLearnRoutes(route, { jwtSecret = 'lmsplus-production-gra
 
     const now = nowIso();
     db.prepare(
-      `INSERT INTO lesson_progress (id, student_id, subject_class_id, chapter_id, lesson_id, status, started_at, last_accessed_at, completed_at)
-       VALUES (?, ?, ?, ?, ?, 'COMPLETED', ?, ?, ?)
-       ON CONFLICT(student_id, subject_class_id, lesson_id) DO UPDATE SET status = 'COMPLETED',
+      `INSERT INTO lesson_progress (id, student_id, subject_class_id, chapter_id, lesson_id, content_version_key, status, started_at, last_accessed_at, completed_at)
+       VALUES (?, ?, ?, ?, ?, ?, 'COMPLETED', ?, ?, ?)
+       ON CONFLICT(student_id, subject_class_id, lesson_id, content_version_key) DO UPDATE SET status = 'COMPLETED',
          completed_at = COALESCE(lesson_progress.completed_at, excluded.completed_at), last_accessed_at = excluded.last_accessed_at`
-    ).run(crypto.randomUUID(), user.id, cls.id, list[idx].chapter_id, lesson.id, now, now, now);
+    ).run(crypto.randomUUID(), user.id, cls.id, list[idx].chapter_id, lesson.id, verKey, now, now, now);
     return {
       lesson_id: lesson.id,
       progress_status: 'COMPLETED',

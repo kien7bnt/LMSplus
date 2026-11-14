@@ -1,12 +1,13 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
-import { teachingApi } from '../api';
-import { Badge, Card, EmptyState, ErrorState, Loading, PageHeader, StatCard, fmtDate, fmtPct, useAsync } from '../ui';
+import { masterApi, teachingApi } from '../api';
+import { Badge, Card, EmptyState, ErrorState, Loading, PageHeader, StatCard, fmtDate, fmtDateTime, fmtPct, useAsync } from '../ui';
 import { SessionRow } from '../components/SessionRow';
 
 export const TeachingDashboard: React.FC = () => {
   const { data, error, loading, reload } = useAsync(() => teachingApi.dashboard(), []);
   const me = useAsync(() => teachingApi.me(), []);
+  const pendingLeaves = useAsync(() => masterApi.listStaffLeaveRequests({ status: 'PENDING' }), []);
 
   return (
     <div className="t-page">
@@ -139,11 +140,57 @@ export const TeachingDashboard: React.FC = () => {
                 </div>
               )}
             </Card>
-            <Card title="Bài tập cần chấm">
-              <EmptyState
-                title="Chưa kết nối module bài tập"
-                text="Hệ thống hiện chưa có dịch vụ chấm bài tập đang chạy, nên mục này chưa hiển thị số liệu. Bạn vẫn có thể chèn bài tập liên quan vào nội dung bài học."
-              />
+            <Card
+              title="Đơn xin nghỉ phép & Điều phối học liệu"
+              actions={
+                <div className="t-actions">
+                  <Link className="t-btn t-btn--small" to="/teaching/banks">Ngân hàng</Link>
+                  <Link className="t-btn t-btn--small" to="/teaching/curricula">Khung CT</Link>
+                  <Link className="t-btn t-btn--small" to="/teaching/cohorts">Lớp khóa</Link>
+                  <Link className="t-btn t-btn--small t-btn--primary" to="/teaching/leave-requests">
+                    Đơn nghỉ ({pendingLeaves.data?.items.length ?? data.leave_requests_pending ?? 0})
+                  </Link>
+                </div>
+              }
+            >
+              {pendingLeaves.loading ? (
+                <Loading rows={2} />
+              ) : (pendingLeaves.data?.items || []).length === 0 ? (
+                <EmptyState
+                  title="Không có đơn xin nghỉ chờ duyệt"
+                  text={`Số bài nộp đang chờ chấm hiện tại: ${data.assignments_to_grade ?? 0}. Bạn có thể kiểm tra chi tiết từng lớp tại mục Lớp môn học.`}
+                />
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  {(pendingLeaves.data?.items || []).slice(0, 5).map((reqItem) => (
+                    <div
+                      key={String(reqItem.id)}
+                      style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, paddingBottom: 8, borderBottom: '1px solid var(--border-subtle)' }}
+                    >
+                      <div>
+                        <strong>{reqItem.student_name}</strong> ({reqItem.class_code})
+                        <span className="t-sub">
+                          {reqItem.session_title ? `${reqItem.session_title}` : ''}
+                          {reqItem.scheduled_start_at ? ` (${fmtDateTime(reqItem.scheduled_start_at)})` : ''}
+                          {reqItem.session_title || reqItem.scheduled_start_at ? ' · ' : ''}
+                          {reqItem.reason}
+                        </span>
+                      </div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <Badge kind="leaveStatus" value={reqItem.status} />
+                        <Link className="t-btn t-btn--small" to={`/teaching/classes/${reqItem.class_id}?tab=leave`}>
+                          Xử lý
+                        </Link>
+                      </div>
+                    </div>
+                  ))}
+                  {(pendingLeaves.data?.items || []).length > 0 && (
+                    <span className="t-sub tabular-nums">
+                      Bài tập cần chấm toàn phạm vi: {data.assignments_to_grade ?? 0}
+                    </span>
+                  )}
+                </div>
+              )}
             </Card>
           </div>
         </>

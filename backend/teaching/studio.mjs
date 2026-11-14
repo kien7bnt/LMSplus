@@ -14,6 +14,7 @@ import { parseYouTubeUrl } from '../../shared/youtube.mjs';
 import { BLOCK_SCHEMA_VERSION, normalizeSnapshot, validateBlocks, validateDirectVideoUrl } from './blocks.mjs';
 import { draftBlocks, getCourse, latestPublishedBlocks, lessonContext, outline } from './courses.mjs';
 import { fail, intField, nowIso, oneOf, safeFilename, text, tx } from './http.mjs';
+import { getClassContentVersionKey } from './masterSchema.mjs';
 import {
   MARKER_BEHAVIORS,
   QUESTION_TYPES,
@@ -1871,9 +1872,10 @@ export function registerStudioRoutes(route, { uploadsDir, jwtSecret }) {
 
     const publishedCustom = getPublishedClassCustom(db, cls.id, params.lessonId);
     const classPublishedMarkers = publishedCustom ? publishedCustom.markers : [];
+    const verKey = getClassContentVersionKey(cls);
 
     const pubMarkers = [
-      ...latestPublishedMarkers(db, params.lessonId),
+      ...getEffectiveLessonBaseMarkers(db, cls, params.lessonId),
       ...classPublishedMarkers,
     ].filter((m) => m.behavior !== 'INFO_ONLY');
 
@@ -1882,24 +1884,24 @@ export function registerStudioRoutes(route, { uploadsDir, jwtSecret }) {
         .prepare(
           `SELECT COALESCE(MAX(watch_pct), 0) AS max_pct, COALESCE(SUM(watched_seconds), 0) AS watched_sec
            FROM video_watch_progress
-           WHERE student_id = ? AND subject_class_id = ? AND lesson_id = ?`
+           WHERE student_id = ? AND subject_class_id = ? AND lesson_id = ? AND content_version_key = ?`
         )
-        .get(st.id, cls.id, params.lessonId);
+        .get(st.id, cls.id, params.lessonId, verKey);
       const subs = db
         .prepare(
           `SELECT target_type, target_id, MAX(earned_points) AS best_pts, MAX(max_points) AS max_pts, MAX(is_correct) AS any_correct, COUNT(*) AS attempts
            FROM lesson_quiz_submissions
-           WHERE student_id = ? AND subject_class_id = ? AND lesson_id = ?
+           WHERE student_id = ? AND subject_class_id = ? AND lesson_id = ? AND content_version_key = ?
            GROUP BY target_type, target_id`
         )
-        .all(st.id, cls.id, params.lessonId);
+        .all(st.id, cls.id, params.lessonId, verKey);
 
       const markerSubs = subs.filter((s) => s.target_type === 'VIDEO_MARKER');
       const earned = subs.reduce((acc, s) => acc + Number(s.best_pts || 0), 0);
       const maxPts = subs.reduce((acc, s) => acc + Number(s.max_pts || 0), 0);
       const lp = db
-        .prepare('SELECT status, completed_at FROM lesson_progress WHERE student_id = ? AND subject_class_id = ? AND lesson_id = ?')
-        .get(st.id, cls.id, params.lessonId);
+        .prepare('SELECT status, completed_at FROM lesson_progress WHERE student_id = ? AND subject_class_id = ? AND lesson_id = ? AND content_version_key = ?')
+        .get(st.id, cls.id, params.lessonId, verKey);
 
       return {
         student_id: st.id,
@@ -1923,10 +1925,46 @@ export function registerStudioRoutes(route, { uploadsDir, jwtSecret }) {
   });
 }
 
-// ------------------------------------------------------------------ Learner Helpers (dùng trong learn.mjs)
+// ------------------------------------------------------------------ Snapshot Helpers & Learner Helpers (dùng trong learn.mjs)
+
+export function getClassCourseSnapshot(db, cls) {
+  if (!cls || !cls.course_version_id) return null;
+  const row = db
+    .prepare('SELECT id, version_number, version_label, snapshot_json FROM course_versions WHERE id = ?')
+    .get(cls.course_version_id);
+  if (!row) return null;
+  const snapshot = safeJson(row.snapshot_json, null);
+  return snapshot ? { version: row, snapshot } : null;
+}
+
+export function getEffectiveLessonBaseBlocks(db, cls, lessonId) {
+  const snapCtx = getClassCourseSnapshot(db, cls);
+  const raw = snapCtx?.snapshot?.blocks_by_lesson?.[lessonId];
+  if (Array.isArray(raw)) {
+    return raw.map((b) => ({
+      id: b.id,
+      block_type: b.block_type,
+      sort_order: b.sort_order,
+      content: b.content || safeJson(b.content_json, {}),
+    }));
+  }
+  return latestPublishedBlocks(db, lessonId);
+}
+
+export function getEffectiveLessonBaseMarkers(db, cls, lessonId) {
+  const snapCtx = getClassCourseSnapshot(db, cls);
+  const raw = snapCtx?.snapshot?.markers_by_lesson?.[lessonId];
+  if (Array.isArray(raw)) {
+    return raw.map((r) => (r.question !== undefined ? r : mapMarkerRow(r)));
+  }
+  return latestPublishedMarkers(db, lessonId);
+}
 
 export function buildStudentLessonPayload(db, { user, cls, lesson, chapterInfo, idx, list, jwtSecret }) {
-  const baseBlocks = latestPublishedBlocks(db, lesson.id).map((b) => ({ ...b, origin: 'INHERITED' }));
+  const verKey = getClassContentVersionKey(cls);
+  const snapCtx = getClassCourseSnapshot(db, cls);
+  const snapLesson = snapCtx?.snapshot?.lessons?.find((l) => l.id === lesson.id) || lesson;
+  const baseBlocks = getEffectiveLessonBaseBlocks(db, cls, lesson.id).map((b) => ({ ...b, origin: 'INHERITED' }));
   const publishedCustom = getPublishedClassCustom(db, cls.id, lesson.id);
   const customBlocks = publishedCustom ? publishedCustom.blocks : [];
 
@@ -1950,14 +1988,14 @@ export function buildStudentLessonPayload(db, { user, cls, lesson, chapterInfo, 
   }
   mergedBlocks.push(...tailBlocks);
 
-  // Tải lịch sử nộp bài của học viên cho bài học này
+  // Tải lịch sử nộp bài của học viên cho bài học này theo đúng phiên bản nội dung
   const submissions = db
     .prepare(
       `SELECT * FROM lesson_quiz_submissions
-       WHERE student_id = ? AND subject_class_id = ? AND lesson_id = ?
+       WHERE student_id = ? AND subject_class_id = ? AND lesson_id = ? AND content_version_key = ?
        ORDER BY attempt_number ASC`
     )
-    .all(user.id, cls.id, lesson.id);
+    .all(user.id, cls.id, lesson.id, verKey);
 
   const subsByTarget = new Map();
   for (const s of submissions) {
@@ -2024,9 +2062,9 @@ export function buildStudentLessonPayload(db, { user, cls, lesson, chapterInfo, 
     return block;
   });
 
-  // Gom các mốc tương tác trên video (kế thừa từ khóa học + bổ sung riêng của lớp nếu đã xuất bản)
+  // Gom các mốc tương tác trên video (kế thừa từ phiên bản môn học hoặc bản mới nhất + bổ sung riêng của lớp)
   const rawMarkers = [
-    ...latestPublishedMarkers(db, lesson.id),
+    ...getEffectiveLessonBaseMarkers(db, cls, lesson.id),
     ...(publishedCustom ? publishedCustom.markers : []),
   ].sort((a, b) => Number(a.timestamp_sec) - Number(b.timestamp_sec) || Number(a.sort_order) - Number(b.sort_order));
 
@@ -2088,10 +2126,10 @@ export function buildStudentLessonPayload(db, { user, cls, lesson, chapterInfo, 
     resourceRows.map((r) => [r.id, resourceDto(r, jwtSecret, user.id)])
   );
 
-  // Tiến độ xem từng khối video của học viên (Resume Playback)
+  // Tiến độ xem từng khối video của học viên (Resume Playback + STRICT Interval Union theo version)
   const vpRows = db
-    .prepare('SELECT * FROM video_watch_progress WHERE student_id = ? AND subject_class_id = ? AND lesson_id = ?')
-    .all(user.id, cls.id, lesson.id);
+    .prepare('SELECT * FROM video_watch_progress WHERE student_id = ? AND subject_class_id = ? AND lesson_id = ? AND content_version_key = ?')
+    .all(user.id, cls.id, lesson.id, verKey);
   const videoProgress = Object.fromEntries(
     vpRows.map((vp) => [
       vp.block_id,
@@ -2099,26 +2137,37 @@ export function buildStudentLessonPayload(db, { user, cls, lesson, chapterInfo, 
         last_position_sec: Number(vp.last_position_sec || 0),
         max_watched_sec: Number(vp.max_watched_sec || 0),
         watched_seconds: Number(vp.watched_seconds || 0),
+        unique_watched_sec: Number(vp.unique_watched_sec || vp.watched_seconds || 0),
+        max_contiguous_watched_sec: Number(vp.max_contiguous_watched_sec || vp.max_watched_sec || 0),
+        watched_intervals: safeJson(vp.watched_intervals_json, []),
         duration_sec: Number(vp.duration_sec || 0),
         watch_pct: Number(vp.watch_pct || 0),
         is_completed: Boolean(vp.is_completed),
+        strict_mode: true,
       },
     ])
   );
 
   const prog = db
-    .prepare('SELECT status, completed_at FROM lesson_progress WHERE student_id = ? AND subject_class_id = ? AND lesson_id = ?')
-    .get(user.id, cls.id, lesson.id);
+    .prepare('SELECT status, completed_at FROM lesson_progress WHERE student_id = ? AND subject_class_id = ? AND lesson_id = ? AND content_version_key = ?')
+    .get(user.id, cls.id, lesson.id, verKey);
 
   return {
     id: lesson.id,
-    title: lesson.title,
-    description: lesson.description || '',
-    objectives: lesson.objectives || '',
-    duration_minutes: lesson.duration_minutes,
-    completion_rule: lesson.completion_rule || 'MANUAL',
-    min_video_watch_pct: Number(lesson.min_video_watch_pct || 0),
-    require_video_quizzes: Boolean(lesson.require_video_quizzes ?? 1),
+    title: snapLesson.title || lesson.title,
+    description: snapLesson.description || '',
+    objectives: snapLesson.objectives || '',
+    duration_minutes: snapLesson.duration_minutes ?? lesson.duration_minutes,
+    completion_rule: snapLesson.completion_rule || 'MANUAL',
+    min_video_watch_pct: Number(snapLesson.min_video_watch_pct || 0),
+    require_video_quizzes: Boolean(snapLesson.require_video_quizzes ?? 1),
+    course_version: snapCtx
+      ? {
+          id: snapCtx.version.id,
+          version_number: snapCtx.version.version_number,
+          version_label: snapCtx.version.version_label,
+        }
+      : null,
     chapter: chapterInfo,
     class_custom_note: publishedCustom
       ? {
@@ -2139,9 +2188,10 @@ export function buildStudentLessonPayload(db, { user, cls, lesson, chapterInfo, 
 }
 
 export function findPublishedMarkerForStudent(db, lessonId, classId, markerId) {
+  const cls = db.prepare('SELECT * FROM subject_classes WHERE id = ?').get(classId);
   const publishedCustom = getPublishedClassCustom(db, classId, lessonId);
   const all = [
-    ...latestPublishedMarkers(db, lessonId),
+    ...getEffectiveLessonBaseMarkers(db, cls, lessonId),
     ...(publishedCustom ? publishedCustom.markers : []),
   ];
   return all.find((m) => m.id === markerId) || null;
@@ -2160,15 +2210,16 @@ export function submitVideoMarkerAnswer(db, { user, cls, lesson, markerId, body 
     };
   }
 
+  const verKey = getClassContentVersionKey(cls);
   const publishedCustom = getPublishedClassCustom(db, cls.id, lesson.id);
   const mergedBlocks = [
-    ...latestPublishedBlocks(db, lesson.id),
+    ...getEffectiveLessonBaseBlocks(db, cls, lesson.id),
     ...(publishedCustom ? publishedCustom.blocks : []),
   ];
   const markerSig = computeMarkerContentSig(marker, mergedBlocks);
 
   const rawKey = typeof body.idempotency_key === 'string' && body.idempotency_key.trim()
-    ? `${user.id}:${cls.id}:${markerSig}:${body.idempotency_key.trim().slice(0, 80)}`
+    ? `${user.id}:${cls.id}:${verKey}:${markerSig}:${body.idempotency_key.trim().slice(0, 80)}`
     : null;
 
   if (rawKey) {
@@ -2190,13 +2241,14 @@ export function submitVideoMarkerAnswer(db, { user, cls, lesson, markerId, body 
     }
   }
 
-  const allPrevSubs = db
+  const allSubsAcrossVersions = db
     .prepare(
       `SELECT * FROM lesson_quiz_submissions
        WHERE student_id = ? AND subject_class_id = ? AND target_type = 'VIDEO_MARKER' AND target_id = ?
        ORDER BY attempt_number ASC`
     )
     .all(user.id, cls.id, marker.id);
+  const allPrevSubs = allSubsAcrossVersions.filter((s) => (s.content_version_key || 'v0') === verKey);
   const prevSubs = filterActiveMarkerSubs(allPrevSubs, marker, mergedBlocks);
 
   const maxAtt = Number(marker.max_attempts ?? 2);
@@ -2207,7 +2259,7 @@ export function submitVideoMarkerAnswer(db, { user, cls, lesson, markerId, body 
   const grade = gradeQuestionResponse(marker.question, body.response || {});
   const attemptNumber = prevSubs.length + 1;
   const dbRowAttempt =
-    (allPrevSubs.length ? Math.max(...allPrevSubs.map((s) => Number(s.attempt_number || 0))) : 0) + 1;
+    (allSubsAcrossVersions.length ? Math.max(...allSubsAcrossVersions.map((s) => Number(s.attempt_number || 0))) : 0) + 1;
   const canRetry = !grade.is_correct && (maxAtt === 0 || attemptNumber < maxAtt);
   const canContinue = grade.is_correct || !marker.is_required || !canRetry || Boolean(marker.allow_skip);
   const revealAns = Boolean(marker.show_answer_after_submit) && (grade.is_correct || !canRetry);
@@ -2224,13 +2276,13 @@ export function submitVideoMarkerAnswer(db, { user, cls, lesson, markerId, body 
     ...(revealAns ? { correct_answer: publicCorrectAnswer(marker.question) } : {}),
   };
 
-  const idemKey = rawKey || `auto:${user.id}:${cls.id}:vm:${marker.id}:${dbRowAttempt}:${crypto.randomBytes(4).toString('hex')}`;
+  const idemKey = rawKey || `auto:${user.id}:${cls.id}:${verKey}:vm:${marker.id}:${dbRowAttempt}:${crypto.randomBytes(4).toString('hex')}`;
   const subId = `sub_${crypto.randomBytes(6).toString('hex')}`;
   db.prepare(
     `INSERT INTO lesson_quiz_submissions (
        id, idempotency_key, student_id, subject_class_id, lesson_id, target_type, target_id,
-       attempt_number, response_json, grading_status, is_correct, earned_points, max_points, feedback_json, submitted_at
-     ) VALUES (?, ?, ?, ?, ?, 'VIDEO_MARKER', ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       attempt_number, response_json, grading_status, is_correct, earned_points, max_points, feedback_json, submitted_at, content_version_key
+     ) VALUES (?, ?, ?, ?, ?, 'VIDEO_MARKER', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     subId,
     idemKey,
@@ -2245,7 +2297,8 @@ export function submitVideoMarkerAnswer(db, { user, cls, lesson, markerId, body 
     grade.earned_points,
     grade.max_points,
     JSON.stringify(extraPayload),
-    nowIso()
+    nowIso(),
+    verKey
   );
 
   return {
@@ -2261,8 +2314,9 @@ export function submitVideoMarkerAnswer(db, { user, cls, lesson, markerId, body 
 }
 
 export function submitStandaloneQuizBlock(db, { user, cls, lesson, blockId, body }) {
+  const verKey = getClassContentVersionKey(cls);
   const rawKey = typeof body.idempotency_key === 'string' && body.idempotency_key.trim()
-    ? `${user.id}:${cls.id}:${body.idempotency_key.trim().slice(0, 80)}`
+    ? `${user.id}:${cls.id}:${verKey}:${body.idempotency_key.trim().slice(0, 80)}`
     : null;
 
   if (rawKey) {
@@ -2282,8 +2336,8 @@ export function submitStandaloneQuizBlock(db, { user, cls, lesson, blockId, body
     }
   }
 
-  // Tìm khối quiz trong nội dung đã xuất bản của khóa học hoặc lớp học
-  let block = latestPublishedBlocks(db, lesson.id).find((b) => b.id === blockId && b.block_type === 'quiz');
+  // Tìm khối quiz trong phiên bản nội dung của lớp học (snapshot hoặc mới nhất) + tùy biến lớp
+  let block = getEffectiveLessonBaseBlocks(db, cls, lesson.id).find((b) => b.id === blockId && b.block_type === 'quiz');
   if (!block) {
     const customRow = db
       .prepare(
@@ -2296,13 +2350,14 @@ export function submitStandaloneQuizBlock(db, { user, cls, lesson, blockId, body
 
   const c = block.content || {};
   const questions = Array.isArray(c.questions) ? c.questions : [];
-  const prevSubs = db
+  const allQuizSubs = db
     .prepare(
       `SELECT * FROM lesson_quiz_submissions
        WHERE student_id = ? AND subject_class_id = ? AND target_type = 'QUIZ_BLOCK' AND target_id = ?
        ORDER BY attempt_number ASC`
     )
     .all(user.id, cls.id, block.id);
+  const prevSubs = allQuizSubs.filter((s) => (s.content_version_key || 'v0') === verKey);
 
   const maxAtt = Number(c.max_attempts ?? 3);
   if (maxAtt > 0 && prevSubs.length >= maxAtt) {
@@ -2325,6 +2380,8 @@ export function submitStandaloneQuizBlock(db, { user, cls, lesson, blockId, body
   const passPct = Number(c.pass_score_pct ?? 60);
   const passed = scorePct >= passPct;
   const attemptNumber = prevSubs.length + 1;
+  const dbRowAttempt =
+    (allQuizSubs.length ? Math.max(...allQuizSubs.map((s) => Number(s.attempt_number || 0))) : 0) + 1;
   const canRetry = !passed && (maxAtt === 0 || attemptNumber < maxAtt);
   const revealAns = c.show_answer_after_submit !== false && (passed || !canRetry);
   const revealExp = c.show_explanation !== false;
@@ -2347,13 +2404,13 @@ export function submitStandaloneQuizBlock(db, { user, cls, lesson, blockId, body
     })),
   };
 
-  const idemKey = rawKey || `auto:${user.id}:${cls.id}:qb:${block.id}:${attemptNumber}:${crypto.randomBytes(4).toString('hex')}`;
+  const idemKey = rawKey || `auto:${user.id}:${cls.id}:${verKey}:qb:${block.id}:${dbRowAttempt}:${crypto.randomBytes(4).toString('hex')}`;
   const subId = `sub_${crypto.randomBytes(6).toString('hex')}`;
   db.prepare(
     `INSERT INTO lesson_quiz_submissions (
        id, idempotency_key, student_id, subject_class_id, lesson_id, target_type, target_id,
-       attempt_number, response_json, grading_status, is_correct, earned_points, max_points, feedback_json, submitted_at
-     ) VALUES (?, ?, ?, ?, ?, 'QUIZ_BLOCK', ?, ?, ?, 'GRADED', ?, ?, ?, ?, ?)`
+       attempt_number, response_json, grading_status, is_correct, earned_points, max_points, feedback_json, submitted_at, content_version_key
+     ) VALUES (?, ?, ?, ?, ?, 'QUIZ_BLOCK', ?, ?, ?, 'GRADED', ?, ?, ?, ?, ?, ?)`
   ).run(
     subId,
     idemKey,
@@ -2361,13 +2418,14 @@ export function submitStandaloneQuizBlock(db, { user, cls, lesson, blockId, body
     cls.id,
     lesson.id,
     block.id,
-    attemptNumber,
+    dbRowAttempt,
     JSON.stringify(responsesMap),
     passed ? 1 : 0,
     earnedPoints,
     maxPoints,
     JSON.stringify(extraPayload),
-    nowIso()
+    nowIso(),
+    verKey
   );
 
   return {

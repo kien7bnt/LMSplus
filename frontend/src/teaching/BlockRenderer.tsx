@@ -142,6 +142,16 @@ export interface RenderCtx {
     last_position_sec: number;
     watched_seconds: number;
     duration_sec: number;
+    playback_rate?: number;
+    is_visible?: boolean;
+    segments?: Array<{ start_sec: number; end_sec: number; is_visible?: boolean }>;
+    events?: Array<{
+      idempotency_key: string;
+      start_sec: number;
+      end_sec: number;
+      playback_rate?: number;
+      is_visible?: boolean;
+    }>;
   }) => Promise<unknown>;
   onSubmitVideoMarker?: (
     markerId: string,
