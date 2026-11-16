@@ -219,8 +219,8 @@ export const ClassListPage: React.FC = () => {
   return (
     <div className="t-page">
       <PageHeader
-        title="Lớp học giảng dạy"
-        subtitle="Quản lý danh sách lớp, học viên, lịch buổi học, điểm danh và nhật ký giảng dạy."
+        title="Lớp học"
+        subtitle="Quản lý danh sách lớp học, học viên, lịch buổi học, điểm danh và nhật ký giảng dạy."
         actions={
           meReq.data?.can_create_class && (
             <Btn variant="primary" onClick={() => setCreating(true)}>

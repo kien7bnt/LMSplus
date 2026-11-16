@@ -38,7 +38,7 @@ export function createTeachingRouter({
   registerStrictVideoRoutes(route);
   registerCurriculaAndCohortRoutes(route);
   registerContentTreeAndSnapshotRoutes(route);
-  registerBankRoutes(route);
+  registerBankRoutes(route, { uploadsDir });
   registerAssessmentAndAssignmentRoutes(route);
   registerLeaveAndForumRoutes(route);
 

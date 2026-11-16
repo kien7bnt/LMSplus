@@ -381,6 +381,23 @@ await t('TREE-BANKS', 'Tạo Chủ đề 4 cấp, từ chối câu hỏi/bài t�
   );
   assert.equal(resBank.lesson_id, leafLessonId);
 
+  const samplePdfBytes = Buffer.from('%PDF-1.4\n%LMSPLUS test\n', 'utf8');
+  const resUpload = expectStatus(
+    await api('POST', '/banks/resources', GV, {
+      lesson_id: leafLessonId,
+      node_level: 'LESSON',
+      title: 'Tai lieu PDF tu may',
+      resource_type: 'PDF',
+      file_name: 'bai-giang.pdf',
+      data_base64: samplePdfBytes.toString('base64'),
+    }),
+    201
+  );
+  assert.equal(resUpload.storage_provider, 'LOCAL_DISK');
+  const dlRes = await invokeApiAsync('GET', `/api/v1/teaching/resources/${resUpload.id}/download`, GV);
+  assert.equal(dlRes.status, 200);
+  assert.equal(dlRes.rawBuffer.toString('utf8'), samplePdfBytes.toString('utf8'));
+
   const imp = expectStatus(
     await api('POST', '/banks/questions/import', GV, {
       lesson_id: leafLessonId,

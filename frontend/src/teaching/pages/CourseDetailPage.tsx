@@ -138,7 +138,7 @@ const OutlineEditor: React.FC<{ course: CourseDetail; onChanged: () => void; set
             <span className="t-sub" style={{ margin: '2px 0 0' }}>Nhóm các chương theo chủ đề để đồng bộ với 3 Ngân hàng học liệu.</span>
           </div>
           <Link className="t-btn t-btn--small" to={`/teaching/banks?course_id=${course.id}`}>
-            Mở Ngân hàng theo cây
+            Mở Học liệu theo cây
           </Link>
         </div>
         {topics.length > 0 && (
@@ -822,7 +822,7 @@ export const CourseDetailPage: React.FC = () => {
   return (
     <div className="t-page">
       <PageHeader
-        breadcrumb={<><Link to="/teaching/courses">Khóa học</Link><span aria-hidden="true">›</span><span>{c.code}</span></>}
+        breadcrumb={<><Link to="/teaching/courses">Giáo trình môn</Link><span aria-hidden="true">›</span><span>{c.code}</span></>}
         title={c.title}
         subtitle={
           <span style={{ display: 'inline-flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
@@ -838,9 +838,9 @@ export const CourseDetailPage: React.FC = () => {
               🎬 Mở Lesson Studio
             </Link>
             <Link className="t-btn" to={`/teaching/banks?course_id=${c.id}`}>
-              Ngân hàng học liệu
+              Học liệu
             </Link>
-            {canManage && c.status !== 'PUBLISHED' && <Btn variant="secondary" onClick={() => setStatusConfirm('PUBLISHED')}>Xuất bản khóa học</Btn>}
+            {canManage && c.status !== 'PUBLISHED' && <Btn variant="secondary" onClick={() => setStatusConfirm('PUBLISHED')}>Xuất bản giáo trình</Btn>}
             {canManage && <Btn onClick={() => setEditOpen(true)}>Sửa thông tin</Btn>}
             {c.capabilities.can_duplicate && <Btn variant="ghost" onClick={() => setDupOpen(true)}>Sao chép</Btn>}
           </>

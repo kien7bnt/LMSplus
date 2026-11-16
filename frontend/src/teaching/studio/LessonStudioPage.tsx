@@ -1215,9 +1215,9 @@ export const LessonStudioPage: React.FC<{ mode?: 'COURSE' | 'CLASS' }> = ({ mode
             <Link
               to={`/teaching/banks?course_id=${resolvedCourseId}`}
               className="t-btn t-btn--small t-btn--ghost"
-              title="Mở Ngân hàng câu hỏi, bài tập & học liệu"
+              title="Mở Học liệu (câu hỏi, bài tập & tài nguyên)"
             >
-              Ngân hàng học liệu
+              Học liệu
             </Link>
           )}
           {canEdit && (

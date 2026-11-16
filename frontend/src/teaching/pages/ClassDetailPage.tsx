@@ -13,6 +13,12 @@ import {
 import { ClassFormModal } from './ClassListPage';
 import { ClassLeaveRequestsPanel } from './LeaveRequestsPage';
 import { ForumWorkspace } from './ForumPanel';
+import {
+  BankQuestionAttachment,
+  BankQuestionPicker,
+  extractBankQuestionAttachments,
+  mergeInstructionsWithQuestions,
+} from '../components/BankQuestionPicker';
 
 type ClassTab =
   | 'overview'
@@ -1937,6 +1943,8 @@ const ClassAssignmentsTab: React.FC<{ cls: ClassDetail; onOpenEditClass: () => v
   const [instructions, setInstructions] = useState('');
   const [subType, setSubType] = useState<'TEXT' | 'LINK' | 'FILE' | 'MIXED'>('MIXED');
   const [maxScore, setMaxScore] = useState(10);
+  const [maxScoreTouched, setMaxScoreTouched] = useState(false);
+  const [selectedQuestions, setSelectedQuestions] = useState<BankQuestionAttachment[]>([]);
   const [dueAt, setDueAt] = useState('');
   const [publishNow, setPublishNow] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -1957,24 +1965,44 @@ const ClassAssignmentsTab: React.FC<{ cls: ClassDetail; onOpenEditClass: () => v
 
   const canManage = cls.capabilities.can_manage_class;
 
+  const handleQuestionsChange = (next: BankQuestionAttachment[]) => {
+    setSelectedQuestions(next);
+    if (!maxScoreTouched) {
+      const total = next.reduce((sum, q) => sum + (Number(q.points) || 0), 0);
+      if (total > 0) setMaxScore(total);
+    }
+  };
+
+  const handleInsertPrompt = (text: string, totalPoints: number) => {
+    setInstructions((prev) => (prev.trim() ? `${prev.trim()}\n\n${text}` : text));
+    if (!maxScoreTouched && totalPoints > 0) setMaxScore(totalPoints);
+  };
+
   const createAssignment = async (e: React.FormEvent) => {
     e.preventDefault();
     setSaving(true);
     try {
+      const finalInstructions = mergeInstructionsWithQuestions(instructions, selectedQuestions);
       await masterApi.createClassAssignment(cls.id, {
         assignment_bank_item_id: bankItemId || undefined,
         title: title.trim(),
-        instructions: instructions.trim(),
+        instructions: finalInstructions,
         submission_type: subType,
         max_score: maxScore,
         due_at: dueAt ? new Date(dueAt).toISOString() : undefined,
         status: publishNow ? 'PUBLISHED' : 'DRAFT',
+        attachments:
+          selectedQuestions.length > 0
+            ? (selectedQuestions as unknown as Array<Record<string, unknown>>)
+            : undefined,
       });
       toast({ tone: 'success', title: 'Đã giao bài tập mới cho lớp' });
       setCreateOpen(false);
       setBankItemId('');
       setTitle('');
       setInstructions('');
+      setSelectedQuestions([]);
+      setMaxScoreTouched(false);
       req.reload();
     } catch (ex) {
       toast({ tone: 'error', title: 'Không tạo được bài tập', detail: errMsg(ex) });
@@ -2085,7 +2113,7 @@ const ClassAssignmentsTab: React.FC<{ cls: ClassDetail; onOpenEditClass: () => v
         <Modal
           title="Giao bài tập thực hành mới"
           onClose={() => setCreateOpen(false)}
-          width={680}
+          width={760}
           footer={
             <>
               <Btn variant="ghost" onClick={() => setCreateOpen(false)} disabled={saving}>Hủy</Btn>
@@ -2108,6 +2136,8 @@ const ClassAssignmentsTab: React.FC<{ cls: ClassDetail; onOpenEditClass: () => v
                       setInstructions(picked.instructions);
                       setSubType(picked.submission_type);
                       setMaxScore(picked.max_score);
+                      setSelectedQuestions(extractBankQuestionAttachments(picked.attachments));
+                      setMaxScoreTouched(false);
                     }
                   }}
                 >
@@ -2130,13 +2160,39 @@ const ClassAssignmentsTab: React.FC<{ cls: ClassDetail; onOpenEditClass: () => v
               </select>
             </Field>
             <Field label="Thang điểm tối đa">
-              <input type="number" className="t-input tabular-nums" min={1} max={100} value={maxScore} onChange={(e) => setMaxScore(Number(e.target.value) || 10)} />
+              <input
+                type="number"
+                className="t-input tabular-nums"
+                min={1}
+                max={1000}
+                value={maxScore}
+                onChange={(e) => {
+                  setMaxScoreTouched(true);
+                  setMaxScore(Number(e.target.value) || 10);
+                }}
+              />
             </Field>
             <Field label="Hạn nộp (tùy chọn)" wide>
               <input type="datetime-local" className="t-input" value={dueAt} onChange={(e) => setDueAt(e.target.value)} />
             </Field>
+            <BankQuestionPicker
+              courseId={cls.course?.id}
+              selected={selectedQuestions}
+              onChange={handleQuestionsChange}
+              onInsertPrompt={handleInsertPrompt}
+            />
             <Field label="Hướng dẫn làm bài" wide>
-              <textarea className="t-input" rows={4} value={instructions} onChange={(e) => setInstructions(e.target.value)} />
+              <textarea
+                className="t-input"
+                rows={4}
+                placeholder={
+                  selectedQuestions.length > 0
+                    ? 'Nhập thêm ghi chú cho học viên (câu hỏi đã chọn sẽ được tự động đính kèm khi giao bài)...'
+                    : 'Nhập yêu cầu và hướng dẫn làm bài cho học viên...'
+                }
+                value={instructions}
+                onChange={(e) => setInstructions(e.target.value)}
+              />
             </Field>
             <div style={{ gridColumn: '1 / -1' }}>
               <label style={{ display: 'flex', gap: 8, alignItems: 'center', minHeight: 44 }}>
@@ -2421,16 +2477,16 @@ export const ClassDetailPage: React.FC = () => {
         tabs={[
           { id: 'overview', label: 'Tổng quan' },
           { id: 'students', label: 'Học viên', badge: cls.student_count },
-          { id: 'content', label: 'Nội dung học tập' },
+          { id: 'content', label: 'Nội dung' },
           { id: 'schedule', label: 'Lịch học', badge: cls.sessions_total },
           { id: 'attendance', label: 'Điểm danh', badge: cls.sessions_unmarked || undefined },
           { id: 'exams', label: 'Kiểm tra' },
           { id: 'assignments', label: 'Bài tập' },
           { id: 'gradebook', label: 'Bảng điểm' },
-          { id: 'results', label: 'Kết quả học tập' },
-          { id: 'log', label: 'Nhật ký giảng dạy', badge: cls.logs_unconfirmed.length || undefined },
-          { id: 'leave', label: 'Đơn xin nghỉ' },
-          { id: 'forum', label: 'Diễn đàn lớp' },
+          { id: 'results', label: 'Kết quả' },
+          { id: 'log', label: 'Nhật ký', badge: cls.logs_unconfirmed.length || undefined },
+          { id: 'leave', label: 'Đơn nghỉ' },
+          { id: 'forum', label: 'Diễn đàn' },
         ]}
       />
 

@@ -105,7 +105,7 @@ export const CourseFormModal: React.FC<{
 
   return (
     <Modal
-      title={editing ? 'Chỉnh sửa thông tin khóa học' : 'Tạo khóa học mới'}
+      title={editing ? 'Chỉnh sửa thông tin giáo trình' : 'Tạo giáo trình mới'}
       onClose={onClose}
       width={760}
       footer={
@@ -121,7 +121,7 @@ export const CourseFormModal: React.FC<{
             </Btn>
           ) : (
             <Btn variant="primary" onClick={save} loading={busy}>
-              {editing ? 'Lưu thay đổi' : 'Tạo khóa học'}
+              {editing ? 'Lưu thay đổi' : 'Tạo giáo trình'}
             </Btn>
           )}
         </>
@@ -129,10 +129,10 @@ export const CourseFormModal: React.FC<{
     >
       {step === 1 ? (
         <div className="t-form-grid">
-          <Field label="Tên khóa học" required error={errors.title} wide>
+          <Field label="Tên giáo trình" required error={errors.title} wide>
             <input className="t-input" value={f.title} onChange={set('title')} maxLength={200} placeholder="vd: Toán 5 nâng cao" />
           </Field>
-          <Field label="Mã khóa học" required error={errors.code} hint="Dùng để tìm kiếm và liên kết lớp học">
+          <Field label="Mã giáo trình" required error={errors.code} hint="Dùng để tìm kiếm và liên kết lớp học">
             <input className="t-input" value={f.code} onChange={set('code')} maxLength={40} placeholder="vd: TOAN5-NC" style={{ textTransform: 'uppercase' }} />
           </Field>
           <Field label="Môn học / lĩnh vực" error={errors.subject}>

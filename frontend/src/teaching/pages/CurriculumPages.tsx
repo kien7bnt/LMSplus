@@ -273,8 +273,8 @@ export const CurriculumDetailPage: React.FC = () => {
         active={tab}
         onChange={setTab}
         tabs={[
-          { id: 'subjects', label: 'Danh sách môn học', badge: c.subjects.length },
-          { id: 'cohorts', label: 'Lớp khóa học áp dụng', badge: c.cohorts.length },
+          { id: 'subjects', label: 'Danh sách giáo trình', badge: c.subjects.length },
+          { id: 'cohorts', label: 'Khóa học áp dụng', badge: c.cohorts.length },
           { id: 'audit', label: 'Nhật ký thay đổi', badge: c.audit_logs.length },
         ]}
       />
@@ -337,21 +337,21 @@ export const CurriculumDetailPage: React.FC = () => {
 
       {tab === 'cohorts' && (
         <Card
-          title="Các Lớp khóa học đang áp dụng khung chương trình này"
-          actions={<Link className="t-btn t-btn--secondary t-btn--small" to="/teaching/cohorts">Quản lý lớp khóa học</Link>}
+          title="Các Khóa học đang áp dụng khung chương trình này"
+          actions={<Link className="t-btn t-btn--secondary t-btn--small" to="/teaching/cohorts">Quản lý khóa học</Link>}
         >
           {c.cohorts.length === 0 ? (
-            <EmptyState title="Chưa có lớp khóa học nào" text="Tạo một lớp khóa học mới từ mục Lớp khóa học và chọn khung chương trình này." />
+            <EmptyState title="Chưa có khóa học nào" text="Tạo một khóa học mới từ mục Khóa học và chọn khung chương trình này." />
           ) : (
             <div className="t-table-wrap">
               <table className="t-table">
                 <thead>
                   <tr>
                     <th>Mã khóa</th>
-                    <th>Tên lớp khóa học</th>
+                    <th>Tên khóa học</th>
                     <th>Niên khóa / Kỳ</th>
                     <th>Học viên (DISTINCT)</th>
-                    <th>Số lớp môn học</th>
+                    <th>Số môn học</th>
                     <th>Trạng thái</th>
                   </tr>
                 </thead>

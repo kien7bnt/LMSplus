@@ -18,7 +18,10 @@ export const StudentHomePage: React.FC = () => {
   const overviewReq = useAsync(() => masterApi.getStudentOverview(), []);
   const classesReq = useAsync(() => teachingApi.learnClasses(), []);
   const [code, setCode] = useState('');
+  const [checkInOpen, setCheckInOpen] = useState(false);
   const [checkingIn, setCheckingIn] = useState(false);
+  const [view, setView] = useState<'overview' | 'classes'>('overview');
+  const [feedTab, setFeedTab] = useState<'schedule' | 'tasks' | 'grades' | 'forum'>('schedule');
   const [joiningSessionId, setJoiningSessionId] = useState<string | null>(null);
   const [joinResult, setJoinResult] = useState<{
     sessionTitle: string;
@@ -67,6 +70,7 @@ export const StudentHomePage: React.FC = () => {
     try {
       const res = await teachingApi.checkIn(trimmed);
       setCode('');
+      setCheckInOpen(false);
       toast({
         tone: 'success',
         title: res.already_checked_in ? 'Bạn đã điểm danh buổi này rồi' : `Điểm danh thành công: ${label('attendance', res.status)}`,
@@ -80,185 +84,341 @@ export const StudentHomePage: React.FC = () => {
   };
 
   const ov = overviewReq.data;
+  const tasksTotal = (ov?.pending_assignments_count || 0) + (ov?.pending_exams_count || 0);
+  const progressPct = ov ? Math.min(100, Math.max(0, Math.round(ov.overall_progress_pct || 0))) : 0;
+  const attPct = ov && ov.attendance_summary.rate !== null ? Math.min(100, Math.max(0, Math.round(ov.attendance_summary.rate))) : 100;
+  const taskClearPct = ov ? Math.max(15, 100 - tasksTotal * 15) : 100;
 
   return (
-    <div className="t-page">
-      <PageHeader
-        title="Không gian học tập của tôi"
-        subtitle="Theo dõi tổng quan học tập 10 mục, lớp đang học, lịch thi, bài tập, điểm số và chuyên cần."
-        actions={
-          <div className="t-actions">
-            {ov?.continue_learning && (
-              <Link
-                className="t-btn t-btn--primary"
-                to={`/learn/classes/${ov.continue_learning.class_id}/lessons/${ov.continue_learning.lesson_id}`}
-              >
-                ▶ Tiếp tục học: {ov.continue_learning.lesson_title}
-              </Link>
-            )}
-            <Link className="t-btn" to="/learn/exams">Kiểm tra</Link>
-            <Link className="t-btn" to="/learn/assignments">Bài tập</Link>
-            <Link className="t-btn" to="/learn/leave-requests">Xin nghỉ phép</Link>
+    <div className="t-page bento-page">
+      <div className="bento-context">
+        <div className="bento-context__left">
+          <div className="bento-context__title-row">
+            <h1>Không gian học tập</h1>
+            <span className="bento-live-pill">
+              <span className="bento-live-dot" aria-hidden="true" />
+              Đang học
+            </span>
           </div>
-        }
-      />
+          <span className="bento-muted">
+            Theo dõi nhanh tiến độ, lịch học và các đầu việc đến hạn.
+          </span>
+        </div>
 
-      {ov && (
+        <div className="bento-context__right">
+          <div className="bento-segmented" role="tablist" aria-label="Chế độ xem học tập">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={view === 'overview'}
+              className={`bento-seg-btn ${view === 'overview' ? 'is-active' : ''}`}
+              onClick={() => setView('overview')}
+            >
+              Tổng quan
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={view === 'classes'}
+              className={`bento-seg-btn ${view === 'classes' ? 'is-active' : ''}`}
+              onClick={() => setView('classes')}
+            >
+              Môn học ({classesReq.data?.items.length ?? ov?.total_classes ?? 0})
+            </button>
+          </div>
+
+          <button type="button" className="bento-pill-action" onClick={() => setCheckInOpen(true)}>
+            Điểm danh 6 số
+          </button>
+
+          {ov?.continue_learning && (
+            <Link
+              className="bento-pill-action bento-pill-action--primary"
+              to={`/learn/classes/${ov.continue_learning.class_id}/lessons/${ov.continue_learning.lesson_id}`}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                <polygon points="6 3 20 12 6 21 6 3" />
+              </svg>
+              Tiếp tục học
+            </Link>
+          )}
+        </div>
+      </div>
+
+      {ov && view === 'overview' && (
         <>
-          <div className="t-stats">
-            <StatCard label="Lớp đang học" value={ov.total_classes} />
-            <StatCard
-              label="Tiến độ bài học"
-              value={fmtPct(ov.overall_progress_pct)}
-              hint={`${ov.completed_lessons}/${ov.total_lessons} bài đã hoàn thành`}
-              tone="success"
-            />
-            <StatCard
-              label="Bài tập cần làm"
-              value={ov.pending_assignments_count}
-              tone={ov.pending_assignments_count > 0 ? 'warning' : 'default'}
-            />
-            <StatCard
-              label="Bài kiểm tra chờ thi"
-              value={ov.pending_exams_count}
-              tone={ov.pending_exams_count > 0 ? 'warning' : 'default'}
-            />
-            <StatCard
-              label="Tỷ lệ chuyên cần"
-              value={fmtPct(ov.attendance_summary.rate)}
-              hint={`${ov.attendance_summary.present} có mặt · ${ov.attendance_summary.absent} vắng`}
-            />
-            <StatCard label="Đơn nghỉ chờ duyệt" value={ov.pending_leave_requests} />
+          <div className="bento-top-grid">
+            <section className="bento-card" aria-label="Tiến độ học tập tổng thể">
+              <div className="bento-card__head">
+                <span className="bento-card__label">TIẾN ĐỘ HỌC TẬP</span>
+                <span className="t-badge tabular-nums">{ov.completed_lessons}/{ov.total_lessons} bài</span>
+              </div>
+              <div>
+                <div className="bento-hero__num">{fmtPct(ov.overall_progress_pct)}</div>
+                <p className="bento-muted" style={{ margin: '6px 0 0' }}>
+                  {ov.continue_learning ? `Đang học: ${ov.continue_learning.lesson_title}` : 'Hoàn thành đều đặn các bài giảng mỗi ngày'}
+                </p>
+              </div>
+              <div className="bento-pill-actions">
+                <Link className="bento-pill-action" to="/learn/exams">Kiểm tra</Link>
+                <Link className="bento-pill-action" to="/learn/assignments">Bài tập</Link>
+                <Link className="bento-pill-action" to="/learn/leave-requests">Xin nghỉ</Link>
+              </div>
+            </section>
+
+            <div className="bento-kpi-trio">
+              <button type="button" className="bento-kpi-trigger" onClick={() => setView('classes')}>
+                <div className="bento-card bento-kpi-card">
+                  <div className="bento-card__head">
+                    <div className="bento-kpi-title">
+                      <span className="bento-icon-circle bento-icon-circle--learning" aria-hidden="true">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20" />
+                        </svg>
+                      </span>
+                      <span className="bento-muted">Môn học</span>
+                    </div>
+                  </div>
+                  <div>
+                    <div className="bento-kpi__num">{ov.total_classes}</div>
+                    <div className="bento-muted" style={{ marginTop: 4 }}>Đơn nghỉ chờ: {ov.pending_leave_requests}</div>
+                  </div>
+                </div>
+              </button>
+
+              <button type="button" className="bento-kpi-trigger" onClick={() => setFeedTab('tasks')}>
+                <div className="bento-card bento-kpi-card">
+                  <div className="bento-card__head">
+                    <div className="bento-kpi-title">
+                      <span className="bento-icon-circle bento-icon-circle--streak" aria-hidden="true">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+                          <rect width="8" height="4" x="8" y="2" rx="1" ry="1" />
+                          <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2" />
+                          <path d="M9 14h6" />
+                        </svg>
+                      </span>
+                      <span className="bento-muted">Việc cần làm</span>
+                    </div>
+                  </div>
+                  <div>
+                    <div className="bento-kpi__num" style={{ color: tasksTotal > 0 ? 'var(--status-warning)' : undefined }}>
+                      {tasksTotal}
+                    </div>
+                    <div className="bento-muted" style={{ marginTop: 4 }}>
+                      {ov.pending_assignments_count} bài tập · {ov.pending_exams_count} đề thi
+                    </div>
+                  </div>
+                </div>
+              </button>
+
+              <div className="bento-card bento-kpi-card">
+                <div className="bento-card__head">
+                  <div className="bento-kpi-title">
+                    <span className="bento-icon-circle bento-icon-circle--brand" aria-hidden="true">
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+                        <circle cx="12" cy="12" r="9" />
+                        <path d="m9 12 2 2 4-4" />
+                      </svg>
+                    </span>
+                    <span className="bento-muted">Chuyên cần</span>
+                  </div>
+                </div>
+                <div>
+                  <div className="bento-kpi__num">{fmtPct(ov.attendance_summary.rate)}</div>
+                  <div className="bento-muted" style={{ marginTop: 4 }}>
+                    {ov.attendance_summary.present} có mặt · {ov.attendance_summary.absent} vắng
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
 
-          <div className="t-grid-2">
-            <Card
-              title="Lịch học sắp tới"
-              actions={<Link className="t-btn t-btn--small t-btn--ghost" to="/learn/schedule">Xem tất cả</Link>}
-            >
-              {ov.upcoming_sessions.length === 0 ? (
-                <EmptyState title="Không có buổi học nào sắp tới" />
-              ) : (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                  {ov.upcoming_sessions.slice(0, 4).map((s) => (
-                    <div key={s.session_id} style={{ display: 'flex', justifyContent: 'space-between', gap: 12, paddingBottom: 8, borderBottom: '1px solid var(--border-subtle)' }}>
-                      <div>
-                        <Link className="t-row-link" to={`/learn/classes/${s.class_id}`}>{s.session_title}</Link>
-                        <span className="t-sub">{s.class_code} · {s.room_or_link || label('delivery', s.delivery_mode)}</span>
-                      </div>
-                      <span className="t-sub tabular-nums" style={{ whiteSpace: 'nowrap' }}>{fmtDateTime(s.scheduled_start_at)}</span>
-                    </div>
-                  ))}
+          <div className="bento-split">
+            <section className="bento-card" aria-label="Hoạt động học tập">
+              <div className="bento-card__head">
+                <div className="bento-segmented" role="tablist" aria-label="Chọn mục học tập">
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={feedTab === 'schedule'}
+                    className={`bento-seg-btn ${feedTab === 'schedule' ? 'is-active' : ''}`}
+                    onClick={() => setFeedTab('schedule')}
+                  >
+                    Lịch học ({ov.upcoming_sessions.length})
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={feedTab === 'tasks'}
+                    className={`bento-seg-btn ${feedTab === 'tasks' ? 'is-active' : ''}`}
+                    onClick={() => setFeedTab('tasks')}
+                  >
+                    Cần làm ({tasksTotal})
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={feedTab === 'grades'}
+                    className={`bento-seg-btn ${feedTab === 'grades' ? 'is-active' : ''}`}
+                    onClick={() => setFeedTab('grades')}
+                  >
+                    Điểm mới ({ov.recent_grades.length})
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={feedTab === 'forum'}
+                    className={`bento-seg-btn ${feedTab === 'forum' ? 'is-active' : ''}`}
+                    onClick={() => setFeedTab('forum')}
+                  >
+                    Thảo luận ({ov.recent_forum_activity.length})
+                  </button>
                 </div>
-              )}
-            </Card>
+                <Link className="t-btn t-btn--small t-btn--ghost" to="/learn/schedule">Xem lịch →</Link>
+              </div>
 
-            <Card
-              title="Bài kiểm tra & Bài tập cần hoàn thành"
-              actions={
-                <div className="t-actions">
-                  <Link className="t-btn t-btn--small t-btn--ghost" to="/learn/exams">Thi</Link>
-                  <Link className="t-btn t-btn--small t-btn--ghost" to="/learn/assignments">Bài tập</Link>
-                </div>
-              }
-            >
-              {ov.pending_exams.length === 0 && ov.pending_assignments.length === 0 ? (
-                <EmptyState title="Bạn đã hoàn tất các bài kiểm tra & bài tập đến hạn" />
-              ) : (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                  {ov.pending_exams.slice(0, 3).map((ex) => (
-                    <div key={ex.id} style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}>
-                      <div>
-                        <Tone tone="warning">Kiểm tra</Tone>{' '}
-                        <Link className="t-row-link" to={`/learn/classes/${ex.class_id}?tab=exams`}>{ex.title}</Link>
-                        <span className="t-sub tabular-nums">{ex.class_code} · {ex.time_limit_minutes} phút</span>
+              {feedTab === 'schedule' && (
+                ov.upcoming_sessions.length === 0 ? (
+                  <EmptyState title="Không có buổi học nào sắp tới" />
+                ) : (
+                  <div className="bento-row-list">
+                    {ov.upcoming_sessions.slice(0, 3).map((s) => (
+                      <div key={s.session_id} className="bento-row">
+                        <div>
+                          <Link className="t-row-link" to={`/learn/classes/${s.class_id}`}>{s.session_title}</Link>
+                          <span className="t-sub">{s.class_code} · {s.room_or_link || label('delivery', s.delivery_mode)}</span>
+                        </div>
+                        <span className="t-sub tabular-nums" style={{ whiteSpace: 'nowrap' }}>{fmtDateTime(s.scheduled_start_at)}</span>
                       </div>
-                      <span className="t-sub tabular-nums">{ex.close_at ? fmtDate(ex.close_at) : 'Đang mở'}</span>
-                    </div>
-                  ))}
-                  {ov.pending_assignments.slice(0, 3).map((asg) => (
-                    <div key={asg.id} style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}>
-                      <div>
-                        <Tone tone="info">Bài tập</Tone>{' '}
-                        <Link className="t-row-link" to={`/learn/classes/${asg.class_id}?tab=assignments`}>{asg.title}</Link>
-                        <span className="t-sub tabular-nums">{asg.class_code} · Tối đa {asg.max_score}đ</span>
-                      </div>
-                      <span className="t-sub tabular-nums">{asg.due_at ? fmtDate(asg.due_at) : 'Không hạn'}</span>
-                    </div>
-                  ))}
-                </div>
+                    ))}
+                  </div>
+                )
               )}
-            </Card>
 
-            <Card title="Điểm số mới công bố">
-              {ov.recent_grades.length === 0 ? (
-                <EmptyState title="Chưa có điểm mới" />
-              ) : (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                  {ov.recent_grades.slice(0, 4).map((g) => (
-                    <div key={g.id} style={{ display: 'flex', justifyContent: 'space-between', gap: 12, paddingBottom: 6, borderBottom: '1px solid var(--border-subtle)' }}>
-                      <div>
-                        <Link className="t-row-link" to={`/learn/classes/${g.class_id}?tab=grades`}>{g.title}</Link>
-                        <span className="t-sub">{g.class_code}</span>
+              {feedTab === 'tasks' && (
+                ov.pending_exams.length === 0 && ov.pending_assignments.length === 0 ? (
+                  <EmptyState title="Bạn đã hoàn tất các bài kiểm tra & bài tập đến hạn" />
+                ) : (
+                  <div className="bento-row-list">
+                    {ov.pending_exams.slice(0, 2).map((ex) => (
+                      <div key={ex.id} className="bento-row">
+                        <div>
+                          <Tone tone="warning">Kiểm tra</Tone>{' '}
+                          <Link className="t-row-link" to={`/learn/classes/${ex.class_id}?tab=exams`}>{ex.title}</Link>
+                          <span className="t-sub tabular-nums">{ex.class_code} · {ex.time_limit_minutes} phút</span>
+                        </div>
+                        <span className="t-sub tabular-nums">{ex.close_at ? fmtDate(ex.close_at) : 'Đang mở'}</span>
                       </div>
-                      <strong className="tabular-nums">{g.score}/{g.max_score}</strong>
-                    </div>
-                  ))}
-                </div>
+                    ))}
+                    {ov.pending_assignments.slice(0, 2).map((asg) => (
+                      <div key={asg.id} className="bento-row">
+                        <div>
+                          <Tone tone="info">Bài tập</Tone>{' '}
+                          <Link className="t-row-link" to={`/learn/classes/${asg.class_id}?tab=assignments`}>{asg.title}</Link>
+                          <span className="t-sub tabular-nums">{asg.class_code} · Tối đa {asg.max_score}đ</span>
+                        </div>
+                        <span className="t-sub tabular-nums">{asg.due_at ? fmtDate(asg.due_at) : 'Không hạn'}</span>
+                      </div>
+                    ))}
+                  </div>
+                )
               )}
-            </Card>
 
-            <Card title="Hoạt động diễn đàn gần đây">
-              {ov.recent_forum_activity.length === 0 ? (
-                <EmptyState title="Chưa có thảo luận mới" />
-              ) : (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                  {ov.recent_forum_activity.slice(0, 4).map((f) => (
-                    <div key={f.id} style={{ display: 'flex', justifyContent: 'space-between', gap: 12, paddingBottom: 6, borderBottom: '1px solid var(--border-subtle)' }}>
-                      <div>
-                        <strong>{f.title}</strong>
-                        <span className="t-sub">{f.forum_title} · {f.author_name}</span>
+              {feedTab === 'grades' && (
+                ov.recent_grades.length === 0 ? (
+                  <EmptyState title="Chưa có điểm mới" />
+                ) : (
+                  <div className="bento-row-list">
+                    {ov.recent_grades.slice(0, 3).map((g) => (
+                      <div key={g.id} className="bento-row">
+                        <div>
+                          <Link className="t-row-link" to={`/learn/classes/${g.class_id}?tab=grades`}>{g.title}</Link>
+                          <span className="t-sub">{g.class_code}</span>
+                        </div>
+                        <strong className="tabular-nums">{g.score}/{g.max_score}</strong>
                       </div>
-                      <span className="t-sub tabular-nums">{f.reply_count} trả lời</span>
-                    </div>
-                  ))}
-                </div>
+                    ))}
+                  </div>
+                )
               )}
-            </Card>
+
+              {feedTab === 'forum' && (
+                ov.recent_forum_activity.length === 0 ? (
+                  <EmptyState title="Chưa có thảo luận mới" />
+                ) : (
+                  <div className="bento-row-list">
+                    {ov.recent_forum_activity.slice(0, 3).map((f) => (
+                      <div key={f.id} className="bento-row">
+                        <div>
+                          <strong>{f.title}</strong>
+                          <span className="t-sub">{f.forum_title} · {f.author_name}</span>
+                        </div>
+                        <span className="t-sub tabular-nums">{f.reply_count} trả lời</span>
+                      </div>
+                    ))}
+                  </div>
+                )
+              )}
+            </section>
+
+            <section className="bento-card bento-card--dark" aria-label="Mục tiêu học kỳ">
+              <div className="bento-card__head">
+                <h2>Mục tiêu học kỳ</h2>
+                <button
+                  type="button"
+                  className="bento-pill-action bento-pill-action--light"
+                  style={{ minHeight: 36, padding: '0 12px', fontSize: 12 }}
+                  onClick={() => setView('classes')}
+                >
+                  Xem môn học →
+                </button>
+              </div>
+
+              <div className="bento-goal-list">
+                <div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13 }}>
+                    <strong>Hoàn thành bài giảng</strong>
+                    <span className="bento-muted tabular-nums">{ov.completed_lessons}/{ov.total_lessons} ({progressPct}%)</span>
+                  </div>
+                  <div className="bento-goal-track">
+                    <div className="bento-goal-fill" style={{ width: `${progressPct}%`, backgroundColor: 'var(--accent-learning)' }} />
+                  </div>
+                </div>
+
+                <div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13 }}>
+                    <strong>Chuyên cần</strong>
+                    <span className="bento-muted tabular-nums">{fmtPct(ov.attendance_summary.rate)}</span>
+                  </div>
+                  <div className="bento-goal-track">
+                    <div className="bento-goal-fill" style={{ width: `${attPct}%`, backgroundColor: 'var(--brand-primary)' }} />
+                  </div>
+                </div>
+
+                <div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13 }}>
+                    <strong>Bài tập & Kiểm tra</strong>
+                    <span className="bento-muted tabular-nums">{tasksTotal} đang chờ</span>
+                  </div>
+                  <div className="bento-goal-track">
+                    <div className="bento-goal-fill" style={{ width: `${taskClearPct}%`, backgroundColor: 'var(--accent-streak)' }} />
+                  </div>
+                </div>
+              </div>
+            </section>
           </div>
         </>
       )}
 
-      <Card title="Điểm danh nhanh tại lớp">
-        <form onSubmit={submitCheckIn} style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-          <span style={{ fontSize: 14, color: 'var(--text-secondary)', flex: '1 1 280px' }}>
-            Khi giảng viên mở mã điểm danh trên lớp, nhập mã 6 chữ số tại đây:
-          </span>
-          <input
-            className="t-input tabular-nums"
-            style={{ width: 180, fontFamily: 'var(--font-mono)', fontSize: 18, letterSpacing: '0.15em', textAlign: 'center' }}
-            inputMode="numeric"
-            maxLength={6}
-            value={code}
-            onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
-            placeholder="000000"
-            aria-label="Mã điểm danh 6 chữ số"
-          />
-          <Btn type="submit" variant="primary" loading={checkingIn} disabled={code.length !== 6}>
-            Xác nhận có mặt
-          </Btn>
-        </form>
-      </Card>
+      {view === 'classes' && classesReq.loading && <Loading rows={4} />}
+      {view === 'classes' && classesReq.error && <ErrorState error={classesReq.error} onRetry={classesReq.reload} />}
 
-      {classesReq.loading && <Loading rows={4} />}
-      {classesReq.error && <ErrorState error={classesReq.error} onRetry={classesReq.reload} />}
-
-      {!classesReq.loading && !classesReq.error && (
+      {(view === 'classes' || (!ov && !classesReq.loading)) && !classesReq.loading && !classesReq.error && (
         (classesReq.data?.items.length || 0) === 0 ? (
           <Card>
             <EmptyState
-              title="Bạn chưa được xếp vào lớp học nào"
-              text="Khi giáo vụ hoặc giảng viên thêm bạn vào lớp, khóa học và lịch học sẽ xuất hiện tại đây."
+              title="Bạn chưa được xếp vào môn học nào"
+              text="Khi giáo vụ hoặc giảng viên thêm bạn vào môn học, giáo trình và lịch học sẽ xuất hiện tại đây."
             />
           </Card>
         ) : (
@@ -284,33 +444,23 @@ export const StudentHomePage: React.FC = () => {
                     <span className="t-sub">Giáo trình đang được giảng viên cập nhật</span>
                   )}
                   {cls.next_session && (
-                    <div className="t-notice" style={{ fontSize: 13, display: 'flex', flexDirection: 'column', gap: 8 }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                        <strong>Buổi học tới: {cls.next_session.session_title}</strong>
-                        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                          {cls.next_session.virtual_room && (
-                            <Badge kind="virtualProvider" value={cls.next_session.virtual_room.provider} />
-                          )}
-                          {cls.next_session.live_status && (
-                            <Badge kind="liveStatus" value={cls.next_session.live_status} />
-                          )}
-                        </div>
+                    <div className="bento-row" style={{ fontSize: 13, alignItems: 'flex-start', flexDirection: 'column', gap: 6 }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, width: '100%', flexWrap: 'wrap' }}>
+                        <strong>{cls.next_session.session_title}</strong>
+                        {cls.next_session.virtual_room && (
+                          <Badge kind="virtualProvider" value={cls.next_session.virtual_room.provider} />
+                        )}
                       </div>
-                      <span className="tabular-nums">
-                        {fmtDateTime(cls.next_session.scheduled_start_at)}
-                        {cls.next_session.room_or_link ? ` · ${cls.next_session.room_or_link}` : ''}
-                      </span>
+                      <span className="t-sub tabular-nums">{fmtDateTime(cls.next_session.scheduled_start_at)}</span>
                       {cls.next_session.virtual_room && (
-                        <div>
-                          <Btn
-                            small
-                            variant="primary"
-                            loading={joiningSessionId === cls.next_session.session_id}
-                            onClick={() => handleJoinOnline(cls.next_session!.session_id, cls.next_session!.session_title)}
-                          >
-                            Tham gia lớp học trực tuyến
-                          </Btn>
-                        </div>
+                        <Btn
+                          small
+                          variant="primary"
+                          loading={joiningSessionId === cls.next_session.session_id}
+                          onClick={() => handleJoinOnline(cls.next_session!.session_id, cls.next_session!.session_title)}
+                        >
+                          Vào phòng trực tuyến
+                        </Btn>
                       )}
                     </div>
                   )}
@@ -322,13 +472,46 @@ export const StudentHomePage: React.FC = () => {
                     </Link>
                   ) : null}
                   <Link className="t-btn" style={{ flex: cls.resume_lesson_id ? undefined : 1 }} to={`/learn/classes/${cls.id}`}>
-                    Chi tiết lớp
+                    Chi tiết
                   </Link>
                 </div>
               </article>
             ))}
           </div>
         )
+      )}
+
+      {checkInOpen && (
+        <Modal
+          title="Điểm danh nhanh tại lớp"
+          onClose={() => setCheckInOpen(false)}
+          width={440}
+          footer={
+            <>
+              <Btn variant="ghost" onClick={() => setCheckInOpen(false)}>Đóng</Btn>
+              <Btn type="submit" form="student-checkin-form" variant="primary" loading={checkingIn} disabled={code.length !== 6}>
+                Xác nhận có mặt
+              </Btn>
+            </>
+          }
+        >
+          <form id="student-checkin-form" onSubmit={submitCheckIn} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <span style={{ fontSize: 14, color: 'var(--text-secondary)' }}>
+              Nhập mã điểm danh 6 chữ số giảng viên cung cấp trên lớp:
+            </span>
+            <input
+              className="t-input tabular-nums"
+              style={{ width: '100%', fontFamily: 'var(--font-mono)', fontSize: 22, letterSpacing: '0.2em', textAlign: 'center' }}
+              inputMode="numeric"
+              maxLength={6}
+              value={code}
+              onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+              placeholder="000000"
+              aria-label="Mã điểm danh 6 chữ số"
+              autoFocus
+            />
+          </form>
+        </Modal>
       )}
 
       {joinResult && (

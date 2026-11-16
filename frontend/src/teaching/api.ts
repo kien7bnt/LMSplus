@@ -1597,6 +1597,7 @@ export interface AssignmentBankItem {
   max_attempts: number;
   allow_resubmit: boolean;
   tags: string[];
+  attachments?: Array<Record<string, unknown>>;
   updated_at: string;
 }
 
@@ -1617,6 +1618,7 @@ export interface BankResourceItem {
   storage_provider: string;
   url: string | null;
   file_name: string | null;
+  file_size_bytes?: number | null;
   visibility: 'ENROLLED' | 'INSTRUCTOR_ONLY';
   updated_at: string;
 }

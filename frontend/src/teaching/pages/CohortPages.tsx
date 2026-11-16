@@ -51,19 +51,19 @@ export const CohortListPage: React.FC = () => {
   return (
     <div className="t-page">
       <PageHeader
-        title="Lớp khóa học (Program Cohorts)"
-        subtitle="Cấp 2 — Quản lý học viên theo khóa/niên khóa, liên kết Khung chương trình và sinh tự động các Lớp môn học."
+        title="Khóa học"
+        subtitle="Cấp 2 — Quản lý học viên theo niên khóa, liên kết Khung chương trình và sinh tự động các Môn học."
         actions={
           <Btn variant="primary" onClick={() => setCreating(true)}>
-            + Tạo lớp khóa học
+            + Tạo khóa học
           </Btn>
         }
       />
 
       <Card>
         <div className="t-toolbar">
-          <SearchInput value={q} onChange={(v) => { setQ(v); setPage(1); }} placeholder="Tìm theo mã, tên lớp khóa học…" />
-          <select className="t-input t-select" value={status} onChange={(e) => { setStatus(e.target.value); setPage(1); }} aria-label="Lọc trạng thái lớp khóa học">
+          <SearchInput value={q} onChange={(v) => { setQ(v); setPage(1); }} placeholder="Tìm theo mã, tên khóa học…" />
+          <select className="t-input t-select" value={status} onChange={(e) => { setStatus(e.target.value); setPage(1); }} aria-label="Lọc trạng thái khóa học">
             <option value="">Tất cả trạng thái</option>
             <option value="ACTIVE">Đang đào tạo</option>
             <option value="PLANNING">Đang lập kế hoạch</option>
@@ -76,9 +76,9 @@ export const CohortListPage: React.FC = () => {
         {list.error && <ErrorState error={list.error} onRetry={list.reload} />}
         {list.data && list.data.items.length === 0 && (
           <EmptyState
-            title="Chưa có lớp khóa học nào"
-            text="Hãy tạo lớp khóa học gắn với một Khung chương trình để bắt đầu ghi danh và mở lớp môn học."
-            action={<Btn variant="primary" onClick={() => setCreating(true)}>+ Tạo lớp khóa học</Btn>}
+            title="Chưa có khóa học nào"
+            text="Hãy tạo khóa học gắn với một Khung chương trình để bắt đầu ghi danh và mở môn học."
+            action={<Btn variant="primary" onClick={() => setCreating(true)}>+ Tạo khóa học</Btn>}
           />
         )}
         {list.data && list.data.items.length > 0 && (
@@ -88,10 +88,10 @@ export const CohortListPage: React.FC = () => {
                 <thead>
                   <tr>
                     <th>Mã khóa</th>
-                    <th>Tên lớp khóa học</th>
+                    <th>Tên khóa học</th>
                     <th>Khung chương trình</th>
                     <th>Sĩ số thực (DISTINCT)</th>
-                    <th>Lớp môn học</th>
+                    <th>Môn học</th>
                     <th>Thời gian</th>
                     <th>Trạng thái</th>
                     <th></th>
@@ -100,7 +100,7 @@ export const CohortListPage: React.FC = () => {
                 <tbody>
                   {list.data.items.map((ch: CohortSummary) => (
                     <tr key={ch.id}>
-                      <td><code>{ch.code}</code></td>
+                      <td><code style={{ whiteSpace: 'nowrap' }}>{ch.code}</code></td>
                       <td>
                         <Link to={`/teaching/cohorts/${ch.id}`} className="t-row-link">
                           <strong>{ch.title}</strong>
@@ -119,7 +119,7 @@ export const CohortListPage: React.FC = () => {
                       <td className="tabular-nums">{fmtDate(ch.start_date)} – {fmtDate(ch.end_date)}</td>
                       <td><Badge kind="cohort" value={ch.status} /></td>
                       <td className="t-right">
-                        <Btn small onClick={() => nav(`/teaching/cohorts/${ch.id}`)}>Quản lý (8 tab)</Btn>
+                        <Btn small onClick={() => nav(`/teaching/cohorts/${ch.id}`)}>Quản lý</Btn>
                       </td>
                     </tr>
                   ))}
@@ -348,7 +348,7 @@ export const CohortDetailPage: React.FC = () => {
       <PageHeader
         breadcrumb={
           <>
-            <Link to="/teaching/cohorts">Lớp khóa học</Link> / <span>{c.code}</span>
+            <Link to="/teaching/cohorts">Khóa học</Link> / <span>{c.code}</span>
           </>
         }
         title={
@@ -361,10 +361,10 @@ export const CohortDetailPage: React.FC = () => {
           c.capabilities.can_manage ? (
             <>
               <Btn onClick={handleSyncRoster} loading={busyAction}>
-                Đồng bộ quân số xuống Lớp môn học
+                Đồng bộ quân số xuống Môn học
               </Btn>
               <Btn variant="primary" onClick={handleGenerateClasses} loading={busyAction}>
-                Khởi tạo Lớp môn học từ Khung CT
+                Khởi tạo Môn học từ Khung CT
               </Btn>
             </>
           ) : undefined

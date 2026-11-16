@@ -11,7 +11,28 @@
  */
 
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
 import { fail, pageParams, nowIso, text, intField, oneOf, tx } from './http.mjs';
+
+const MAX_BANK_UPLOAD_BYTES = 15 * 1024 * 1024;
+const BANK_ALLOWED_EXT = {
+  pdf: 'application/pdf',
+  doc: 'application/msword',
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  ppt: 'application/vnd.ms-powerpoint',
+  pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  xls: 'application/vnd.ms-excel',
+  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  txt: 'text/plain',
+  csv: 'text/csv',
+  zip: 'application/zip',
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  mp4: 'video/mp4',
+  webm: 'video/webm',
+};
 import { canEditCourseDraft, canViewCourse, courseScopeSql, safeJson } from './scope.mjs';
 import { resolveLessonTreeIds } from './masterSchema.mjs';
 import { buildCourseTree } from './contentTreeAndSnapshots.mjs';
@@ -94,7 +115,7 @@ function buildBankScopeWhere(alias, url, allowedCourseIds) {
   return { where, params };
 }
 
-export function registerBankRoutes(route) {
+export function registerBankRoutes(route, { uploadsDir } = {}) {
   // ---------- 1. Cây thư mục dùng chung cho cả 3 ngân hàng (100% động từ Cây nội dung)
   route('GET', '/banks/tree', ({ db, user, url }) => {
     const { allowedCourses } = resolveCourseFilterScope(db, user, url);
@@ -534,6 +555,57 @@ export function registerBankRoutes(route) {
     const { lesson, chapter, topic, course } = assertLeafLessonTarget(db, user, body, body.course_id || null);
     const title = text(body, 'title', { required: true, min: 2, max: 200, label: 'tên tài nguyên' });
     const description = text(body, 'description', { max: 2000, label: 'mô tả' }) || '';
+    const visibility = oneOf(body, 'visibility', ['ENROLLED', 'INSTRUCTOR_ONLY'], { fallback: 'ENROLLED', label: 'quyền xem' });
+    const hasFile = typeof body?.data_base64 === 'string' && body.data_base64.trim().length > 0;
+    const id = `res_${crypto.randomBytes(6).toString('hex')}`;
+    const now = nowIso();
+
+    if (hasFile) {
+      if (!uploadsDir) fail(500, 'STORAGE_NOT_CONFIGURED', 'Máy chủ chưa cấu hình thư mục lưu trữ tệp.');
+      const fileName = text(body, 'file_name', { required: true, max: 200, label: 'tên tệp' });
+      const ext = path.extname(fileName).slice(1).toLowerCase();
+      if (!BANK_ALLOWED_EXT[ext]) {
+        fail(422, 'FILE_TYPE_NOT_ALLOWED', `Định dạng .${ext || '?'} không được hỗ trợ. Cho phép: ${Object.keys(BANK_ALLOWED_EXT).join(', ')}.`);
+      }
+      const cleanBase64 = body.data_base64.includes(',') ? body.data_base64.split(',').pop() : body.data_base64;
+      const buf = Buffer.from(cleanBase64, 'base64');
+      if (buf.length === 0) fail(422, 'VALIDATION_ERROR', 'Tệp tải lên rỗng.');
+      if (buf.length > MAX_BANK_UPLOAD_BYTES) fail(413, 'FILE_TOO_LARGE', 'Tệp vượt quá giới hạn 15 MB.');
+
+      const fallbackType = ext === 'pdf' ? 'PDF' : ['mp4', 'webm'].includes(ext) ? 'VIDEO' : 'FILE';
+      const resourceType = oneOf(body, 'resource_type', ['PDF', 'VIDEO', 'FILE'], { fallback: fallbackType, label: 'loại tài nguyên' });
+      const dir = path.join(uploadsDir, course.id);
+      fs.mkdirSync(dir, { recursive: true });
+      const storageKey = path.join(course.id, `${id}.${ext}`).replace(/\\/g, '/');
+      fs.writeFileSync(path.join(uploadsDir, storageKey), buf);
+      const safeName = fileName.replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_');
+      const sha256 = crypto.createHash('sha256').update(buf).digest('hex');
+
+      db.prepare(
+        `INSERT INTO learning_resources (
+           id, course_id, topic_id, chapter_id, lesson_id, title, description, visibility,
+           resource_type, storage_provider, storage_key, file_name, mime_type, file_size_bytes,
+           checksum_sha256, status, processing_status, created_by, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'LOCAL_DISK', ?, ?, ?, ?, ?, 'READY', 'READY', ?, ?, ?)`
+      ).run(
+        id, course.id, topic?.id || null, chapter.id, lesson.id, title, description, visibility,
+        resourceType, storageKey, safeName, BANK_ALLOWED_EXT[ext], buf.length, sha256, user.id, now, now
+      );
+      return [201, {
+        id,
+        course_id: course.id,
+        topic_id: topic?.id || null,
+        chapter_id: chapter.id,
+        lesson_id: lesson.id,
+        title,
+        resource_type: resourceType,
+        storage_provider: 'LOCAL_DISK',
+        file_name: safeName,
+        file_size_bytes: buf.length,
+        url: null,
+      }];
+    }
+
     const resourceType = oneOf(body, 'resource_type', ['LINK', 'VIDEO', 'PDF', 'FILE'], { fallback: 'LINK', label: 'loại tài nguyên' });
     const rawUrl = text(body, 'url', { required: true, max: 2048, label: 'đường dẫn tài nguyên' });
     let u;
@@ -543,16 +615,13 @@ export function registerBankRoutes(route) {
       fail(422, 'VALIDATION_ERROR', 'Đường dẫn tài nguyên không hợp lệ.');
     }
     if (!['http:', 'https:'].includes(u.protocol)) fail(422, 'VALIDATION_ERROR', 'Chỉ hỗ trợ đường dẫn http/https.');
-    const visibility = oneOf(body, 'visibility', ['ENROLLED', 'INSTRUCTOR_ONLY'], { fallback: 'ENROLLED', label: 'quyền xem' });
-    const id = `res_${crypto.randomBytes(6).toString('hex')}`;
-    const now = nowIso();
     db.prepare(
       `INSERT INTO learning_resources (
          id, course_id, topic_id, chapter_id, lesson_id, title, description, visibility,
          resource_type, storage_provider, storage_key, status, processing_status, created_by, created_at, updated_at
        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'EXTERNAL_URL', ?, 'READY', 'READY', ?, ?, ?)`
     ).run(id, course.id, topic?.id || null, chapter.id, lesson.id, title, description, visibility, resourceType, u.toString(), user.id, now, now);
-    return [201, { id, course_id: course.id, topic_id: topic?.id || null, chapter_id: chapter.id, lesson_id: lesson.id, title, resource_type: resourceType, url: u.toString() }];
+    return [201, { id, course_id: course.id, topic_id: topic?.id || null, chapter_id: chapter.id, lesson_id: lesson.id, title, resource_type: resourceType, storage_provider: 'EXTERNAL_URL', url: u.toString() }];
   });
 
   route('PATCH', '/banks/resources/:id', ({ db, user, body, params }) => {

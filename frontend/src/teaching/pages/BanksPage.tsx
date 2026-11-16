@@ -10,7 +10,14 @@ import {
   BankTreeCourse,
   QuestionType,
   masterApi,
+  saveBlob,
+  teachingApi,
 } from '../api';
+import {
+  BankQuestionAttachment,
+  BankQuestionPicker,
+  mergeInstructionsWithQuestions,
+} from '../components/BankQuestionPicker';
 import {
   Badge,
   Btn,
@@ -25,11 +32,24 @@ import {
   SearchInput,
   Tabs,
   errMsg,
+  fmtBytes,
   fmtDateTime,
   useAsync,
   useDebounced,
   useToast,
 } from '../ui';
+
+type LeafLessonOption = {
+  courseId: string;
+  courseCode: string;
+  courseTitle: string;
+  topicId: string;
+  topicTitle: string;
+  chapterId: string;
+  chapterTitle: string;
+  lessonId: string;
+  lessonTitle: string;
+};
 
 type SelectedNode =
   | { level: 'ALL' }
@@ -109,8 +129,72 @@ export const BanksPage: React.FC = () => {
     [bankTab, filterParams]
   );
 
+  const editableCourseIds = useMemo(
+    () => new Set((treeRes.data?.courses || []).filter((c) => c.can_edit).map((c) => c.id)),
+    [treeRes.data]
+  );
+
+  const lessonOptions = useMemo<LeafLessonOption[]>(() => {
+    const out: LeafLessonOption[] = [];
+    for (const crs of treeRes.data?.courses || []) {
+      if (!crs.can_edit) continue;
+      for (const tp of crs.topics) {
+        for (const ch of tp.chapters) {
+          for (const l of ch.lessons) {
+            out.push({
+              courseId: crs.id,
+              courseCode: crs.code,
+              courseTitle: crs.title,
+              topicId: tp.id,
+              topicTitle: tp.title,
+              chapterId: ch.id,
+              chapterTitle: ch.title,
+              lessonId: l.id,
+              lessonTitle: l.title,
+            });
+          }
+        }
+      }
+    }
+    return out;
+  }, [treeRes.data]);
+
+  const scopedLessonOptions = useMemo(() => {
+    if (selected.level === 'LESSON') {
+      const exact = lessonOptions.filter((o) => o.lessonId === selected.lessonId);
+      return exact.length > 0 ? exact : lessonOptions;
+    }
+    if (selected.level === 'CHAPTER') {
+      const sub = lessonOptions.filter((o) => o.chapterId === selected.chapterId);
+      return sub.length > 0 ? sub : lessonOptions;
+    }
+    if (selected.level === 'TOPIC') {
+      const sub = lessonOptions.filter((o) => o.topicId === selected.topicId);
+      return sub.length > 0 ? sub : lessonOptions;
+    }
+    if (selected.level === 'COURSE') {
+      const sub = lessonOptions.filter((o) => o.courseId === selected.courseId);
+      return sub.length > 0 ? sub : lessonOptions;
+    }
+    return lessonOptions;
+  }, [lessonOptions, selected]);
+
   const isLeafLesson = selected.level === 'LESSON';
-  const canEditLeaf = isLeafLesson && selected.canEdit;
+  const canCreateAny = lessonOptions.length > 0;
+  const defaultModalLessonId = isLeafLesson ? selected.lessonId : scopedLessonOptions[0]?.lessonId || '';
+
+  const handleDownloadBankResource = async (id: string, fallbackName: string) => {
+    try {
+      const result = await teachingApi.downloadResource(id);
+      if ('url' in result && result.url) {
+        window.open(result.url, '_blank', 'noopener,noreferrer');
+      } else if ('blob' in result) {
+        saveBlob({ blob: result.blob, filename: result.filename || fallbackName || 'tai-nguyen' });
+      }
+    } catch (ex) {
+      push('Không tải được tài nguyên', errMsg(ex), 'error');
+    }
+  };
 
   const reloadAll = () => {
     treeRes.reload();
@@ -119,34 +203,11 @@ export const BanksPage: React.FC = () => {
     if (bankTab === 'resources') resourcesRes.reload();
   };
 
-  const handleExportQuestions = async () => {
-    try {
-      const data = await masterApi.exportQuestionBank({
-        course_id: selected.level !== 'ALL' ? selected.courseId : undefined,
-        topic_id: selected.level === 'TOPIC' ? selected.topicId : undefined,
-        chapter_id: selected.level === 'CHAPTER' ? selected.chapterId : undefined,
-        lesson_id: selected.level === 'LESSON' ? selected.lessonId : undefined,
-      });
-      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-      const href = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = href;
-      a.download = `ngan-hang-cau-hoi-${selected.level.toLowerCase()}.json`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      setTimeout(() => URL.revokeObjectURL(href), 1000);
-      push('Đã xuất ngân hàng câu hỏi', `${data.total} câu hỏi`, 'success');
-    } catch (ex) {
-      push('Không xuất được dữ liệu', errMsg(ex), 'error');
-    }
-  };
-
   return (
     <div className="t-page">
       <PageHeader
-        title="Ngân hàng học liệu đồng bộ 4 cấp"
-        subtitle="Cây thư mục 3 ngân hàng tự động sinh từ Cấu trúc Môn học → Chủ đề → Chương → Bài học. Nhấp chọn cấp cha để xem tổng hợp; chọn Bài học (nút lá) để thêm hoặc import mới."
+        title="Học liệu đồng bộ 4 cấp"
+        subtitle="Cây thư mục học liệu tự động sinh từ Cấu trúc Giáo trình → Chủ đề → Chương → Bài học. Nhấp chọn cấp cha để xem tổng hợp; chọn Bài học (nút lá) để thêm hoặc import mới."
       />
 
       <div className="m-banks-layout">
@@ -244,23 +305,26 @@ export const BanksPage: React.FC = () => {
               <div className="t-actions">
                 {bankTab === 'questions' && (
                   <>
-                    <Btn small onClick={handleExportQuestions}>Xuất JSON</Btn>
-                    <Btn small disabled={!canEditLeaf} onClick={() => setImportQuestionOpen(true)}>Import câu hỏi</Btn>
-                    <Btn small variant="primary" disabled={!canEditLeaf} onClick={() => setCreateQuestionOpen(true)}>+ Thêm câu hỏi</Btn>
+                    <Btn small disabled={!canCreateAny} onClick={() => setImportQuestionOpen(true)}>Import câu hỏi</Btn>
+                    <Btn small variant="primary" disabled={!canCreateAny} onClick={() => setCreateQuestionOpen(true)}>+ Thêm câu hỏi</Btn>
                   </>
                 )}
                 {bankTab === 'assignments' && (
-                  <Btn small variant="primary" disabled={!canEditLeaf} onClick={() => setCreateAssignmentOpen(true)}>+ Thêm bài tập mẫu</Btn>
+                  <Btn small variant="primary" disabled={!canCreateAny} onClick={() => setCreateAssignmentOpen(true)}>+ Thêm bài tập</Btn>
                 )}
                 {bankTab === 'resources' && (
-                  <Btn small variant="primary" disabled={!canEditLeaf} onClick={() => setCreateResourceOpen(true)}>+ Thêm tài nguyên</Btn>
+                  <Btn small variant="primary" disabled={!canCreateAny} onClick={() => setCreateResourceOpen(true)}>+ Đẩy / Thêm tài nguyên</Btn>
                 )}
               </div>
             </div>
 
-            {!isLeafLesson && (
+            {!treeRes.loading && !canCreateAny ? (
+              <div className="m-semantic-notice m-semantic-notice--warning" style={{ marginBottom: 16 }}>
+                Chưa có bài học nào trong các giáo trình bạn phụ trách. Hãy tạo ít nhất 1 Chương và 1 Bài học trong <strong>Giáo trình môn</strong> để gắn học liệu.
+              </div>
+            ) : !isLeafLesson && (
               <div className="m-semantic-notice" style={{ marginBottom: 16 }}>
-                Đang xem chế độ tổng hợp cho {selected.level === 'ALL' ? 'toàn bộ môn học' : selected.title}. Để tạo mới hoặc import học liệu, vui lòng chọn trực tiếp một <strong>Bài học (nút lá cuối cùng)</strong> ở cây bên trái.
+                Đang xem tổng hợp cho <strong>{selected.level === 'ALL' ? 'toàn bộ giáo trình' : selected.title}</strong>. Nhấn nút thêm ở góc phải để tạo mới và chọn bài học gắn kết ngay trong hộp thoại (hoặc chọn bài học ở cây bên trái).
               </div>
             )}
 
@@ -301,7 +365,7 @@ export const BanksPage: React.FC = () => {
                               <td className="tabular-nums">{item.points}</td>
                               <td className="tabular-nums">{fmtDateTime(item.updated_at)}</td>
                               <td className="t-right">
-                                {selected.level === 'LESSON' && selected.canEdit && (
+                                {Boolean(item.course_id && editableCourseIds.has(item.course_id)) && (
                                   <Btn
                                     small
                                     variant="ghost"
@@ -359,7 +423,7 @@ export const BanksPage: React.FC = () => {
                               <td className="tabular-nums">{a.max_score}</td>
                               <td className="tabular-nums">{fmtDateTime(a.updated_at)}</td>
                               <td className="t-right">
-                                {selected.level === 'LESSON' && selected.canEdit && (
+                                {editableCourseIds.has(a.course_id) && (
                                   <Btn
                                     small
                                     variant="ghost"
@@ -416,10 +480,19 @@ export const BanksPage: React.FC = () => {
                               <td>
                                 {r.url ? (
                                   <a href={r.url} target="_blank" rel="noopener noreferrer" className="t-row-link">Mở liên kết</a>
-                                ) : (r.file_name || 'Tệp nội bộ')}
+                                ) : (
+                                  <Btn
+                                    small
+                                    variant="ghost"
+                                    onClick={() => handleDownloadBankResource(r.id, r.file_name || r.title)}
+                                  >
+                                    Tải về: {r.file_name || 'Tệp'}
+                                    {r.file_size_bytes ? ` (${fmtBytes(r.file_size_bytes)})` : ''}
+                                  </Btn>
+                                )}
                               </td>
                               <td className="t-right">
-                                {selected.level === 'LESSON' && selected.canEdit && (
+                                {editableCourseIds.has(r.course_id) && (
                                   <Btn
                                     small
                                     variant="ghost"
@@ -447,55 +520,159 @@ export const BanksPage: React.FC = () => {
         </div>
       </div>
 
-      {createQuestionOpen && selected.level === 'LESSON' && (
+      {createQuestionOpen && canCreateAny && (
         <CreateBankQuestionModal
-          courseId={selected.courseId}
-          lessonId={selected.lessonId}
-          lessonTitle={selected.title}
+          options={scopedLessonOptions}
+          defaultLessonId={defaultModalLessonId}
           onClose={() => setCreateQuestionOpen(false)}
-          onCreated={() => { setCreateQuestionOpen(false); push('Đã thêm câu hỏi vào bài học', '', 'success'); reloadAll(); }}
+          onCreated={() => { setCreateQuestionOpen(false); push('Đã thêm câu hỏi vào ngân hàng', '', 'success'); reloadAll(); }}
         />
       )}
 
-      {importQuestionOpen && selected.level === 'LESSON' && (
+      {importQuestionOpen && canCreateAny && (
         <ImportBankQuestionModal
-          lessonId={selected.lessonId}
-          lessonTitle={selected.title}
+          options={scopedLessonOptions}
+          defaultLessonId={defaultModalLessonId}
           onClose={() => setImportQuestionOpen(false)}
           onImported={(cnt) => { setImportQuestionOpen(false); push(`Đã import ${cnt} câu hỏi`, '', 'success'); reloadAll(); }}
         />
       )}
 
-      {createAssignmentOpen && selected.level === 'LESSON' && (
+      {createAssignmentOpen && canCreateAny && (
         <CreateBankAssignmentModal
-          courseId={selected.courseId}
-          lessonId={selected.lessonId}
-          lessonTitle={selected.title}
+          options={scopedLessonOptions}
+          defaultLessonId={defaultModalLessonId}
           onClose={() => setCreateAssignmentOpen(false)}
-          onCreated={() => { setCreateAssignmentOpen(false); push('Đã thêm bài tập mẫu vào ngân hàng', '', 'success'); reloadAll(); }}
+          onCreated={() => { setCreateAssignmentOpen(false); push('Đã thêm bài tập vào ngân hàng', '', 'success'); reloadAll(); }}
         />
       )}
 
-      {createResourceOpen && selected.level === 'LESSON' && (
+      {createResourceOpen && canCreateAny && (
         <CreateBankResourceModal
-          courseId={selected.courseId}
-          lessonId={selected.lessonId}
-          lessonTitle={selected.title}
+          options={scopedLessonOptions}
+          defaultLessonId={defaultModalLessonId}
           onClose={() => setCreateResourceOpen(false)}
-          onCreated={() => { setCreateResourceOpen(false); push('Đã thêm tài nguyên vào bài học', '', 'success'); reloadAll(); }}
+          onCreated={() => { setCreateResourceOpen(false); push('Đã lưu tài nguyên vào ngân hàng', '', 'success'); reloadAll(); }}
         />
       )}
     </div>
   );
 };
 
+const LessonTargetSelect: React.FC<{
+  options: LeafLessonOption[];
+  value: string;
+  onChange: (lessonId: string) => void;
+}> = ({ options, value, onChange }) => {
+  const active = useMemo(
+    () => options.find((o) => o.lessonId === value) || options[0] || null,
+    [options, value]
+  );
+
+  const courses = useMemo(() => {
+    const seen = new Map<string, string>();
+    options.forEach((o) => {
+      if (!seen.has(o.courseId)) seen.set(o.courseId, `${o.courseCode} — ${o.courseTitle}`);
+    });
+    return Array.from(seen.entries()).map(([courseId, label]) => ({ courseId, label }));
+  }, [options]);
+
+  const inCourse = useMemo(
+    () => (active ? options.filter((o) => o.courseId === active.courseId) : []),
+    [options, active]
+  );
+
+  const chapters = useMemo(() => {
+    const topicCount = new Set(inCourse.map((o) => o.topicTitle)).size;
+    const seen = new Map<string, string>();
+    inCourse.forEach((o) => {
+      const key = `${o.topicTitle}\0${o.chapterTitle}`;
+      if (!seen.has(key)) {
+        seen.set(key, topicCount > 1 ? `${o.topicTitle} › ${o.chapterTitle}` : o.chapterTitle);
+      }
+    });
+    return Array.from(seen.entries()).map(([key, label]) => ({ key, label }));
+  }, [inCourse]);
+
+  const activeChapterKey = active ? `${active.topicTitle}\0${active.chapterTitle}` : '';
+  const inChapter = useMemo(
+    () => inCourse.filter((o) => `${o.topicTitle}\0${o.chapterTitle}` === activeChapterKey),
+    [inCourse, activeChapterKey]
+  );
+
+  if (!active) {
+    return (
+      <Field label="Bài học gắn kết" required wide>
+        <input className="t-input" value="Chưa có bài học nào trong giáo trình" disabled readOnly />
+      </Field>
+    );
+  }
+
+  return (
+    <div className="t-field t-field--wide" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <span className="t-field__label">
+        Bài học gắn kết <span className="t-field__req">*</span>
+      </span>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: 12 }}>
+        <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <span className="t-sub">Giáo trình</span>
+          <select
+            className="t-input"
+            aria-label="Chọn giáo trình"
+            value={active.courseId}
+            onChange={(e) => {
+              const next = options.find((o) => o.courseId === e.target.value);
+              if (next) onChange(next.lessonId);
+            }}
+          >
+            {courses.map((c) => (
+              <option key={c.courseId} value={c.courseId}>{c.label}</option>
+            ))}
+          </select>
+        </label>
+        <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <span className="t-sub">Chương</span>
+          <select
+            className="t-input"
+            aria-label="Chọn chương"
+            value={activeChapterKey}
+            onChange={(e) => {
+              const next = inCourse.find((o) => `${o.topicTitle}\0${o.chapterTitle}` === e.target.value);
+              if (next) onChange(next.lessonId);
+            }}
+          >
+            {chapters.map((ch) => (
+              <option key={ch.key} value={ch.key}>{ch.label}</option>
+            ))}
+          </select>
+        </label>
+        <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <span className="t-sub">Bài học</span>
+          <select
+            className="t-input"
+            aria-label="Chọn bài học"
+            value={active.lessonId}
+            onChange={(e) => onChange(e.target.value)}
+            required
+          >
+            {inChapter.map((ls) => (
+              <option key={ls.lessonId} value={ls.lessonId}>{ls.lessonTitle}</option>
+            ))}
+          </select>
+        </label>
+      </div>
+    </div>
+  );
+};
+
 const CreateBankQuestionModal: React.FC<{
-  courseId: string;
-  lessonId: string;
-  lessonTitle: string;
+  options: LeafLessonOption[];
+  defaultLessonId: string;
   onClose: () => void;
   onCreated: () => void;
-}> = ({ courseId, lessonId, lessonTitle, onClose, onCreated }) => {
+}> = ({ options, defaultLessonId, onClose, onCreated }) => {
+  const [lessonId, setLessonId] = useState(defaultLessonId || options[0]?.lessonId || '');
+  const picked = options.find((o) => o.lessonId === lessonId) || options[0];
   const [questionType, setQuestionType] = useState<QuestionType>('SINGLE_CHOICE');
   const [prompt, setPrompt] = useState('');
   const [opt1, setOpt1] = useState('');
@@ -503,6 +680,7 @@ const CreateBankQuestionModal: React.FC<{
   const [opt3, setOpt3] = useState('');
   const [opt4, setOpt4] = useState('');
   const [correctIdx, setCorrectIdx] = useState(0);
+  const [correctMulti, setCorrectMulti] = useState<number[]>([0]);
   const [boolAnswer, setBoolAnswer] = useState(true);
   const [acceptedTexts, setAcceptedTexts] = useState('');
   const [difficulty, setDifficulty] = useState<'EASY' | 'MEDIUM' | 'HARD'>('MEDIUM');
@@ -511,14 +689,21 @@ const CreateBankQuestionModal: React.FC<{
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
+  const toggleMultiIdx = (idx: number) => {
+    setCorrectMulti((prev) =>
+      prev.includes(idx) ? (prev.length > 1 ? prev.filter((x) => x !== idx) : prev) : [...prev, idx]
+    );
+  };
+
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!picked) return;
     setBusy(true);
     setErr(null);
     try {
       const payload: Record<string, unknown> = {
-        course_id: courseId,
-        lesson_id: lessonId,
+        course_id: picked.courseId,
+        lesson_id: picked.lessonId,
         node_level: 'LESSON',
         question_type: questionType,
         prompt: prompt.trim(),
@@ -527,11 +712,13 @@ const CreateBankQuestionModal: React.FC<{
         explanation: explanation.trim(),
       };
       if (questionType === 'SINGLE_CHOICE' || questionType === 'MULTIPLE_CHOICE') {
+        const activeIndices = questionType === 'MULTIPLE_CHOICE' ? correctMulti : [correctIdx];
         const opts = [opt1, opt2, opt3, opt4]
-          .map((t, i) => ({ id: `opt_${i + 1}`, text: t.trim(), is_correct: i === correctIdx }))
+          .map((t, i) => ({ id: `opt_${i + 1}`, text: t.trim(), is_correct: activeIndices.includes(i) }))
           .filter((o) => o.text);
+        const correctIds = opts.filter((o) => o.is_correct).map((o) => o.id);
         payload.options = opts;
-        payload.answer_key = { correct_option_ids: [opts[correctIdx]?.id || opts[0]?.id] };
+        payload.answer_key = { correct_option_ids: correctIds.length ? correctIds : [opts[0]?.id] };
       } else if (questionType === 'TRUE_FALSE') {
         payload.answer_key = { boolean_answer: boolAnswer };
       } else if (questionType === 'FILL_BLANK') {
@@ -549,8 +736,9 @@ const CreateBankQuestionModal: React.FC<{
 
   return (
     <Modal
-      title={`Thêm câu hỏi vào bài: ${lessonTitle}`}
+      title="Thêm câu hỏi vào ngân hàng"
       onClose={onClose}
+      width={720}
       footer={
         <>
           <Btn variant="ghost" onClick={onClose} disabled={busy}>Hủy</Btn>
@@ -559,44 +747,102 @@ const CreateBankQuestionModal: React.FC<{
       }
     >
       <form id="qb-create-form" className="t-form-grid" onSubmit={submit}>
-        <Field label="Loại câu hỏi">
-          <select className="t-input" value={questionType} onChange={(e) => setQuestionType(e.target.value as QuestionType)}>
-            <option value="SINGLE_CHOICE">Trắc nghiệm 1 đáp án</option>
-            <option value="MULTIPLE_CHOICE">Trắc nghiệm nhiều đáp án</option>
-            <option value="TRUE_FALSE">Đúng / Sai</option>
-            <option value="FILL_BLANK">Điền khuyết</option>
-            <option value="SHORT_ANSWER">Tự luận ngắn</option>
-          </select>
-        </Field>
-        <Field label="Độ khó / Điểm">
-          <div className="t-actions">
+        <LessonTargetSelect options={options} value={lessonId} onChange={setLessonId} />
+
+        <div
+          className="t-field--wide"
+          style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12 }}
+        >
+          <Field label="Loại câu hỏi">
+            <select className="t-input" value={questionType} onChange={(e) => setQuestionType(e.target.value as QuestionType)}>
+              <option value="SINGLE_CHOICE">Trắc nghiệm 1 đáp án</option>
+              <option value="MULTIPLE_CHOICE">Trắc nghiệm nhiều đáp án</option>
+              <option value="TRUE_FALSE">Đúng / Sai</option>
+              <option value="FILL_BLANK">Điền khuyết</option>
+              <option value="SHORT_ANSWER">Tự luận ngắn</option>
+            </select>
+          </Field>
+          <Field label="Độ khó">
             <select className="t-input" value={difficulty} onChange={(e) => setDifficulty(e.target.value as 'EASY' | 'MEDIUM' | 'HARD')}>
               <option value="EASY">Dễ</option>
               <option value="MEDIUM">Trung bình</option>
               <option value="HARD">Khó</option>
             </select>
-            <input type="number" min={1} max={100} className="t-input" style={{ width: 88 }} value={points} onChange={(e) => setPoints(Number(e.target.value))} />
-          </div>
-        </Field>
+          </Field>
+          <Field label="Điểm">
+            <input type="number" min={1} max={100} className="t-input tabular-nums" value={points} onChange={(e) => setPoints(Number(e.target.value))} />
+          </Field>
+        </div>
+
         <Field label="Nội dung câu hỏi" required wide>
-          <textarea className="t-input" rows={3} value={prompt} onChange={(e) => setPrompt(e.target.value)} required />
+          <textarea className="t-input" rows={3} value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder="Nhập đề bài hoặc câu hỏi..." required />
         </Field>
+
         {(questionType === 'SINGLE_CHOICE' || questionType === 'MULTIPLE_CHOICE') && (
-          <>
-            {[
-              { label: 'Đáp án A', val: opt1, set: setOpt1, idx: 0 },
-              { label: 'Đáp án B', val: opt2, set: setOpt2, idx: 1 },
-              { label: 'Đáp án C', val: opt3, set: setOpt3, idx: 2 },
-              { label: 'Đáp án D', val: opt4, set: setOpt4, idx: 3 },
-            ].map((o) => (
-              <Field key={o.idx} label={o.label}>
-                <div className="t-actions">
-                  <input type="radio" name="correctOpt" checked={correctIdx === o.idx} onChange={() => setCorrectIdx(o.idx)} aria-label={`Chọn ${o.label} làm đáp án đúng`} />
-                  <input className="t-input" value={o.val} onChange={(e) => o.set(e.target.value)} required={o.idx < 2} />
-                </div>
-              </Field>
-            ))}
-          </>
+          <div className="t-field t-field--wide">
+            <span className="t-field__label">
+              Các lựa chọn ({questionType === 'MULTIPLE_CHOICE' ? 'tick chọn nhiều đáp án đúng' : 'chọn 1 đáp án đúng'})
+            </span>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {[
+                { key: 'A', val: opt1, set: setOpt1, idx: 0 },
+                { key: 'B', val: opt2, set: setOpt2, idx: 1 },
+                { key: 'C', val: opt3, set: setOpt3, idx: 2 },
+                { key: 'D', val: opt4, set: setOpt4, idx: 3 },
+              ].map((o) => {
+                const isSelected = questionType === 'MULTIPLE_CHOICE' ? correctMulti.includes(o.idx) : correctIdx === o.idx;
+                return (
+                  <div
+                    key={o.idx}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 10,
+                      padding: '8px 12px',
+                      borderRadius: 'var(--radius-md)',
+                      border: `1px solid ${isSelected ? 'var(--accent-learning)' : 'var(--border-subtle)'}`,
+                      background: isSelected ? 'var(--accent-learning-tint)' : 'var(--bg-surface-subtle)',
+                    }}
+                  >
+                    {questionType === 'MULTIPLE_CHOICE' ? (
+                      <input
+                        type="checkbox"
+                        checked={isSelected}
+                        onChange={() => toggleMultiIdx(o.idx)}
+                        style={{ width: 20, height: 20, accentColor: 'var(--accent-learning)', flexShrink: 0, cursor: 'pointer' }}
+                        aria-label={`Chọn đáp án ${o.key} làm đáp án đúng`}
+                      />
+                    ) : (
+                      <input
+                        type="radio"
+                        name="correctOpt"
+                        checked={isSelected}
+                        onChange={() => setCorrectIdx(o.idx)}
+                        style={{ width: 20, height: 20, accentColor: 'var(--accent-learning)', flexShrink: 0, cursor: 'pointer' }}
+                        aria-label={`Chọn đáp án ${o.key} làm đáp án đúng`}
+                      />
+                    )}
+                    <strong style={{ width: 20, textAlign: 'center', fontSize: 13, color: 'var(--text-secondary)', flexShrink: 0 }}>
+                      {o.key}
+                    </strong>
+                    <input
+                      className="t-input"
+                      style={{ flex: 1, minWidth: 0, background: 'var(--bg-surface)' }}
+                      value={o.val}
+                      onChange={(e) => o.set(e.target.value)}
+                      placeholder={`Nhập nội dung đáp án ${o.key}${o.idx < 2 ? ' (bắt buộc)' : ' (tùy chọn)'}`}
+                      required={o.idx < 2}
+                    />
+                    {isSelected && (
+                      <span className="t-badge t-badge--success" style={{ flexShrink: 0 }}>
+                        Đáp án đúng
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
         )}
         {questionType === 'TRUE_FALSE' && (
           <Field label="Đáp án đúng" wide>
@@ -607,8 +853,12 @@ const CreateBankQuestionModal: React.FC<{
           </Field>
         )}
         {(questionType === 'FILL_BLANK' || questionType === 'SHORT_ANSWER') && (
-          <Field label="Đáp án / Từ khóa chấm (cách nhau bởi dấu phẩy)" wide>
-            <input className="t-input" value={acceptedTexts} onChange={(e) => setAcceptedTexts(e.target.value)} required />
+          <Field
+            label={questionType === 'SHORT_ANSWER' ? 'Từ khóa gợi ý (tùy chọn, để trống nếu chấm tay)' : 'Đáp án chấp nhận (cách nhau bởi dấu phẩy)'}
+            required={questionType === 'FILL_BLANK'}
+            wide
+          >
+            <input className="t-input" value={acceptedTexts} onChange={(e) => setAcceptedTexts(e.target.value)} required={questionType === 'FILL_BLANK'} />
           </Field>
         )}
         <Field label="Giải thích đáp án" wide>
@@ -621,11 +871,12 @@ const CreateBankQuestionModal: React.FC<{
 };
 
 const ImportBankQuestionModal: React.FC<{
-  lessonId: string;
-  lessonTitle: string;
+  options: LeafLessonOption[];
+  defaultLessonId: string;
   onClose: () => void;
   onImported: (n: number) => void;
-}> = ({ lessonId, lessonTitle, onClose, onImported }) => {
+}> = ({ options, defaultLessonId, onClose, onImported }) => {
+  const [lessonId, setLessonId] = useState(defaultLessonId || options[0]?.lessonId || '');
   const [rawJson, setRawJson] = useState(
     '[\n  {\n    "question_type": "TRUE_FALSE",\n    "prompt": "Phân số có mẫu bằng 0 là hợp lệ.",\n    "answer_key": { "boolean_answer": false },\n    "points": 1,\n    "difficulty": "EASY"\n  }\n]'
   );
@@ -634,6 +885,7 @@ const ImportBankQuestionModal: React.FC<{
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!lessonId) return;
     setBusy(true);
     setErr(null);
     try {
@@ -652,52 +904,84 @@ const ImportBankQuestionModal: React.FC<{
 
   return (
     <Modal
-      title={`Import JSON câu hỏi vào bài: ${lessonTitle}`}
+      title="Import JSON câu hỏi vào ngân hàng"
       onClose={onClose}
       footer={
         <>
           <Btn variant="ghost" onClick={onClose} disabled={busy}>Hủy</Btn>
-          <Btn variant="primary" type="submit" form="qb-import-form" loading={busy}>Import vào nút lá</Btn>
+          <Btn variant="primary" type="submit" form="qb-import-form" loading={busy}>Import câu hỏi</Btn>
         </>
       }
     >
-      <form id="qb-import-form" onSubmit={submit}>
+      <form id="qb-import-form" className="t-form-grid" onSubmit={submit}>
+        <LessonTargetSelect options={options} value={lessonId} onChange={setLessonId} />
         <Field label="Dán mảng JSON câu hỏi" required wide>
           <textarea className="t-input" rows={10} value={rawJson} onChange={(e) => setRawJson(e.target.value)} style={{ fontFamily: 'var(--font-mono)' }} required />
         </Field>
-        {err && <p className="t-field__error" role="alert">{err}</p>}
+        {err && <p className="t-field__error t-field--wide" role="alert">{err}</p>}
       </form>
     </Modal>
   );
 };
 
 const CreateBankAssignmentModal: React.FC<{
-  courseId: string;
-  lessonId: string;
-  lessonTitle: string;
+  options: LeafLessonOption[];
+  defaultLessonId: string;
   onClose: () => void;
   onCreated: () => void;
-}> = ({ courseId, lessonId, lessonTitle, onClose, onCreated }) => {
+}> = ({ options, defaultLessonId, onClose, onCreated }) => {
+  const [lessonId, setLessonId] = useState(defaultLessonId || options[0]?.lessonId || '');
+  const picked = options.find((o) => o.lessonId === lessonId) || options[0];
   const [title, setTitle] = useState('');
   const [instructions, setInstructions] = useState('');
   const [submissionType, setSubmissionType] = useState<AssignmentSubmissionType>('MIXED');
   const [maxScore, setMaxScore] = useState(10);
+  const [maxScoreTouched, setMaxScoreTouched] = useState(false);
+  const [selectedQuestions, setSelectedQuestions] = useState<BankQuestionAttachment[]>([]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
+  const handleLessonChange = (nextLessonId: string) => {
+    const nextOption = options.find((o) => o.lessonId === nextLessonId);
+    if (nextOption && picked && nextOption.courseId !== picked.courseId) {
+      setSelectedQuestions([]);
+    }
+    setLessonId(nextLessonId);
+  };
+
+  const handleQuestionsChange = (next: BankQuestionAttachment[]) => {
+    setSelectedQuestions(next);
+    if (!maxScoreTouched) {
+      const total = next.reduce((sum, q) => sum + (Number(q.points) || 0), 0);
+      if (total > 0) setMaxScore(total);
+    }
+  };
+
+  const handleInsertPrompt = (text: string, totalPoints: number) => {
+    setInstructions((prev) => (prev.trim() ? `${prev.trim()}\n\n${text}` : text));
+    if (!maxScoreTouched && totalPoints > 0) setMaxScore(totalPoints);
+  };
+
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!picked) return;
+    const finalInstructions = mergeInstructionsWithQuestions(instructions, selectedQuestions);
+    if (!finalInstructions) {
+      setErr('Vui lòng nhập hướng dẫn hoặc chọn ít nhất 1 câu hỏi từ ngân hàng.');
+      return;
+    }
     setBusy(true);
     setErr(null);
     try {
       await masterApi.createAssignmentBankItem({
-        course_id: courseId,
-        lesson_id: lessonId,
+        course_id: picked.courseId,
+        lesson_id: picked.lessonId,
         node_level: 'LESSON',
         title: title.trim(),
-        instructions: instructions.trim(),
+        instructions: finalInstructions,
         submission_type: submissionType,
         max_score: Number(maxScore) || 10,
+        attachments: selectedQuestions as unknown as Array<Record<string, unknown>>,
       });
       onCreated();
     } catch (ex) {
@@ -708,17 +992,19 @@ const CreateBankAssignmentModal: React.FC<{
 
   return (
     <Modal
-      title={`Thêm bài tập mẫu vào bài: ${lessonTitle}`}
+      title="Thêm bài tập vào ngân hàng"
       onClose={onClose}
+      width={760}
       footer={
         <>
           <Btn variant="ghost" onClick={onClose} disabled={busy}>Hủy</Btn>
-          <Btn variant="primary" type="submit" form="ab-create-form" loading={busy}>Lưu bài tập mẫu</Btn>
+          <Btn variant="primary" type="submit" form="ab-create-form" loading={busy}>Lưu bài tập</Btn>
         </>
       }
     >
       <form id="ab-create-form" className="t-form-grid" onSubmit={submit}>
-        <Field label="Tên bài tập mẫu" required wide>
+        <LessonTargetSelect options={options} value={lessonId} onChange={handleLessonChange} />
+        <Field label="Tên bài tập" required wide>
           <input className="t-input" value={title} onChange={(e) => setTitle(e.target.value)} required />
         </Field>
         <Field label="Hình thức nộp">
@@ -730,10 +1016,38 @@ const CreateBankAssignmentModal: React.FC<{
           </select>
         </Field>
         <Field label="Điểm tối đa">
-          <input type="number" min={1} max={1000} className="t-input" value={maxScore} onChange={(e) => setMaxScore(Number(e.target.value))} />
+          <input
+            type="number"
+            min={1}
+            max={1000}
+            className="t-input tabular-nums"
+            value={maxScore}
+            onChange={(e) => {
+              setMaxScoreTouched(true);
+              setMaxScore(Number(e.target.value));
+            }}
+          />
         </Field>
-        <Field label="Hướng dẫn chi tiết cho học viên" required wide>
-          <textarea className="t-input" rows={4} value={instructions} onChange={(e) => setInstructions(e.target.value)} required />
+        <BankQuestionPicker
+          courseId={picked?.courseId}
+          lessonId={picked?.lessonId}
+          selected={selectedQuestions}
+          onChange={handleQuestionsChange}
+          onInsertPrompt={handleInsertPrompt}
+        />
+        <Field label="Hướng dẫn chi tiết cho học viên" required={selectedQuestions.length === 0} wide>
+          <textarea
+            className="t-input"
+            rows={4}
+            placeholder={
+              selectedQuestions.length > 0
+                ? 'Nhập thêm ghi chú cho học viên (nội dung câu hỏi đã chọn sẽ được tự động đính kèm khi lưu)...'
+                : 'Nhập yêu cầu và hướng dẫn làm bài cho học viên...'
+            }
+            value={instructions}
+            onChange={(e) => setInstructions(e.target.value)}
+            required={selectedQuestions.length === 0}
+          />
         </Field>
         {err && <p className="t-field__error t-field--wide" role="alert">{err}</p>}
       </form>
@@ -741,34 +1055,89 @@ const CreateBankAssignmentModal: React.FC<{
   );
 };
 
+const readFileAsBase64 = (file: File): Promise<string> =>
+  new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const res = typeof reader.result === 'string' ? reader.result : '';
+      resolve(res.includes(',') ? res.split(',').pop() || '' : res);
+    };
+    reader.onerror = () => reject(new Error('Không đọc được tệp đã chọn.'));
+    reader.readAsDataURL(file);
+  });
+
 const CreateBankResourceModal: React.FC<{
-  courseId: string;
-  lessonId: string;
-  lessonTitle: string;
+  options: LeafLessonOption[];
+  defaultLessonId: string;
   onClose: () => void;
   onCreated: () => void;
-}> = ({ courseId, lessonId, lessonTitle, onClose, onCreated }) => {
+}> = ({ options, defaultLessonId, onClose, onCreated }) => {
+  const [lessonId, setLessonId] = useState(defaultLessonId || options[0]?.lessonId || '');
+  const picked = options.find((o) => o.lessonId === lessonId) || options[0];
+  const [mode, setMode] = useState<'UPLOAD' | 'LINK'>('UPLOAD');
   const [title, setTitle] = useState('');
-  const [resourceType, setResourceType] = useState<'LINK' | 'VIDEO' | 'PDF' | 'FILE'>('LINK');
+  const [resourceType, setResourceType] = useState<'LINK' | 'VIDEO' | 'PDF' | 'FILE'>('PDF');
   const [url, setUrl] = useState('');
+  const [file, setFile] = useState<File | null>(null);
   const [description, setDescription] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
+  const handleFilePick = (f: File | null) => {
+    setErr(null);
+    setFile(f);
+    if (!f) return;
+    if (f.size > 15 * 1024 * 1024) {
+      setErr('Tệp vượt quá giới hạn 15 MB.');
+      return;
+    }
+    const baseName = f.name.replace(/\.[^.]+$/, '');
+    if (!title.trim()) setTitle(baseName);
+    const ext = f.name.split('.').pop()?.toLowerCase() || '';
+    if (ext === 'pdf') setResourceType('PDF');
+    else if (ext === 'mp4' || ext === 'webm') setResourceType('VIDEO');
+    else setResourceType('FILE');
+  };
+
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setBusy(true);
+    if (!picked) return;
     setErr(null);
+    if (mode === 'UPLOAD') {
+      if (!file) {
+        setErr('Vui lòng chọn tệp tài liệu từ máy.');
+        return;
+      }
+      if (file.size > 15 * 1024 * 1024) {
+        setErr('Tệp vượt quá giới hạn 15 MB.');
+        return;
+      }
+    }
+    setBusy(true);
     try {
-      await masterApi.createResourceBankItem({
-        course_id: courseId,
-        lesson_id: lessonId,
-        node_level: 'LESSON',
-        title: title.trim(),
-        resource_type: resourceType,
-        url: url.trim(),
-        description: description.trim(),
-      });
+      if (mode === 'UPLOAD' && file) {
+        const data_base64 = await readFileAsBase64(file);
+        await masterApi.createResourceBankItem({
+          course_id: picked.courseId,
+          lesson_id: picked.lessonId,
+          node_level: 'LESSON',
+          title: title.trim() || file.name,
+          resource_type: resourceType === 'LINK' ? 'FILE' : resourceType,
+          file_name: file.name,
+          data_base64,
+          description: description.trim(),
+        });
+      } else {
+        await masterApi.createResourceBankItem({
+          course_id: picked.courseId,
+          lesson_id: picked.lessonId,
+          node_level: 'LESSON',
+          title: title.trim(),
+          resource_type: resourceType,
+          url: url.trim(),
+          description: description.trim(),
+        });
+      }
       onCreated();
     } catch (ex) {
       setErr(errMsg(ex));
@@ -778,30 +1147,79 @@ const CreateBankResourceModal: React.FC<{
 
   return (
     <Modal
-      title={`Thêm tài nguyên vào bài: ${lessonTitle}`}
+      title="Đẩy / Thêm tài nguyên vào ngân hàng"
       onClose={onClose}
       footer={
         <>
           <Btn variant="ghost" onClick={onClose} disabled={busy}>Hủy</Btn>
-          <Btn variant="primary" type="submit" form="rb-create-form" loading={busy}>Lưu tài nguyên</Btn>
+          <Btn variant="primary" type="submit" form="rb-create-form" loading={busy}>
+            {mode === 'UPLOAD' ? 'Tải lên tài nguyên' : 'Lưu tài nguyên'}
+          </Btn>
         </>
       }
     >
       <form id="rb-create-form" className="t-form-grid" onSubmit={submit}>
+        <LessonTargetSelect options={options} value={lessonId} onChange={setLessonId} />
+
+        <div className="t-field t-field--wide">
+          <span className="t-field__label">Nguồn tài nguyên</span>
+          <div className="bento-segmented" role="tablist" aria-label="Chọn nguồn tài nguyên">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={mode === 'UPLOAD'}
+              className={`bento-seg-btn ${mode === 'UPLOAD' ? 'is-active' : ''}`}
+              onClick={() => { setMode('UPLOAD'); if (resourceType === 'LINK') setResourceType('PDF'); }}
+            >
+              Tải tệp từ máy
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={mode === 'LINK'}
+              className={`bento-seg-btn ${mode === 'LINK' ? 'is-active' : ''}`}
+              onClick={() => { setMode('LINK'); setResourceType('LINK'); }}
+            >
+              Gắn liên kết URL
+            </button>
+          </div>
+        </div>
+
         <Field label="Tên tài nguyên" required wide>
           <input className="t-input" value={title} onChange={(e) => setTitle(e.target.value)} required />
         </Field>
-        <Field label="Loại tài nguyên">
-          <select className="t-input" value={resourceType} onChange={(e) => setResourceType(e.target.value as 'LINK' | 'VIDEO' | 'PDF' | 'FILE')}>
-            <option value="LINK">Liên kết web</option>
-            <option value="PDF">Tài liệu PDF</option>
-            <option value="VIDEO">Video</option>
-            <option value="FILE">Tài liệu khác</option>
-          </select>
-        </Field>
-        <Field label="Đường dẫn URL (https://...)" required wide>
-          <input type="url" className="t-input" value={url} onChange={(e) => setUrl(e.target.value)} required />
-        </Field>
+
+        {mode === 'UPLOAD' ? (
+          <Field label="Chọn tệp tài liệu (PDF, Word, Excel, Slide, Ảnh, MP4 — tối đa 15 MB)" required wide>
+            <input
+              type="file"
+              className="t-input"
+              accept=".pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.txt,.csv,.zip,.png,.jpg,.jpeg,.mp4,.webm"
+              onChange={(e) => handleFilePick(e.target.files?.[0] || null)}
+              required
+            />
+            {file && (
+              <span className="t-field__hint tabular-nums">
+                Đã chọn: {file.name} ({fmtBytes(file.size)})
+              </span>
+            )}
+          </Field>
+        ) : (
+          <>
+            <Field label="Loại tài nguyên">
+              <select className="t-input" value={resourceType} onChange={(e) => setResourceType(e.target.value as 'LINK' | 'VIDEO' | 'PDF' | 'FILE')}>
+                <option value="LINK">Liên kết web</option>
+                <option value="PDF">Tài liệu PDF</option>
+                <option value="VIDEO">Video</option>
+                <option value="FILE">Tài liệu khác</option>
+              </select>
+            </Field>
+            <Field label="Đường dẫn URL (https://...)" required>
+              <input type="url" className="t-input" value={url} onChange={(e) => setUrl(e.target.value)} required />
+            </Field>
+          </>
+        )}
+
         <Field label="Mô tả" wide>
           <textarea className="t-input" rows={2} value={description} onChange={(e) => setDescription(e.target.value)} />
         </Field>

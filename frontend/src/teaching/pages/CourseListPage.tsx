@@ -29,19 +29,19 @@ export const CourseListPage: React.FC = () => {
   return (
     <div className="t-page">
       <PageHeader
-        title="Khóa học"
-        subtitle="Nội dung đào tạo: chương, bài học, video và tài liệu. Một khóa học có thể dùng cho nhiều lớp."
+        title="Giáo trình môn"
+        subtitle="Nội dung đào tạo: chương, bài học, video và tài liệu. Một giáo trình có thể dùng cho nhiều lớp học."
         actions={
           me.data?.can_create_course && (
             <button type="button" className="t-btn t-btn--primary" onClick={() => setParams({ new: '1' })}>
-              + Tạo khóa học
+              + Tạo giáo trình
             </button>
           )
         }
       />
 
       <div className="t-toolbar">
-        <SearchInput value={q} onChange={(v) => { setQ(v); setPage(1); }} placeholder="Tìm theo tên hoặc mã khóa học" />
+        <SearchInput value={q} onChange={(v) => { setQ(v); setPage(1); }} placeholder="Tìm theo tên hoặc mã giáo trình" />
         <select className="t-input" value={subject} onChange={(e) => { setSubject(e.target.value); setPage(1); }} aria-label="Lọc theo môn học">
           <option value="">Tất cả môn học</option>
           {(data?.subjects || []).map((s) => (
@@ -67,12 +67,12 @@ export const CourseListPage: React.FC = () => {
       {error && <ErrorState error={error} onRetry={reload} />}
       {data && data.items.length === 0 && (
         <EmptyState
-          title={dq || subject || status ? 'Không có khóa học phù hợp bộ lọc' : 'Bạn chưa có khóa học nào'}
-          text={dq || subject || status ? 'Thử đổi từ khóa hoặc bộ lọc.' : 'Tạo khóa học đầu tiên để bắt đầu xây dựng nội dung giảng dạy.'}
+          title={dq || subject || status ? 'Không có giáo trình phù hợp bộ lọc' : 'Bạn chưa có giáo trình nào'}
+          text={dq || subject || status ? 'Thử đổi từ khóa hoặc bộ lọc.' : 'Tạo giáo trình đầu tiên để bắt đầu xây dựng nội dung giảng dạy.'}
           action={
             me.data?.can_create_course && !(dq || subject || status) ? (
               <button type="button" className="t-btn t-btn--primary" onClick={() => setParams({ new: '1' })}>
-                + Tạo khóa học
+                + Tạo giáo trình
               </button>
             ) : undefined
           }

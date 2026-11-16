@@ -44,10 +44,12 @@ export const App: React.FC = () => {
   const [currentUser, setCurrentUser] = useState<AuthenticatedUser | null>(getSavedAuthUser);
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
   const [isNotifOpen, setIsNotifOpen] = useState(false);
+  const [isCurriculumMenuOpen, setIsCurriculumMenuOpen] = useState(false);
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
   const notifRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  const curriculumRef = useRef<HTMLDivElement>(null);
   const headerRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
@@ -133,7 +135,11 @@ export const App: React.FC = () => {
   }, [currentUser?.id, location.pathname]);
 
   useEffect(() => {
-    if (!isUserMenuOpen && !isNotifOpen) return undefined;
+    setIsCurriculumMenuOpen(false);
+  }, [location.pathname]);
+
+  useEffect(() => {
+    if (!isUserMenuOpen && !isNotifOpen && !isCurriculumMenuOpen) return undefined;
     const onClickOutside = (e: MouseEvent) => {
       if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
         setIsUserMenuOpen(false);
@@ -141,11 +147,15 @@ export const App: React.FC = () => {
       if (notifRef.current && !notifRef.current.contains(e.target as Node)) {
         setIsNotifOpen(false);
       }
+      if (curriculumRef.current && !curriculumRef.current.contains(e.target as Node)) {
+        setIsCurriculumMenuOpen(false);
+      }
     };
     const onEscape = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         setIsUserMenuOpen(false);
         setIsNotifOpen(false);
+        setIsCurriculumMenuOpen(false);
       }
     };
     window.addEventListener('mousedown', onClickOutside);
@@ -154,7 +164,7 @@ export const App: React.FC = () => {
       window.removeEventListener('mousedown', onClickOutside);
       window.removeEventListener('keydown', onEscape);
     };
-  }, [isUserMenuOpen, isNotifOpen]);
+  }, [isUserMenuOpen, isNotifOpen, isCurriculumMenuOpen]);
 
   if (!currentUser) {
     return (
@@ -174,9 +184,20 @@ export const App: React.FC = () => {
   const isAdmin = roles.includes('ADMIN');
   const homePath = isStudentOnly ? '/learn' : '/teaching';
 
+  const isCurriculumGroupActive = ['/teaching/curricula', '/teaching/cohorts', '/teaching/courses', '/teaching/classes'].some((p) =>
+    location.pathname.startsWith(p)
+  );
+
+  const curriculumMenuItems = [
+    { to: '/teaching/curricula', label: 'Khung chương trình', desc: 'Cấu trúc chương trình & danh mục đào tạo' },
+    { to: '/teaching/cohorts', label: 'Khóa học', desc: 'Quản lý niên khóa & danh sách học viên' },
+    { to: '/teaching/courses', label: 'Giáo trình môn', desc: 'Bài học, video tương tác & phiên bản Snapshot' },
+    { to: '/teaching/classes', label: 'Lớp học', desc: 'Lớp giảng dạy, lịch học & điểm danh' },
+  ];
+
   const navItems: Array<{ to: string; label: string; end?: boolean }> = isStudentOnly
     ? [
-        { to: '/learn', label: 'Lớp của tôi', end: true },
+        { to: '/learn', label: 'Tổng quan', end: true },
         { to: '/learn/exams', label: 'Kiểm tra' },
         { to: '/learn/assignments', label: 'Bài tập' },
         { to: '/learn/schedule', label: 'Lịch học' },
@@ -184,11 +205,7 @@ export const App: React.FC = () => {
       ]
     : [
         { to: '/teaching', label: 'Tổng quan', end: true },
-        { to: '/teaching/curricula', label: 'Khung CT' },
-        { to: '/teaching/cohorts', label: 'Lớp khóa' },
-        { to: '/teaching/courses', label: 'Môn học' },
-        { to: '/teaching/classes', label: 'Lớp môn' },
-        { to: '/teaching/banks', label: 'Ngân hàng' },
+        { to: '/teaching/banks', label: 'Học liệu' },
         { to: '/teaching/schedule', label: 'Lịch dạy' },
         { to: '/teaching/leave-requests', label: 'Đơn nghỉ' },
         ...(isAdmin ? [{ to: '/admin/accounts', label: 'Tài khoản' }] : []),
@@ -283,13 +300,55 @@ export const App: React.FC = () => {
             className="app-header__nav"
             style={{ justifySelf: 'center', maxWidth: '100%' }}
           >
-            {navItems.map((item) => (
+            {navItems.slice(0, 1).map((item) => (
               <NavLink
                 key={item.to}
                 to={item.to}
                 end={item.end}
                 className="app-nav-link"
-                style={{ display: 'inline-flex', alignItems: 'center', textDecoration: 'none', whiteSpace: 'nowrap' }}
+              >
+                {item.label}
+              </NavLink>
+            ))}
+
+            {!isStudentOnly && (
+              <div
+                ref={curriculumRef}
+                className={`app-nav-dropdown ${isCurriculumMenuOpen ? 'is-open' : ''}`}
+              >
+                <button
+                  type="button"
+                  className={`app-nav-link ${isCurriculumGroupActive ? 'is-active' : ''}`}
+                  aria-haspopup="menu"
+                  aria-expanded={isCurriculumMenuOpen}
+                  onClick={() => setIsCurriculumMenuOpen((v) => !v)}
+                >
+                  <span>Khung chương trình</span>
+                  <span className="app-nav-dropdown__caret" aria-hidden="true">▾</span>
+                </button>
+                <div className="app-nav-dropdown__menu" role="menu" aria-label="Menu Khung chương trình">
+                  {curriculumMenuItems.map((sub) => (
+                    <NavLink
+                      key={sub.to}
+                      to={sub.to}
+                      role="menuitem"
+                      className="app-nav-dropdown__item"
+                      onClick={() => setIsCurriculumMenuOpen(false)}
+                    >
+                      <strong>{sub.label}</strong>
+                      <span>{sub.desc}</span>
+                    </NavLink>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {navItems.slice(1).map((item) => (
+              <NavLink
+                key={item.to}
+                to={item.to}
+                end={item.end}
+                className="app-nav-link"
               >
                 {item.label}
               </NavLink>
@@ -305,7 +364,10 @@ export const App: React.FC = () => {
                 aria-expanded={isNotifOpen}
                 onClick={handleOpenNotifications}
               >
-                <span aria-hidden="true">🔔</span>
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9" />
+                  <path d="M10.3 21a1.94 1.94 0 0 0 3.4 0" />
+                </svg>
                 {unreadCount > 0 && <span className="m-notif-dot tabular-nums">{unreadCount > 99 ? '99+' : unreadCount}</span>}
               </button>
 
