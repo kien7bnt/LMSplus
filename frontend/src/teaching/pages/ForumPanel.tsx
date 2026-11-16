@@ -23,6 +23,7 @@ import {
   Tone,
   errMsg,
   fmtDateTime,
+  label,
   useAsync,
   useDebounced,
   useToast,
@@ -522,8 +523,8 @@ const ForumReportsModal: React.FC<{ forumId: string; onClose: () => void; onReso
           {reports.data.items.map((rep) => (
             <div key={rep.id} className="t-list-item" style={{ flexDirection: 'column', alignItems: 'stretch' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
-                <strong>{rep.reporter_name} · {rep.target_type}</strong>
-                <Tone tone={rep.status === 'OPEN' ? 'warning' : 'success'}>{rep.status}</Tone>
+                <strong>{rep.reporter_name}</strong>
+                <Tone tone={rep.status === 'OPEN' ? 'warning' : 'success'}>{label('reportStatus', rep.status)}</Tone>
               </div>
               <p style={{ margin: '6px 0' }}>{rep.reason}</p>
               {rep.status === 'OPEN' && (

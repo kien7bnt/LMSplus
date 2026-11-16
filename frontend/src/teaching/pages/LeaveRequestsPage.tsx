@@ -103,78 +103,142 @@ export const ClassLeaveRequestsPanel: React.FC<{ classId?: string }> = ({ classI
         <EmptyState title="Không có đơn xin nghỉ nào" text="Khi học viên gửi đơn xin nghỉ, yêu cầu sẽ hiển thị tại đây để xét duyệt." />
       )}
       {list.data && list.data.items.length > 0 && (
-        <div className="t-table-wrap">
-          <table className="t-table">
-            <thead>
-              <tr>
-                <th>Học viên</th>
-                <th>Lớp & Buổi học</th>
-                <th>Lý do nghỉ</th>
-                <th>Trạng thái</th>
-                <th>Xử lý</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {list.data.items.map((item) => (
-                <tr key={item.id}>
-                  <td>
-                    <strong>{item.student_name}</strong>
-                    <div className="t-muted t-small"><code>{item.student_code}</code></div>
-                  </td>
-                  <td>
-                    <div><code>{item.class_code}</code> · {item.class_title}</div>
-                    {item.session_title && (
-                      <div className="t-small t-muted">
-                        {item.session_title} ({fmtDateTime(item.scheduled_start_at)})
-                      </div>
-                    )}
-                  </td>
-                  <td>
-                    <Badge kind="leaveReason" value={item.reason_category} />
-                    <div style={{ marginTop: 4 }}>{item.reason}</div>
-                    {item.makeup_class_requested && <div className="t-small t-muted">Đề xuất học bù: {item.makeup_class_requested}</div>}
-                    {item.evidence_url && (
-                      <a href={item.evidence_url} target="_blank" rel="noopener noreferrer" className="t-small t-row-link">
-                        Xem minh chứng
-                      </a>
-                    )}
-                  </td>
-                  <td><Badge kind="leaveStatus" value={item.status} /></td>
-                  <td className="t-small">
-                    {item.reviewed_by_name ? (
-                      <>
-                        <div>{item.reviewed_by_name}</div>
-                        <div className="t-muted">{fmtDateTime(item.reviewed_at)}</div>
-                        {item.review_note && <div>Ghi chú: {item.review_note}</div>}
-                      </>
-                    ) : 'Chờ xử lý'}
-                  </td>
-                  <td className="t-right">
-                    {item.status === 'PENDING' && (
-                      <div className="t-actions">
-                        <Btn
-                          small
-                          variant="primary"
-                          onClick={() => { setReviewing({ item, decision: 'APPROVED' }); setReviewNote(''); setErr(null); }}
-                        >
-                          Duyệt
-                        </Btn>
-                        <Btn
-                          small
-                          variant="danger"
-                          onClick={() => { setReviewing({ item, decision: 'REJECTED' }); setReviewNote(''); setErr(null); }}
-                        >
-                          Từ chối
-                        </Btn>
-                      </div>
-                    )}
-                  </td>
+        <>
+          <div className="t-table-wrap t-table-desktop-only">
+            <table className="t-table">
+              <thead>
+                <tr>
+                  <th>Học viên</th>
+                  <th>Lớp & Buổi học</th>
+                  <th>Lý do nghỉ</th>
+                  <th>Trạng thái</th>
+                  <th>Xử lý</th>
+                  <th className="actions">Thao tác</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody>
+                {list.data.items.map((item) => (
+                  <tr key={item.id}>
+                    <td>
+                      <strong className="t-nowrap">{item.student_name}</strong>
+                      <div className="t-muted t-small"><code>{item.student_code}</code></div>
+                    </td>
+                    <td>
+                      <div><code>{item.class_code}</code> · {item.class_title}</div>
+                      {item.session_title && (
+                        <div className="t-small t-muted">
+                          {item.session_title} ({fmtDateTime(item.scheduled_start_at)})
+                        </div>
+                      )}
+                    </td>
+                    <td style={{ minWidth: 220 }}>
+                      <Badge kind="leaveReason" value={item.reason_category} />
+                      <div style={{ marginTop: 4 }}>{item.reason}</div>
+                      {item.makeup_class_requested && <div className="t-small t-muted">Đề xuất học bù: {item.makeup_class_requested}</div>}
+                      {item.evidence_url && (
+                        <a href={item.evidence_url} target="_blank" rel="noopener noreferrer" className="t-small t-row-link">
+                          Xem minh chứng
+                        </a>
+                      )}
+                    </td>
+                    <td><Badge kind="leaveStatus" value={item.status} /></td>
+                    <td className="t-small">
+                      {item.reviewed_by_name ? (
+                        <>
+                          <div className="t-nowrap">{item.reviewed_by_name}</div>
+                          <div className="t-muted t-nowrap">{fmtDateTime(item.reviewed_at)}</div>
+                          {item.review_note && <div>Ghi chú: {item.review_note}</div>}
+                        </>
+                      ) : item.status === 'PENDING' ? (
+                        <span className="t-nowrap">Chờ xử lý</span>
+                      ) : (
+                        <span className="t-nowrap t-muted">{item.reviewed_at ? fmtDateTime(item.reviewed_at) : 'Đã xử lý'}</span>
+                      )}
+                    </td>
+                    <td className="actions">
+                      {item.status === 'PENDING' && (
+                        <div className="t-actions">
+                          <Btn
+                            small
+                            variant="primary"
+                            onClick={() => { setReviewing({ item, decision: 'APPROVED' }); setReviewNote(''); setErr(null); }}
+                          >
+                            Duyệt
+                          </Btn>
+                          <Btn
+                            small
+                            variant="danger"
+                            onClick={() => { setReviewing({ item, decision: 'REJECTED' }); setReviewNote(''); setErr(null); }}
+                          >
+                            Từ chối
+                          </Btn>
+                        </div>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="t-class-mobile-list">
+            {list.data.items.map((item) => (
+              <div key={item.id} className="t-class-mobile-card">
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
+                  <div>
+                    <strong>{item.student_name}</strong>
+                    <div className="t-muted t-small">{item.student_code}</div>
+                  </div>
+                  <Badge kind="leaveStatus" value={item.status} />
+                </div>
+                <div className="t-small">
+                  <strong>{item.class_code}</strong> · {item.class_title}
+                  {item.session_title && (
+                    <div className="t-muted">{item.session_title} ({fmtDateTime(item.scheduled_start_at)})</div>
+                  )}
+                </div>
+                <div>
+                  <Badge kind="leaveReason" value={item.reason_category} />
+                  <div style={{ marginTop: 4 }}>{item.reason}</div>
+                  {item.makeup_class_requested && <div className="t-small t-muted">Đề xuất học bù: {item.makeup_class_requested}</div>}
+                  {item.evidence_url && (
+                    <a href={item.evidence_url} target="_blank" rel="noopener noreferrer" className="t-small t-row-link">
+                      Xem minh chứng
+                    </a>
+                  )}
+                </div>
+                <div className="t-small t-muted">
+                  Xử lý:{' '}
+                  {item.reviewed_by_name
+                    ? `${item.reviewed_by_name} (${fmtDateTime(item.reviewed_at)})${item.review_note ? ` · ${item.review_note}` : ''}`
+                    : item.status === 'PENDING'
+                      ? 'Chờ xử lý'
+                      : item.reviewed_at
+                        ? fmtDateTime(item.reviewed_at)
+                        : 'Đã xử lý'}
+                </div>
+                {item.status === 'PENDING' && (
+                  <div className="t-actions">
+                    <Btn
+                      small
+                      variant="primary"
+                      onClick={() => { setReviewing({ item, decision: 'APPROVED' }); setReviewNote(''); setErr(null); }}
+                    >
+                      Duyệt
+                    </Btn>
+                    <Btn
+                      small
+                      variant="danger"
+                      onClick={() => { setReviewing({ item, decision: 'REJECTED' }); setReviewNote(''); setErr(null); }}
+                    >
+                      Từ chối
+                    </Btn>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </>
       )}
 
       {reviewing && (

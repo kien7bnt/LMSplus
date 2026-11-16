@@ -90,17 +90,17 @@ export const CohortListPage: React.FC = () => {
                     <th>Mã khóa</th>
                     <th>Tên khóa học</th>
                     <th>Khung chương trình</th>
-                    <th>Sĩ số thực (DISTINCT)</th>
+                    <th>Sĩ số thực tế</th>
                     <th>Môn học</th>
                     <th>Thời gian</th>
                     <th>Trạng thái</th>
-                    <th></th>
+                    <th className="actions">Thao tác</th>
                   </tr>
                 </thead>
                 <tbody>
                   {list.data.items.map((ch: CohortSummary) => (
                     <tr key={ch.id}>
-                      <td><code style={{ whiteSpace: 'nowrap' }}>{ch.code}</code></td>
+                      <td><code>{ch.code}</code></td>
                       <td>
                         <Link to={`/teaching/cohorts/${ch.id}`} className="t-row-link">
                           <strong>{ch.title}</strong>
@@ -114,12 +114,14 @@ export const CohortListPage: React.FC = () => {
                           </Link>
                         ) : '—'}
                       </td>
-                      <td className="tabular-nums">{ch.active_students_count} HV</td>
-                      <td className="tabular-nums">{ch.subject_classes_count} lớp</td>
-                      <td className="tabular-nums">{fmtDate(ch.start_date)} – {fmtDate(ch.end_date)}</td>
+                      <td className="tabular-nums t-nowrap">{ch.active_students_count} HV</td>
+                      <td className="tabular-nums t-nowrap">{ch.subject_classes_count} lớp</td>
+                      <td className="tabular-nums t-nowrap">{fmtDate(ch.start_date)} – {fmtDate(ch.end_date)}</td>
                       <td><Badge kind="cohort" value={ch.status} /></td>
-                      <td className="t-right">
-                        <Btn small onClick={() => nav(`/teaching/cohorts/${ch.id}`)}>Quản lý</Btn>
+                      <td className="actions">
+                        <div className="t-actions">
+                          <Btn small onClick={() => nav(`/teaching/cohorts/${ch.id}`)}>Quản lý</Btn>
+                        </div>
                       </td>
                     </tr>
                   ))}
@@ -415,20 +417,20 @@ export const CohortDetailPage: React.FC = () => {
                     <th>Chuyên cần</th>
                     <th>Tiến độ tổng</th>
                     <th>Ngày vào</th>
-                    <th></th>
+                    <th className="actions">Thao tác</th>
                   </tr>
                 </thead>
                 <tbody>
                   {c.students.map((s) => (
                     <tr key={s.student_id}>
                       <td><code>{s.code}</code></td>
-                      <td><strong>{s.full_name}</strong></td>
+                      <td><strong className="t-nowrap">{s.full_name}</strong></td>
                       <td>{s.email}</td>
                       <td><Badge kind="cohortStudent" value={s.status} /></td>
                       <td className="tabular-nums">{s.attendance_rate !== null ? `${s.attendance_rate}%` : '—'}</td>
                       <td><ProgressMeter value={s.completed_lessons} total={Math.max(1, s.total_lessons)} /></td>
-                      <td className="tabular-nums">{fmtDate(s.enrolled_at)}</td>
-                      <td className="t-right">
+                      <td className="tabular-nums t-nowrap">{fmtDate(s.enrolled_at)}</td>
+                      <td className="actions">
                         {c.capabilities.can_manage && s.status === 'ACTIVE' && (
                           <div className="t-actions">
                             <Btn small onClick={() => { setTransferTarget(s); setTargetCohortId(otherCohorts[0]?.id || ''); }}>
@@ -582,7 +584,7 @@ export const CohortDetailPage: React.FC = () => {
                       <td>{ses.title}</td>
                       <td><Badge kind="delivery" value={ses.delivery_mode} /></td>
                       <td>{ses.room_or_link || '—'}</td>
-                      <td>{ses.session_status}</td>
+                      <td><Badge kind="sessionStatus" value={ses.session_status} /></td>
                     </tr>
                   ))}
                 </tbody>
@@ -612,7 +614,7 @@ export const CohortDetailPage: React.FC = () => {
                   {c.progress.map((p) => (
                     <tr key={p.student_id}>
                       <td><code>{p.code}</code></td>
-                      <td><strong>{p.full_name}</strong></td>
+                      <td><strong className="t-nowrap">{p.full_name}</strong></td>
                       <td className="tabular-nums">{p.completed_lessons}/{p.total_lessons}</td>
                       <td><ProgressMeter value={p.completion_pct} /></td>
                       <td className="tabular-nums">{p.attendance_rate !== null ? `${p.attendance_rate}%` : '—'}</td>
@@ -627,7 +629,7 @@ export const CohortDetailPage: React.FC = () => {
 
       {tab === 'statistics' && (
         <div className="t-stats">
-          <StatCard label="Sĩ số thực (DISTINCT)" value={c.statistics.distinct_active_students} hint="Không đếm trùng giữa các lớp môn" tone="success" />
+          <StatCard label="Sĩ số thực tế" value={c.statistics.distinct_active_students} hint="Không đếm trùng giữa các lớp môn" tone="success" />
           <StatCard label="Đã đồng bộ xuống lớp môn" value={c.statistics.distinct_synced_to_classes} />
           <StatCard label="Học bù / Bổ sung riêng" value={c.statistics.distinct_extra_subject_students} tone="warning" />
           <StatCard label="Lớp môn học trực thuộc" value={c.statistics.subject_classes_count} />

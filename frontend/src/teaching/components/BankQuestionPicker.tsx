@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { BankQuestionRow, QuestionType, masterApi } from '../api';
-import { Btn, useAsync } from '../ui';
+import { Btn, label, useAsync } from '../ui';
 
 export interface BankQuestionAttachment {
   kind: 'BANK_QUESTION';
@@ -10,14 +10,6 @@ export interface BankQuestionAttachment {
   points: number;
   options: Array<{ id: string; text: string }>;
 }
-
-const QUESTION_TYPE_LABELS: Record<QuestionType, string> = {
-  SINGLE_CHOICE: 'Trắc nghiệm 1 đáp án',
-  MULTIPLE_CHOICE: 'Nhiều đáp án',
-  TRUE_FALSE: 'Đúng / Sai',
-  FILL_BLANK: 'Điền khuyết',
-  SHORT_ANSWER: 'Tự luận ngắn',
-};
 
 const OPTION_LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 
@@ -243,7 +235,7 @@ export const BankQuestionPicker: React.FC<BankQuestionPickerProps> = ({
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ color: 'var(--text-primary)', fontWeight: checked ? 600 : 400 }}>{row.prompt}</div>
                   <div className="t-sub tabular-nums">
-                    {QUESTION_TYPE_LABELS[row.question_type]}
+                    {label('questionType', row.question_type)}
                     {row.lesson_title ? ` · ${row.lesson_title}` : ''} · {row.points}đ
                   </div>
                 </div>

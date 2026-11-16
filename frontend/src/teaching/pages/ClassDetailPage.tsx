@@ -1801,7 +1801,7 @@ const ClassExamsTab: React.FC<{ cls: ClassDetail }> = ({ cls }) => {
                             }
                           />
                           <span>
-                            <strong>[{bq.difficulty}]</strong> {bq.prompt} <em className="t-sub">({bq.points}đ · {bq.lesson_title || 'Lá'})</em>
+                            <strong>[{label('difficulty', bq.difficulty)}]</strong> {bq.prompt} <em className="t-sub">({bq.points}đ · {bq.lesson_title || 'Lá'})</em>
                           </span>
                         </label>
                       );

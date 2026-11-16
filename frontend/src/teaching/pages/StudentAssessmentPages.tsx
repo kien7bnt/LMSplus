@@ -22,6 +22,7 @@ import {
   Tone,
   errMsg,
   fmtDateTime,
+  label,
   useAsync,
   useToast,
 } from '../ui';
@@ -423,7 +424,7 @@ export const StudentAssignmentsPage: React.FC<{ classId?: string }> = ({ classId
               }
             >
               <div className="t-small t-muted" style={{ marginBottom: 8 }}>
-                <code>{a.class_code}</code> · {a.class_title} · Hình thức: {a.submission_type} · Thang điểm: <strong className="tabular-nums">{a.max_score}</strong> · Đã nộp <strong className="tabular-nums">{a.submitted_count}/{a.max_attempts}</strong> lần
+                <code>{a.class_code}</code> · {a.class_title} · Hình thức: {label('submissionType', a.submission_type)} · Thang điểm: <strong className="tabular-nums">{a.max_score}</strong> · Đã nộp <strong className="tabular-nums">{a.submitted_count}/{a.max_attempts}</strong> lần
                 {a.due_at && <> · Hạn nộp: {fmtDateTime(a.due_at)}</>}
               </div>
               <p className="m-measure" style={{ whiteSpace: 'pre-wrap' }}>{a.instructions}</p>

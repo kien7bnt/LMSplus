@@ -34,6 +34,7 @@ import {
   errMsg,
   fmtBytes,
   fmtDateTime,
+  label,
   useAsync,
   useDebounced,
   useToast,
@@ -345,38 +346,40 @@ export const BanksPage: React.FC = () => {
                             <th>Vị trí cây nội dung</th>
                             <th>Loại</th>
                             <th>Độ khó</th>
-                            <th>Điểm</th>
+                            <th className="num">Điểm</th>
                             <th>Cập nhật</th>
-                            <th></th>
+                            <th className="actions">Thao tác</th>
                           </tr>
                         </thead>
                         <tbody>
                           {questionsRes.data.items.map((item) => (
                             <tr key={item.id}>
-                              <td>
+                              <td style={{ minWidth: 220 }}>
                                 <strong>{item.prompt}</strong>
                                 {item.explanation && <div className="t-small t-muted">{item.explanation}</div>}
                               </td>
                               <td className="t-small">
                                 {item.course_code} › {item.chapter_title} › <strong>{item.lesson_title}</strong>
                               </td>
-                              <td>{item.question_type}</td>
-                              <td>{item.difficulty}</td>
-                              <td className="tabular-nums">{item.points}</td>
-                              <td className="tabular-nums">{fmtDateTime(item.updated_at)}</td>
-                              <td className="t-right">
+                              <td className="t-nowrap">{label('questionType', item.question_type)}</td>
+                              <td><Badge kind="difficulty" value={item.difficulty} /></td>
+                              <td className="num tabular-nums">{item.points}</td>
+                              <td className="tabular-nums t-nowrap">{fmtDateTime(item.updated_at)}</td>
+                              <td className="actions">
                                 {Boolean(item.course_id && editableCourseIds.has(item.course_id)) && (
-                                  <Btn
-                                    small
-                                    variant="ghost"
-                                    onClick={async () => {
-                                      await masterApi.deleteQuestionBankItem(item.id);
-                                      push('Đã xóa câu hỏi khỏi ngân hàng', '', 'info');
-                                      reloadAll();
-                                    }}
-                                  >
-                                    Xóa
-                                  </Btn>
+                                  <div className="t-actions">
+                                    <Btn
+                                      small
+                                      variant="ghost"
+                                      onClick={async () => {
+                                        await masterApi.deleteQuestionBankItem(item.id);
+                                        push('Đã xóa câu hỏi khỏi ngân hàng', '', 'info');
+                                        reloadAll();
+                                      }}
+                                    >
+                                      Xóa
+                                    </Btn>
+                                  </div>
                                 )}
                               </td>
                             </tr>
@@ -406,35 +409,37 @@ export const BanksPage: React.FC = () => {
                             <th>Bài tập mẫu</th>
                             <th>Bài học gắn kết</th>
                             <th>Hình thức nộp</th>
-                            <th>Thang điểm</th>
+                            <th className="num">Thang điểm</th>
                             <th>Cập nhật</th>
-                            <th></th>
+                            <th className="actions">Thao tác</th>
                           </tr>
                         </thead>
                         <tbody>
                           {assignmentsRes.data.items.map((a) => (
                             <tr key={a.id}>
-                              <td>
+                              <td style={{ minWidth: 200 }}>
                                 <strong>{a.title}</strong>
                                 <div className="t-small t-muted">{a.description || a.instructions.slice(0, 90)}</div>
                               </td>
                               <td className="t-small">{a.course_code} › {a.lesson_title}</td>
-                              <td>{a.submission_type}</td>
-                              <td className="tabular-nums">{a.max_score}</td>
-                              <td className="tabular-nums">{fmtDateTime(a.updated_at)}</td>
-                              <td className="t-right">
+                              <td className="t-nowrap">{label('submissionType', a.submission_type)}</td>
+                              <td className="num tabular-nums">{a.max_score}</td>
+                              <td className="tabular-nums t-nowrap">{fmtDateTime(a.updated_at)}</td>
+                              <td className="actions">
                                 {editableCourseIds.has(a.course_id) && (
-                                  <Btn
-                                    small
-                                    variant="ghost"
-                                    onClick={async () => {
-                                      await masterApi.deleteAssignmentBankItem(a.id);
-                                      push('Đã xóa bài tập mẫu', '', 'info');
-                                      reloadAll();
-                                    }}
-                                  >
-                                    Xóa
-                                  </Btn>
+                                  <div className="t-actions">
+                                    <Btn
+                                      small
+                                      variant="ghost"
+                                      onClick={async () => {
+                                        await masterApi.deleteAssignmentBankItem(a.id);
+                                        push('Đã xóa bài tập mẫu', '', 'info');
+                                        reloadAll();
+                                      }}
+                                    >
+                                      Xóa
+                                    </Btn>
+                                  </div>
                                 )}
                               </td>
                             </tr>
@@ -465,13 +470,13 @@ export const BanksPage: React.FC = () => {
                             <th>Loại</th>
                             <th>Bài học gắn kết</th>
                             <th>Liên kết / Tệp</th>
-                            <th></th>
+                            <th className="actions">Thao tác</th>
                           </tr>
                         </thead>
                         <tbody>
                           {resourcesRes.data.items.map((r) => (
                             <tr key={r.id}>
-                              <td>
+                              <td style={{ minWidth: 180 }}>
                                 <strong>{r.title}</strong>
                                 {r.description && <div className="t-small t-muted">{r.description}</div>}
                               </td>
@@ -479,7 +484,7 @@ export const BanksPage: React.FC = () => {
                               <td className="t-small">{r.course_code} › {r.lesson_title || r.chapter_title}</td>
                               <td>
                                 {r.url ? (
-                                  <a href={r.url} target="_blank" rel="noopener noreferrer" className="t-row-link">Mở liên kết</a>
+                                  <a href={r.url} target="_blank" rel="noopener noreferrer" className="t-row-link t-nowrap">Mở liên kết</a>
                                 ) : (
                                   <Btn
                                     small
@@ -491,19 +496,21 @@ export const BanksPage: React.FC = () => {
                                   </Btn>
                                 )}
                               </td>
-                              <td className="t-right">
+                              <td className="actions">
                                 {editableCourseIds.has(r.course_id) && (
-                                  <Btn
-                                    small
-                                    variant="ghost"
-                                    onClick={async () => {
-                                      await masterApi.deleteResourceBankItem(r.id);
-                                      push('Đã xóa tài nguyên', '', 'info');
-                                      reloadAll();
-                                    }}
-                                  >
-                                    Xóa
-                                  </Btn>
+                                  <div className="t-actions">
+                                    <Btn
+                                      small
+                                      variant="ghost"
+                                      onClick={async () => {
+                                        await masterApi.deleteResourceBankItem(r.id);
+                                        push('Đã xóa tài nguyên', '', 'info');
+                                        reloadAll();
+                                      }}
+                                    >
+                                      Xóa
+                                    </Btn>
+                                  </div>
                                 )}
                               </td>
                             </tr>

@@ -969,12 +969,12 @@ export const VirtualSessionPage: React.FC = () => {
                           <td>{job.trigger_source}</td>
                           <td>
                             <Tone tone={job.status === 'COMPLETED' ? 'success' : job.status === 'FAILED' ? 'danger' : 'info'}>
-                              {job.status}
+                              {label('syncStatus', job.status)}
                             </Tone>
                           </td>
                           <td>
                             <span className="t-sub tabular-nums">
-                              Khớp {job.matched_students || 0} HV · UNKNOWN: {job.unknown_participants || 0}
+                              Khớp {job.matched_students || 0} HV · Chưa khớp: {job.unknown_participants || 0}
                             </span>
                           </td>
                         </tr>
@@ -1007,7 +1007,7 @@ export const VirtualSessionPage: React.FC = () => {
                           <td><code style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }}>{ev.event_type}</code></td>
                           <td>
                             {ev.signature_verified ? (
-                              <Tone tone="success">Hợp lệ ({ev.processing_status})</Tone>
+                              <Tone tone="success">Hợp lệ ({label('syncStatus', ev.processing_status)})</Tone>
                             ) : (
                               <Tone tone="danger">Không hợp lệ</Tone>
                             )}

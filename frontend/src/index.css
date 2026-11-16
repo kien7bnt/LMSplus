@@ -460,7 +460,7 @@ button:active:not(:disabled) {
 @media (max-width: 960px) {
   .app-header__inner {
     grid-template-columns: minmax(0, 1fr) auto;
-    min-height: 64px;
+    min-height: 60px;
     padding: 8px 16px;
     gap: 8px 12px;
   }
@@ -468,9 +468,35 @@ button:active:not(:disabled) {
     grid-column: 1 / -1;
     order: 3;
     justify-self: stretch;
-    flex-wrap: wrap;
-    border-radius: var(--radius-lg);
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+    max-width: 100%;
+    border-radius: var(--radius-pill);
     padding: 4px;
+  }
+  .app-header__nav::-webkit-scrollbar {
+    display: none;
+  }
+  .app-nav-link {
+    padding: 0 12px;
+    font-size: 13px;
+  }
+  .app-nav-dropdown__menu {
+    position: fixed;
+    top: calc(var(--app-header-h, 116px) + 4px);
+    left: 16px;
+    right: 16px;
+    min-width: 0;
+    width: auto;
+    max-width: none;
+    z-index: 80;
+  }
+  .app-nav-dropdown:focus-within:not(.is-open) .app-nav-dropdown__menu {
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
   }
   .user-menu-trigger__meta {
     display: none;
@@ -716,6 +742,9 @@ button:active:not(:disabled) {
     text-align: center;
     padding: 8px 12px;
     line-height: 1.3;
+  }
+  .t-table .t-btn {
+    white-space: nowrap;
   }
 }
 .t-btn:hover:not(:disabled) {
@@ -1003,6 +1032,7 @@ textarea.t-input {
   flex-wrap: wrap;
   gap: 4px;
   padding: 4px;
+  max-width: 100%;
   border-radius: var(--radius-lg);
   background: var(--bg-surface-subtle);
   border: 1px solid var(--border-subtle);
@@ -1087,6 +1117,17 @@ textarea.t-input {
   border-bottom: 1px solid var(--border-subtle);
   vertical-align: middle;
 }
+.t-table td code {
+  display: inline-block;
+  white-space: nowrap;
+  padding: 2px 8px;
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: normal;
+}
+.t-nowrap {
+  white-space: nowrap;
+}
 .t-card--flush .t-table th:first-child,
 .t-card--flush .t-table td:first-child {
   padding-left: var(--card-pad);
@@ -1110,12 +1151,15 @@ textarea.t-input {
   text-align: center;
   white-space: nowrap;
 }
-.t-table .actions {
+.t-table .actions,
+.t-table td.t-right,
+.t-table th.t-right {
   text-align: right;
   white-space: nowrap;
   width: 1%;
 }
-.t-table td.actions .t-actions {
+.t-table td.actions .t-actions,
+.t-table td.t-right .t-actions {
   justify-content: flex-end;
   flex-wrap: nowrap;
 }
@@ -2402,17 +2446,19 @@ textarea.t-input {
 }
 .ls-title-input {
   width: 100%;
-  min-height: 48px;
-  padding: 8px 12px;
+  min-height: 52px;
+  padding: 10px 14px;
   font-family: var(--font-sans);
-  font-size: clamp(18px, 2.5vw, 24px);
+  font-size: clamp(18px, 2vw, 22px);
   font-weight: 800;
+  line-height: 1.35;
   letter-spacing: -0.02em;
   color: var(--text-primary);
   background: var(--bg-surface-subtle);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
   box-sizing: border-box;
+  resize: vertical;
 }
 
 .ls-inherited-section {
@@ -3282,10 +3328,8 @@ textarea.t-input {
   gap: 20px;
   align-items: start;
 }
-@media (max-width: 960px) {
-  .m-banks-layout {
-    grid-template-columns: 1fr;
-  }
+.m-banks-layout > * {
+  min-width: 0;
 }
 .m-tree-panel {
   background: var(--bg-surface);
@@ -3296,6 +3340,16 @@ textarea.t-input {
   top: 84px;
   max-height: calc(100vh - 108px);
   overflow-y: auto;
+}
+@media (max-width: 960px) {
+  .m-banks-layout {
+    grid-template-columns: 1fr;
+  }
+  .m-tree-panel {
+    position: static;
+    top: auto;
+    max-height: 280px;
+  }
 }
 .m-tree-node {
   width: 100%;
@@ -3312,6 +3366,14 @@ textarea.t-input {
   text-align: left;
   cursor: pointer;
   font-size: var(--text-sm);
+}
+.m-tree-node > span:first-child {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.m-tree-node > span:last-child {
+  flex-shrink: 0;
 }
 .m-tree-node:hover {
   background: var(--bg-surface-subtle);
@@ -3473,10 +3535,28 @@ textarea.t-input {
   align-items: center;
   gap: 4px;
   padding: 4px;
+  max-width: 100%;
   border-radius: var(--radius-pill);
   background: var(--bg-surface-subtle);
   border: 1px solid var(--border-subtle);
   flex-wrap: wrap;
+}
+@media (max-width: 640px) {
+  .bento-segmented {
+    display: flex;
+    width: 100%;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+  .bento-segmented::-webkit-scrollbar {
+    display: none;
+  }
+  .bento-seg-btn {
+    flex-shrink: 0;
+    padding: 0 12px;
+  }
 }
 .bento-seg-btn {
   min-height: 44px;
@@ -3759,6 +3839,7 @@ textarea.t-input {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  flex-wrap: wrap;
   gap: 12px;
   padding: 12px 16px;
   border-radius: var(--radius-md);

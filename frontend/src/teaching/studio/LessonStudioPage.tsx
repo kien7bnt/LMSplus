@@ -76,6 +76,7 @@ const BLOCK_TYPE_NAMES: Record<string, string> = {
   inline_mcq: 'Câu hỏi trắc nghiệm nhanh',
   assignment: 'Bài tập thực hành',
   assignment_link: 'Liên kết bài tập',
+  step_by_step_solution: 'Lời giải từng bước',
   embed: 'Học liệu nhúng an toàn',
 };
 
@@ -1708,8 +1709,9 @@ export const LessonStudioPage: React.FC<{ mode?: 'COURSE' | 'CLASS' }> = ({ mode
                         )}
                       </div>
                     </div>
-                    <input
+                    <textarea
                       className="ls-title-input"
+                      rows={2}
                       disabled={!canEdit}
                       value={lessonMeta.title}
                       onChange={(e) => {

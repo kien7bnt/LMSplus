@@ -548,7 +548,7 @@ const ResourcesSection: React.FC<{ courseId: string }> = ({ courseId }) => {
                 <th>Loại</th>
                 <th>Người thêm</th>
                 <th>Ngày thêm</th>
-                <th />
+                <th className="actions">Thao tác</th>
               </tr>
             </thead>
             <tbody>
@@ -567,10 +567,10 @@ const ResourcesSection: React.FC<{ courseId: string }> = ({ courseId }) => {
                       ? `Tệp ${fmtBytes(r.file_size_bytes)}`
                       : 'Liên kết'}
                   </td>
-                  <td>{r.created_by_name || '—'}</td>
-                  <td className="tabular-nums">{fmtDate(r.created_at)}</td>
-                  <td>
-                    <div className="t-actions" style={{ justifyContent: 'flex-end' }}>
+                  <td><span className="t-nowrap">{r.created_by_name || '—'}</span></td>
+                  <td className="tabular-nums t-nowrap">{fmtDate(r.created_at)}</td>
+                  <td className="actions">
+                    <div className="t-actions">
                       <Btn
                         small
                         onClick={async () => {

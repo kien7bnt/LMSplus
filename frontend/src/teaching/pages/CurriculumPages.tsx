@@ -106,7 +106,7 @@ export const CurriculumListPage: React.FC = () => {
                     <th>Khóa đang dùng</th>
                     <th>Trạng thái</th>
                     <th>Cập nhật</th>
-                    <th></th>
+                    <th className="actions">Thao tác</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -120,14 +120,16 @@ export const CurriculumListPage: React.FC = () => {
                         {c.description && <div className="t-muted t-small">{c.description}</div>}
                       </td>
                       <td className="tabular-nums">v{c.version}</td>
-                      <td className="tabular-nums">{c.subjects_count} môn</td>
-                      <td className="tabular-nums">{c.cohorts_count} khóa</td>
+                      <td className="tabular-nums t-nowrap">{c.subjects_count} môn</td>
+                      <td className="tabular-nums t-nowrap">{c.cohorts_count} khóa</td>
                       <td><Badge kind="curriculum" value={c.status} /></td>
-                      <td className="tabular-nums">{fmtDate(c.updated_at)}</td>
-                      <td className="t-right">
-                        <Btn small onClick={() => nav(`/teaching/curricula/${c.id}`)}>
-                          Chi tiết
-                        </Btn>
+                      <td className="tabular-nums t-nowrap">{fmtDate(c.updated_at)}</td>
+                      <td className="actions">
+                        <div className="t-actions">
+                          <Btn small onClick={() => nav(`/teaching/curricula/${c.id}`)}>
+                            Chi tiết
+                          </Btn>
+                        </div>
                       </td>
                     </tr>
                   ))}
@@ -300,13 +302,13 @@ export const CurriculumDetailPage: React.FC = () => {
                     <th>Số giờ</th>
                     <th>Loại</th>
                     <th>Ghi chú</th>
-                    <th></th>
+                    <th className="actions">Thao tác</th>
                   </tr>
                 </thead>
                 <tbody>
                   {c.subjects.map((s) => (
                     <tr key={s.id}>
-                      <td className="tabular-nums">HK {s.semester_order}</td>
+                      <td className="tabular-nums t-nowrap">HK {s.semester_order}</td>
                       <td><code>{s.course_code}</code></td>
                       <td>
                         <Link to={`/teaching/courses/${s.course_id}`} className="t-row-link">
@@ -314,16 +316,18 @@ export const CurriculumDetailPage: React.FC = () => {
                         </Link>
                         <div className="t-muted t-small">GV: {s.instructor_name}</div>
                       </td>
-                      <td className="tabular-nums">{s.latest_version_number ? `v${s.latest_version_number}.0` : 'Bản nháp'}</td>
-                      <td className="tabular-nums">{s.planned_periods} tiết</td>
-                      <td className="tabular-nums">{s.planned_hours} giờ</td>
-                      <td>{s.is_mandatory ? 'Bắt buộc' : 'Tự chọn'}</td>
+                      <td className="tabular-nums t-nowrap">{s.latest_version_number ? `v${s.latest_version_number}.0` : 'Bản nháp'}</td>
+                      <td className="tabular-nums t-nowrap">{s.planned_periods} tiết</td>
+                      <td className="tabular-nums t-nowrap">{s.planned_hours} giờ</td>
+                      <td className="t-nowrap">{s.is_mandatory ? 'Bắt buộc' : 'Tự chọn'}</td>
                       <td className="t-small">{s.note || '—'}</td>
-                      <td className="t-right">
+                      <td className="actions">
                         {c.capabilities.can_manage && (
-                          <Btn small variant="ghost" onClick={() => setRemovingItem({ id: s.id, title: s.course_title })}>
-                            Gỡ môn
-                          </Btn>
+                          <div className="t-actions">
+                            <Btn small variant="ghost" onClick={() => setRemovingItem({ id: s.id, title: s.course_title })}>
+                              Gỡ môn
+                            </Btn>
+                          </div>
                         )}
                       </td>
                     </tr>
@@ -350,7 +354,7 @@ export const CurriculumDetailPage: React.FC = () => {
                     <th>Mã khóa</th>
                     <th>Tên khóa học</th>
                     <th>Niên khóa / Kỳ</th>
-                    <th>Học viên (DISTINCT)</th>
+                    <th>Học viên thực tế</th>
                     <th>Số môn học</th>
                     <th>Trạng thái</th>
                   </tr>
