@@ -15,6 +15,8 @@ export const fmtWeekday = (iso: string) =>
 export const fmtBytes = (n?: number | null) =>
   !n ? '' : n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(0)} KB` : `${(n / 1048576).toFixed(1)} MB`;
 export const fmtPct = (n: number | null | undefined) => (n === null || n === undefined ? '—' : `${n.toLocaleString('vi-VN')}%`);
+export const fmtMoney = (n: number | null | undefined) =>
+  n === null || n === undefined ? '0 ₫' : `${Math.round(Number(n) || 0).toLocaleString('vi-VN')} ₫`;
 /** Ngày hôm nay theo giờ Việt Nam (YYYY-MM-DD). */
 export const todayVn = (offsetDays = 0) =>
   new Date(Date.now() + offsetDays * 86400000).toLocaleDateString('en-CA', { timeZone: TZ });
@@ -375,6 +377,59 @@ const LABELS: Record<string, Record<string, [string, string]>> = {
     DISCUSSION: ['Thảo luận chuyên môn', 'neutral'],
     ANNOUNCEMENT: ['Thông báo giảng viên', 'warning'],
     EXPERIENCE: ['Chia sẻ kinh nghiệm', 'success'],
+  },
+  lifecycleStatus: {
+    DRAFT: ['Đang biên soạn', 'neutral'],
+    PENDING_APPROVAL: ['Chờ duyệt', 'warning'],
+    PUBLISHED: ['Đã ban hành', 'success'],
+    DEPRECATED: ['Ngừng áp dụng', 'muted'],
+  },
+  roomType: {
+    THEORY_ROOM: ['Phòng lý thuyết', 'neutral'],
+    COMPUTER_LAB: ['Phòng máy', 'info'],
+    ONLINE: ['Trực tuyến', 'success'],
+  },
+  assessmentSource: {
+    ATTENDANCE: ['Điểm danh', 'info'],
+    ASSIGNMENT: ['Bài tập', 'info'],
+    EXAM: ['Bài kiểm tra', 'warning'],
+    EXAM_MATRIX: ['Ma trận đề', 'warning'],
+    MANUAL: ['Nhập tay', 'neutral'],
+  },
+  resourceUsage: {
+    MANDATORY: ['Bắt buộc', 'warning'],
+    REFERENCE: ['Tham khảo', 'info'],
+  },
+  programType: {
+    INSTRUCTOR_LED: ['Có lớp & Giảng viên', 'success'],
+    SELF_PACED: ['Tự học (EL-Q4)', 'info'],
+  },
+  scheduleState: {
+    UNSCHEDULED: ['Chưa xếp lịch', 'muted'],
+    DRAFT: ['Bản nháp TKB', 'warning'],
+    PUBLISHED: ['Đã công bố', 'success'],
+  },
+  sessionKind: {
+    REGULAR: ['Chính khóa', 'neutral'],
+    MAKEUP: ['Dạy bù', 'warning'],
+  },
+  hourCategory: {
+    THEORY: ['Lý thuyết', 'neutral'],
+    PRACTICE: ['Thực hành', 'info'],
+    ONLINE: ['Trực tuyến', 'success'],
+  },
+  timesheetStatus: {
+    DRAFT: ['Bản nháp', 'neutral'],
+    PENDING_TEACHER: ['Chờ GV xác nhận', 'warning'],
+    DISPUTED: ['GV phản hồi sai sót', 'danger'],
+    TEACHER_CONFIRMED: ['GV đã xác nhận', 'info'],
+    APPROVED: ['Đã duyệt', 'success'],
+    LOCKED: ['Đã khóa & Chuyển Tài chính', 'success'],
+  },
+  stageType: {
+    SEMESTER: ['Học kỳ', 'info'],
+    PHASE: ['Giai đoạn', 'neutral'],
+    CUSTOM: ['Tùy chỉnh', 'neutral'],
   },
 };
 export const label = (kind: keyof typeof LABELS | string, value: string | null | undefined) =>

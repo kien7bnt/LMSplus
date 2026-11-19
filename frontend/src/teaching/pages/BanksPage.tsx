@@ -478,6 +478,12 @@ export const BanksPage: React.FC = () => {
                             <tr key={r.id}>
                               <td style={{ minWidth: 180 }}>
                                 <strong>{r.title}</strong>
+                                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 4 }}>
+                                  <Badge kind="resourceUsage" value={r.usage_type || 'MANDATORY'} />
+                                  {(r.tags || []).map((tg) => (
+                                    <span key={tg} className="t-badge t-badge--neutral">{tg}</span>
+                                  ))}
+                                </div>
                                 {r.description && <div className="t-small t-muted">{r.description}</div>}
                               </td>
                               <td><Badge kind="course" value={r.resource_type === 'VIDEO' ? 'PUBLISHED' : 'DRAFT'}>{r.resource_type}</Badge></td>
@@ -943,6 +949,8 @@ const CreateBankAssignmentModal: React.FC<{
   const [instructions, setInstructions] = useState('');
   const [submissionType, setSubmissionType] = useState<AssignmentSubmissionType>('MIXED');
   const [maxScore, setMaxScore] = useState(10);
+  const [relativeDueDays, setRelativeDueDays] = useState(7);
+  const [isMandatory, setIsMandatory] = useState(true);
   const [maxScoreTouched, setMaxScoreTouched] = useState(false);
   const [selectedQuestions, setSelectedQuestions] = useState<BankQuestionAttachment[]>([]);
   const [busy, setBusy] = useState(false);
@@ -988,6 +996,8 @@ const CreateBankAssignmentModal: React.FC<{
         instructions: finalInstructions,
         submission_type: submissionType,
         max_score: Number(maxScore) || 10,
+        relative_due_days: Number(relativeDueDays) || null,
+        is_mandatory: isMandatory,
         attachments: selectedQuestions as unknown as Array<Record<string, unknown>>,
       });
       onCreated();
@@ -1034,6 +1044,22 @@ const CreateBankAssignmentModal: React.FC<{
               setMaxScore(Number(e.target.value));
             }}
           />
+        </Field>
+        <Field label="Hạn nộp tương đối (ngày sau buổi học)" hint="Quy ra ngày cụ thể khi công bố TKB">
+          <input
+            type="number"
+            min={0}
+            max={90}
+            className="t-input tabular-nums"
+            value={relativeDueDays}
+            onChange={(e) => setRelativeDueDays(Number(e.target.value))}
+          />
+        </Field>
+        <Field label="Tính chất bài tập">
+          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, minHeight: 44, cursor: 'pointer' }}>
+            <input type="checkbox" checked={isMandatory} onChange={(e) => setIsMandatory(e.target.checked)} />
+            <span>Bài tập bắt buộc (điều kiện dự thi)</span>
+          </label>
         </Field>
         <BankQuestionPicker
           courseId={picked?.courseId}
@@ -1086,6 +1112,8 @@ const CreateBankResourceModal: React.FC<{
   const [resourceType, setResourceType] = useState<'LINK' | 'VIDEO' | 'PDF' | 'FILE'>('PDF');
   const [url, setUrl] = useState('');
   const [file, setFile] = useState<File | null>(null);
+  const [usageType, setUsageType] = useState<'MANDATORY' | 'REFERENCE'>('MANDATORY');
+  const [tagInput, setTagInput] = useState('');
   const [description, setDescription] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -1122,6 +1150,7 @@ const CreateBankResourceModal: React.FC<{
     }
     setBusy(true);
     try {
+      const parsedTags = tagInput.split(',').map((t) => t.trim()).filter(Boolean);
       if (mode === 'UPLOAD' && file) {
         const data_base64 = await readFileAsBase64(file);
         await masterApi.createResourceBankItem({
@@ -1132,6 +1161,8 @@ const CreateBankResourceModal: React.FC<{
           resource_type: resourceType === 'LINK' ? 'FILE' : resourceType,
           file_name: file.name,
           data_base64,
+          usage_type: usageType,
+          tags: parsedTags,
           description: description.trim(),
         });
       } else {
@@ -1142,6 +1173,8 @@ const CreateBankResourceModal: React.FC<{
           title: title.trim(),
           resource_type: resourceType,
           url: url.trim(),
+          usage_type: usageType,
+          tags: parsedTags,
           description: description.trim(),
         });
       }
@@ -1194,6 +1227,15 @@ const CreateBankResourceModal: React.FC<{
 
         <Field label="Tên tài nguyên" required wide>
           <input className="t-input" value={title} onChange={(e) => setTitle(e.target.value)} required />
+        </Field>
+        <Field label="Phân loại tài liệu (Preset)">
+          <select className="t-input" value={usageType} onChange={(e) => setUsageType(e.target.value as 'MANDATORY' | 'REFERENCE')}>
+            <option value="MANDATORY">Bắt buộc (Học tập chính quy)</option>
+            <option value="REFERENCE">Tham khảo (Đọc thêm)</option>
+          </select>
+        </Field>
+        <Field label="Tag tùy chọn (phân tách bằng dấu phẩy)">
+          <input className="t-input" value={tagInput} onChange={(e) => setTagInput(e.target.value)} placeholder="VD: Slide, Đề cương, Đọc thêm" />
         </Field>
 
         {mode === 'UPLOAD' ? (

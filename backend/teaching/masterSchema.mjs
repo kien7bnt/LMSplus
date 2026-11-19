@@ -9,6 +9,11 @@
 
 import crypto from 'node:crypto';
 import { insertClassSession, vnDate, vnDateTime } from './schema.mjs';
+import {
+  ensureTrainingLifecycleSchema,
+  clearTrainingLifecycleData,
+  seedTrainingLifecycleStarterData,
+} from './trainingLifecycleSchema.mjs';
 
 export const MASTER_LMS_SEED_MARKER = 'master_lms_seed_v1';
 
@@ -586,6 +591,7 @@ export function ensureMasterLmsSchema(db) {
   recreateLeaveRequestsIfNeeded(db);
   recreateVideoWatchProgressIfNeeded(db);
   recreateLessonProgressIfNeeded(db);
+  ensureTrainingLifecycleSchema(db);
 }
 
 function recreateLeaveRequestsIfNeeded(db) {
@@ -641,6 +647,7 @@ function recreateLeaveRequestsIfNeeded(db) {
 }
 
 export function clearMasterLmsData(db) {
+  clearTrainingLifecycleData(db);
   db.exec(`
     DELETE FROM teaching_notifications;
     DELETE FROM teaching_forum_mod_logs;
@@ -765,7 +772,7 @@ export function buildCourseSnapshotPayload(db, courseId) {
           .all(l.id);
       }
       resourcesByLesson[l.id] = db
-        .prepare('SELECT id, title, resource_type, storage_key FROM learning_resources WHERE lesson_id = ? AND deleted_at IS NULL')
+        .prepare('SELECT id, title, resource_type, storage_key, usage_type FROM learning_resources WHERE lesson_id = ? AND deleted_at IS NULL')
         .all(l.id);
     }
   }
@@ -774,8 +781,23 @@ export function buildCourseSnapshotPayload(db, courseId) {
     .prepare("SELECT id, title, slug, topic_id, chapter_id, lesson_id, summary FROM course_wiki_pages WHERE course_id = ? AND deleted_at IS NULL AND status = 'PUBLISHED'")
     .all(courseId);
 
+  const assessmentComponents = db
+    .prepare('SELECT id, code, title, weight_pct, source_type, source_config_json, is_mandatory, sort_order FROM course_assessment_components WHERE course_id = ? ORDER BY sort_order, id')
+    .all(courseId);
+  const sessionPlan = db
+    .prepare("SELECT id, session_order, title, duration_minutes, periods_count, delivery_mode, required_room_type, lesson_ids_json, note FROM session_plan_items WHERE scope_type = 'COURSE' AND course_id = ? ORDER BY session_order")
+    .all(courseId);
+  const assignmentTemplates = db
+    .prepare('SELECT id, lesson_id, title, description, instructions, submission_type, max_score, max_attempts, allow_resubmit, relative_due_days, is_mandatory, attachments_json FROM assignment_bank_items WHERE course_id = ? AND deleted_at IS NULL ORDER BY created_at')
+    .all(courseId);
+
+  let outcomes = [];
+  let examConditions = { min_attendance_pct: 70, require_all_mandatory_assignments: true };
+  try { outcomes = JSON.parse(course.outcomes_json || '[]'); } catch { /* ignore */ }
+  try { examConditions = JSON.parse(course.exam_conditions_json || '{}'); } catch { /* ignore */ }
+
   return {
-    schema_version: '1.0',
+    schema_version: '2.0',
     course: {
       id: course.id,
       code: course.code,
@@ -783,7 +805,20 @@ export function buildCourseSnapshotPayload(db, courseId) {
       subject: course.subject || '',
       description: course.description || '',
       objectives: course.objectives || '',
+      outcomes,
+      reference_tuition_fee: Number(course.reference_tuition_fee || 0),
+      theory_periods: Number(course.theory_periods || 0),
+      practice_periods: Number(course.practice_periods || 0),
+      self_study_periods: Number(course.self_study_periods || 0),
+      minutes_per_period: Number(course.minutes_per_period || 45),
+      required_room_type: course.required_room_type || 'THEORY_ROOM',
+      grading_scale: Number(course.grading_scale || 10),
+      pass_score: Number(course.pass_score || 5),
+      exam_conditions: examConditions,
     },
+    assessment_components: assessmentComponents,
+    session_plan: sessionPlan,
+    assignment_templates: assignmentTemplates,
     topics,
     chapters,
     lessons,
@@ -799,7 +834,10 @@ export function seedMasterLmsStarterData(db) {
   ensureCourseTopicsBackfill(db);
 
   const marker = db.prepare('SELECT value FROM app_meta WHERE key = ?').get(MASTER_LMS_SEED_MARKER);
-  if (marker) return;
+  if (marker) {
+    seedTrainingLifecycleStarterData(db);
+    return;
+  }
 
   const toanCourse = db.prepare("SELECT * FROM courses WHERE id = 'crs_toan5'").get()
     || db.prepare("SELECT * FROM courses WHERE department_id = 'khoi_5' ORDER BY id LIMIT 1").get();
@@ -1160,6 +1198,7 @@ export function seedMasterLmsStarterData(db) {
 
     db.prepare(`INSERT OR REPLACE INTO app_meta (key, value) VALUES ('${MASTER_LMS_SEED_MARKER}', '1')`).run();
     db.exec('COMMIT');
+    seedTrainingLifecycleStarterData(db);
   } catch (err) {
     try { db.exec('ROLLBACK'); } catch { /* ignore */ }
     throw err;

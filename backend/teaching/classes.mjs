@@ -843,6 +843,7 @@ export function registerClassRoutes(route) {
 
   route('PATCH', '/sessions/:id', ({ db, user, body, params }) => {
     const { session } = requireSession(db, user, params.id, 'can_manage_sessions');
+    if (session.timesheet_locked_id) fail(409, 'SESSION_TIMESHEET_LOCKED', 'Buổi học đã khóa bảng giờ giảng chuyển Tài chính, không thể chỉnh sửa.');
     const f = {};
     if ('title' in body) f.session_title = text(body, 'title', { required: true, max: 200, label: 'nội dung buổi học' });
     if ('teaching_content' in body) f.teaching_content = text(body, 'teaching_content', { max: 2000, label: 'nội dung giảng dạy chi tiết' });
@@ -868,6 +869,7 @@ export function registerClassRoutes(route) {
 
   route('POST', '/sessions/:id/cancel', ({ db, user, body, params, log }) => {
     const { session } = requireSession(db, user, params.id, 'can_manage_sessions');
+    if (session.timesheet_locked_id) fail(409, 'SESSION_TIMESHEET_LOCKED', 'Buổi học đã khóa bảng giờ giảng chuyển Tài chính, không thể hủy.');
     const reason = text(body, 'reason', { required: true, max: 500, label: 'lý do hủy' });
     if (session.session_status === 'CANCELLED') fail(409, 'SESSION_ALREADY_CANCELLED', 'Buổi học đã được hủy trước đó.');
     tx(db, () => {
@@ -935,7 +937,7 @@ export function registerClassRoutes(route) {
     const params = [`${from}T00:00:00+07:00`, `${to}T23:59:59+07:00`];
     let classFilter;
     if (isStudent(user) && !isInstructor(user) && !isStaff(user) && !isAdmin(user)) {
-      classFilter = `s.subject_class_id IN (SELECT subject_class_id FROM class_enrollments WHERE student_id = ? AND status = 'ACTIVE')`;
+      classFilter = `s.subject_class_id IN (SELECT subject_class_id FROM class_enrollments WHERE student_id = ? AND status = 'ACTIVE') AND COALESCE(s.schedule_state, 'PUBLISHED') = 'PUBLISHED'`;
       params.push(user.id);
     } else {
       const scope = classScopeSql(user);

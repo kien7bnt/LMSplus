@@ -124,6 +124,11 @@ function curriculumDto(db, row) {
     effective_date: row.effective_date || null,
     department_id: row.department_id || null,
     status: row.status,
+    lifecycle_status: row.lifecycle_status || (row.status === 'ACTIVE' ? 'PUBLISHED' : row.status === 'ARCHIVED' ? 'DEPRECATED' : 'DRAFT'),
+    program_type: row.program_type || 'INSTRUCTOR_LED',
+    delivery_mode: row.delivery_mode || 'HYBRID',
+    standard_duration_text: row.standard_duration_text || '',
+    final_tuition_fee: Number(row.final_tuition_fee || 0),
     subjects_count: subjectsCount,
     cohorts_count: cohortsCount,
     created_at: row.created_at,
@@ -212,14 +217,20 @@ export function registerCurriculaAndCohortRoutes(route) {
     const version = text(body, 'version', { max: 32, label: 'phiên bản' }) || '1.0';
     const effectiveDate = dateField(body, 'effective_date', { label: 'ngày hiệu lực' });
     const status = oneOf(body, 'status', ['DRAFT', 'ACTIVE'], { fallback: 'ACTIVE', label: 'trạng thái' });
+    const lifecycleStatus = body.lifecycle_status
+      ? oneOf(body, 'lifecycle_status', ['DRAFT', 'PENDING_APPROVAL', 'PUBLISHED', 'DEPRECATED'], { fallback: 'PUBLISHED', label: 'trạng thái ban hành' })
+      : status === 'ACTIVE'
+        ? 'PUBLISHED'
+        : 'DRAFT';
+    const mappedStatus = lifecycleStatus === 'PUBLISHED' ? 'ACTIVE' : lifecycleStatus === 'DEPRECATED' ? 'ARCHIVED' : 'DRAFT';
     const id = `curr_${crypto.randomBytes(5).toString('hex')}`;
     const now = nowIso();
 
     tx(db, () => {
       db.prepare(
-        `INSERT INTO curricula (id, code, title, description, version, effective_date, department_id, status, created_by, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      ).run(id, code, title, description, version, effectiveDate, deptId, status, user.id, now, now);
+        `INSERT INTO curricula (id, code, title, description, version, effective_date, department_id, status, lifecycle_status, created_by, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run(id, code, title, description, version, effectiveDate, deptId, mappedStatus, lifecycleStatus, user.id, now, now);
       logCurriculumAudit(db, id, 'CURRICULUM_CREATED', { code, title, version }, user);
     });
     return [201, curriculumDto(db, db.prepare('SELECT * FROM curricula WHERE id = ?').get(id))];
@@ -429,6 +440,10 @@ export function registerCurriculaAndCohortRoutes(route) {
     if (!curr) fail(404, 'CURRICULUM_NOT_FOUND', 'Khung chương trình không tồn tại.');
     const deptId = body.department_id || curr.department_id || user.department_id || 'khoi_5';
     requireAdminOrStaff(user, deptId);
+    const effLifecycle = curr.lifecycle_status || (curr.status === 'ACTIVE' ? 'PUBLISHED' : 'DRAFT');
+    if (curr.status !== 'ACTIVE' || effLifecycle !== 'PUBLISHED') {
+      fail(422, 'CURRICULUM_NOT_PUBLISHED', 'Chỉ Khung chương trình ở trạng thái "Đã ban hành" mới được mở lớp khóa học.');
+    }
 
     const code = text(body, 'code', { required: true, max: 40, label: 'mã lớp khóa học' }).toUpperCase();
     if (!CURR_CODE_RE.test(code)) fail(422, 'VALIDATION_ERROR', 'Mã lớp khóa học không hợp lệ.');

@@ -401,6 +401,10 @@ export function registerBankRoutes(route, { uploadsDir } = {}) {
     const maxScore = Number.isFinite(Number(body.max_score)) ? Math.max(1, Math.min(1000, Number(body.max_score))) : 10;
     const maxAttempts = intField(body, 'max_attempts', { min: 1, max: 20, label: 'số lần nộp tối đa' }) ?? 3;
     const allowResubmit = body.allow_resubmit === false ? 0 : 1;
+    const relDays = body.relative_due_days === undefined || body.relative_due_days === null || body.relative_due_days === ''
+      ? null
+      : Math.max(0, Math.min(90, Math.round(Number(body.relative_due_days))));
+    const isMandatory = body.is_mandatory === false ? 0 : 1;
     const rubric = Array.isArray(body.rubric) ? body.rubric.slice(0, 20) : [];
     const attachments = Array.isArray(body.attachments) ? body.attachments.slice(0, 20) : [];
     const tags = Array.isArray(body.tags) ? body.tags.slice(0, 12) : [];
@@ -410,12 +414,14 @@ export function registerBankRoutes(route, { uploadsDir } = {}) {
     db.prepare(
       `INSERT INTO assignment_bank_items (
          id, course_id, topic_id, chapter_id, lesson_id, title, description, instructions,
-         submission_type, max_score, max_attempts, allow_resubmit, rubric_json, attachments_json, tags_json, status,
+         submission_type, max_score, max_attempts, allow_resubmit, relative_due_days, is_mandatory,
+         rubric_json, attachments_json, tags_json, status,
          created_by, created_at, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?, ?)`
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?, ?)`
     ).run(
       id, course.id, topic?.id || null, chapter.id, lesson.id, title, description, instructions,
-      submissionType, maxScore, maxAttempts, allowResubmit, JSON.stringify(rubric), JSON.stringify(attachments), JSON.stringify(tags),
+      submissionType, maxScore, maxAttempts, allowResubmit, relDays, isMandatory,
+      JSON.stringify(rubric), JSON.stringify(attachments), JSON.stringify(tags),
       user.id, now, now
     );
     return [201, db.prepare('SELECT * FROM assignment_bank_items WHERE id = ?').get(id)];
@@ -543,6 +549,8 @@ export function registerBankRoutes(route, { uploadsDir } = {}) {
         file_size_bytes: r.file_size_bytes || null,
         duration_seconds: r.duration_seconds || null,
         visibility: r.visibility || 'ENROLLED',
+        usage_type: r.usage_type || 'MANDATORY',
+        tags: safeJson(r.tags_json, []),
         updated_at: r.updated_at,
       })),
       page,
@@ -556,6 +564,8 @@ export function registerBankRoutes(route, { uploadsDir } = {}) {
     const title = text(body, 'title', { required: true, min: 2, max: 200, label: 'tên tài nguyên' });
     const description = text(body, 'description', { max: 2000, label: 'mô tả' }) || '';
     const visibility = oneOf(body, 'visibility', ['ENROLLED', 'INSTRUCTOR_ONLY'], { fallback: 'ENROLLED', label: 'quyền xem' });
+    const usageType = oneOf(body, 'usage_type', ['MANDATORY', 'REFERENCE'], { fallback: 'MANDATORY', label: 'phân loại tài liệu' });
+    const tags = Array.isArray(body?.tags) ? body.tags.map((t) => String(t).trim()).filter(Boolean).slice(0, 12) : [];
     const hasFile = typeof body?.data_base64 === 'string' && body.data_base64.trim().length > 0;
     const id = `res_${crypto.randomBytes(6).toString('hex')}`;
     const now = nowIso();
@@ -583,12 +593,12 @@ export function registerBankRoutes(route, { uploadsDir } = {}) {
 
       db.prepare(
         `INSERT INTO learning_resources (
-           id, course_id, topic_id, chapter_id, lesson_id, title, description, visibility,
+           id, course_id, topic_id, chapter_id, lesson_id, title, description, visibility, usage_type, tags_json,
            resource_type, storage_provider, storage_key, file_name, mime_type, file_size_bytes,
            checksum_sha256, status, processing_status, created_by, created_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'LOCAL_DISK', ?, ?, ?, ?, ?, 'READY', 'READY', ?, ?, ?)`
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'LOCAL_DISK', ?, ?, ?, ?, ?, 'READY', 'READY', ?, ?, ?)`
       ).run(
-        id, course.id, topic?.id || null, chapter.id, lesson.id, title, description, visibility,
+        id, course.id, topic?.id || null, chapter.id, lesson.id, title, description, visibility, usageType, JSON.stringify(tags),
         resourceType, storageKey, safeName, BANK_ALLOWED_EXT[ext], buf.length, sha256, user.id, now, now
       );
       return [201, {
@@ -599,6 +609,8 @@ export function registerBankRoutes(route, { uploadsDir } = {}) {
         lesson_id: lesson.id,
         title,
         resource_type: resourceType,
+        usage_type: usageType,
+        tags,
         storage_provider: 'LOCAL_DISK',
         file_name: safeName,
         file_size_bytes: buf.length,
@@ -617,11 +629,11 @@ export function registerBankRoutes(route, { uploadsDir } = {}) {
     if (!['http:', 'https:'].includes(u.protocol)) fail(422, 'VALIDATION_ERROR', 'Chỉ hỗ trợ đường dẫn http/https.');
     db.prepare(
       `INSERT INTO learning_resources (
-         id, course_id, topic_id, chapter_id, lesson_id, title, description, visibility,
+         id, course_id, topic_id, chapter_id, lesson_id, title, description, visibility, usage_type, tags_json,
          resource_type, storage_provider, storage_key, status, processing_status, created_by, created_at, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'EXTERNAL_URL', ?, 'READY', 'READY', ?, ?, ?)`
-    ).run(id, course.id, topic?.id || null, chapter.id, lesson.id, title, description, visibility, resourceType, u.toString(), user.id, now, now);
-    return [201, { id, course_id: course.id, topic_id: topic?.id || null, chapter_id: chapter.id, lesson_id: lesson.id, title, resource_type: resourceType, storage_provider: 'EXTERNAL_URL', url: u.toString() }];
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'EXTERNAL_URL', ?, 'READY', 'READY', ?, ?, ?)`
+    ).run(id, course.id, topic?.id || null, chapter.id, lesson.id, title, description, visibility, usageType, JSON.stringify(tags), resourceType, u.toString(), user.id, now, now);
+    return [201, { id, course_id: course.id, topic_id: topic?.id || null, chapter_id: chapter.id, lesson_id: lesson.id, title, resource_type: resourceType, usage_type: usageType, tags, storage_provider: 'EXTERNAL_URL', url: u.toString() }];
   });
 
   route('PATCH', '/banks/resources/:id', ({ db, user, body, params }) => {

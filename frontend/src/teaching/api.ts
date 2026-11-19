@@ -1352,6 +1352,11 @@ export interface CurriculumItem {
   effective_date: string | null;
   department_id: string | null;
   status: CurriculumStatus;
+  lifecycle_status?: 'DRAFT' | 'PENDING_APPROVAL' | 'PUBLISHED' | 'DEPRECATED';
+  program_type?: 'INSTRUCTOR_LED' | 'SELF_PACED';
+  delivery_mode?: DeliveryMode;
+  standard_duration_text?: string;
+  final_tuition_fee?: number;
   subjects_count: number;
   cohorts_count: number;
   created_at: string;
@@ -1596,6 +1601,8 @@ export interface AssignmentBankItem {
   max_score: number;
   max_attempts: number;
   allow_resubmit: boolean;
+  relative_due_days?: number | null;
+  is_mandatory?: boolean;
   tags: string[];
   attachments?: Array<Record<string, unknown>>;
   updated_at: string;
@@ -1620,6 +1627,8 @@ export interface BankResourceItem {
   file_name: string | null;
   file_size_bytes?: number | null;
   visibility: 'ENROLLED' | 'INSTRUCTOR_ONLY';
+  usage_type?: 'MANDATORY' | 'REFERENCE';
+  tags?: string[];
   updated_at: string;
 }
 
@@ -2140,7 +2149,725 @@ export const masterApi = {
         updated_at: string;
       }>;
     }>(`/classes/${classId}/video-analytics${qs(p)}`),
+
+  // =========================================================================
+  // PHÂN HỆ ĐÀO TẠO TOÀN VÒNG ĐỜI (1.1 MÔN HỌC · 1.2 KHUNG · 1.3 KHÓA HỌC · 2.1 TKB · 2.2 GIỜ DẠY)
+  // =========================================================================
+
+  // 1.1 Môn học — Thông số đào tạo, Tiên quyết, Đầu điểm, Đề cương, Chia buổi & Ban hành
+  getCourseTrainingProfile: (courseId: string) => get<CourseTrainingProfile>(`/courses/${courseId}/training-profile`),
+  saveCourseTrainingProfile: (courseId: string, body: Record<string, unknown>) =>
+    send<{ updated: boolean; lifecycle_status: LifecycleStatus; version_code: string; course: CourseTrainingProfile['course'] }>(
+      'PUT',
+      `/courses/${courseId}/training-profile`,
+      body
+    ),
+  saveCoursePrerequisites: (courseId: string, prerequisite_course_ids: string[]) =>
+    send<{ course_id: string; prerequisite_course_ids: string[] }>('PUT', `/courses/${courseId}/prerequisites`, { prerequisite_course_ids }),
+  saveCourseAssessmentComponents: (
+    courseId: string,
+    items: Array<{ code?: string; title: string; weight_pct: number; source_type: AssessmentSourceType; is_mandatory?: boolean }>
+  ) => send<{ items: AssessmentComponentItem[]; weight_sum_pct: number }>('PUT', `/courses/${courseId}/assessment-components`, { items }),
+  getCourseSyllabus: (courseId: string) => get<CourseSyllabusData>(`/courses/${courseId}/syllabus`),
+  updateResourceUsage: (resourceId: string, body: { usage_type: 'MANDATORY' | 'REFERENCE'; tags?: string[] }) =>
+    send<{ id: string; usage_type: 'MANDATORY' | 'REFERENCE'; tags: string[] }>('PATCH', `/resources/${resourceId}/usage`, body),
+  updateBankAssignmentMeta: (assignmentId: string, body: { relative_due_days?: number | null; is_mandatory?: boolean }) =>
+    send<{ id: string; relative_due_days: number | null; is_mandatory: boolean }>('PATCH', `/banks/assignments/${assignmentId}/meta`, body),
+  autoGenerateCourseSessionPlan: (courseId: string) =>
+    send<{ items: SessionPlanItem[] }>('POST', `/courses/${courseId}/session-plan/auto-generate`, {}),
+  saveCourseSessionPlan: (courseId: string, items: Array<Partial<SessionPlanItem>>) =>
+    send<{ items: SessionPlanItem[] }>('PUT', `/courses/${courseId}/session-plan`, { items }),
+  transitionCourseLifecycle: (
+    courseId: string,
+    body: { action: 'SUBMIT_REVIEW' | 'APPROVE_PUBLISH' | 'RETURN_DRAFT' | 'DEPRECATE' | 'START_NEW_VERSION'; version_label?: string; note?: string }
+  ) => send<{ id: string; lifecycle_status: LifecycleStatus; version_id?: string; version_code?: string; version_label?: string }>('POST', `/courses/${courseId}/lifecycle`, body),
+  compareCourseVersions: (courseId: string, p: { from_id?: string; to_id?: string } = {}) =>
+    get<CourseVersionCompareData>(`/courses/${courseId}/versions/compare${qs(p)}`),
+
+  // 1.2 Khung chương trình — Học phí & Dịch vụ, Giai đoạn, Tiên quyết, Chia buổi, Tốt nghiệp & Ban hành
+  getCurriculumBlueprint: (curriculumId: string) => get<CurriculumBlueprintData>(`/curricula/${curriculumId}/blueprint`),
+  saveCurriculumBlueprint: (curriculumId: string, body: Record<string, unknown>) =>
+    send<CurriculumStructureTotals>('PUT', `/curricula/${curriculumId}/blueprint`, body),
+  saveCurriculumStages: (
+    curriculumId: string,
+    items: Array<{ id?: string; code?: string; title: string; stage_type?: 'SEMESTER' | 'PHASE' | 'CUSTOM' }>
+  ) => send<CurriculumStructureTotals>('PUT', `/curricula/${curriculumId}/stages`, { items }),
+  saveCurriculumStructure: (
+    curriculumId: string,
+    items: Array<{
+      id: string;
+      stage_id: string | null;
+      semester_order?: number;
+      sort_order?: number;
+      planned_periods: number;
+      is_mandatory: boolean;
+      prerequisite_course_ids: string[];
+      note?: string;
+    }>
+  ) => send<CurriculumStructureTotals>('PUT', `/curricula/${curriculumId}/structure`, { items }),
+  saveCurriculumServiceFees: (
+    curriculumId: string,
+    items: Array<{ code?: string; title: string; amount: number; is_mandatory: boolean; note?: string }>
+  ) => send<CurriculumStructureTotals>('PUT', `/curricula/${curriculumId}/service-fees`, { items }),
+  autoGenerateCurriculumSessionPlan: (curriculumId: string, courseId: string) =>
+    send<{ items: SessionPlanItem[] }>('POST', `/curricula/${curriculumId}/session-plans/${courseId}/auto-generate`, {}),
+  saveCurriculumSessionPlan: (curriculumId: string, courseId: string, items: Array<Partial<SessionPlanItem>>) =>
+    send<{ items: SessionPlanItem[] }>('PUT', `/curricula/${curriculumId}/session-plans/${courseId}`, { items }),
+  transitionCurriculumLifecycle: (
+    curriculumId: string,
+    body: { action: 'SUBMIT_REVIEW' | 'APPROVE_PUBLISH' | 'RETURN_DRAFT' | 'DEPRECATE' | 'START_NEW_VERSION'; version_label?: string; note?: string }
+  ) => send<{ id: string; lifecycle_status: LifecycleStatus; version_id?: string; version?: string; version_label?: string }>('POST', `/curricula/${curriculumId}/lifecycle`, body),
+  compareCurriculumVersions: (curriculumId: string, p: { from_id?: string; to_id?: string } = {}) =>
+    get<CurriculumVersionCompareData>(`/curricula/${curriculumId}/versions/compare${qs(p)}`),
+
+  // 1.3 Khởi tạo Khóa học 5 bước
+  initializeCohortWizard: (body: Record<string, unknown>) =>
+    send<{
+      cohort_id: string;
+      code: string;
+      title: string;
+      classes: Array<{ id: string; code: string; course_id: string; course_title: string; sessions_count: number }>;
+      sessions_created: number;
+      assignments_copied: number;
+      assignments_due_resolved: number;
+      schedule_published: boolean;
+    }>('POST', '/training/cohorts/initialize', body),
+
+  // 2.1 Thời khóa biểu & Hạ tầng Cơ sở / Phòng / Lịch nghỉ / Lịch bận GV
+  getFacilitiesOverview: () => get<FacilitiesOverview>('/facilities/overview'),
+  createCampus: (body: { code: string; name: string; address?: string; open_time?: string; close_time?: string; travel_buffers?: Record<string, number> }) =>
+    send<CampusItem>('POST', '/facilities/campuses', body),
+  createClassroom: (body: { campus_id: string; code: string; name: string; room_type: RoomType; capacity: number; equipment_note?: string }) =>
+    send<ClassroomItem>('POST', '/facilities/classrooms', body),
+  createHoliday: (body: { campus_id?: string | null; title: string; start_date: string; end_date: string; is_recurring_yearly?: boolean; note?: string }) =>
+    send<AcademicHolidayItem>('POST', '/facilities/holidays', body),
+  deleteHoliday: (id: string) => send<{ deleted_id: string }>('DELETE', `/facilities/holidays/${id}`),
+  createInstructorAvailability: (body: {
+    instructor_id?: string;
+    rule_type: 'WEEKLY' | 'DATE';
+    weekday?: number;
+    specific_date?: string;
+    start_time: string;
+    end_time: string;
+    status?: 'BUSY' | 'AVAILABLE';
+    note?: string;
+  }) => send<InstructorAvailabilityItem>('POST', '/facilities/instructor-availabilities', body),
+  deleteInstructorAvailability: (id: string) => send<{ deleted_id: string }>('DELETE', `/facilities/instructor-availabilities/${id}`),
+  getTimetableGrid: (p: {
+    from?: string;
+    to?: string;
+    cohort_id?: string;
+    course_id?: string;
+    class_id?: string;
+    instructor_id?: string;
+    classroom_id?: string;
+    campus_id?: string;
+    shift_code?: string;
+    schedule_state?: string;
+  }) => get<TimetableGridData>(`/timetable/grid${qs(p)}`),
+  getTimetableSlotHints: (body: {
+    session_id?: string;
+    subject_class_id?: string;
+    week_start?: string;
+    dates?: string[];
+    campus_id?: string;
+    classroom_id?: string | null;
+    instructor_id?: string;
+  }) => send<{ slots: TimetableSlotHint[] }>('POST', '/timetable/slot-hints', body),
+  moveTimetableSession: (
+    sessionId: string,
+    body: {
+      date: string;
+      shift_code?: string;
+      start_time?: string;
+      end_time?: string;
+      campus_id?: string;
+      classroom_id?: string | null;
+      instructor_id?: string;
+      merged_group_code?: string | null;
+      is_substitute?: boolean;
+    }
+  ) => send<{ session_id: string; schedule_state: string }>('POST', `/timetable/sessions/${sessionId}/move`, body),
+  generateTimetableRecurrence: (body: Record<string, unknown>) =>
+    send<{ scheduled_count: number; skipped_holidays: string[]; skipped_conflicts: Array<{ date: string; reason: string }>; audit: TimetableAuditReport }>(
+      'POST',
+      '/timetable/generate-recurrence',
+      body
+    ),
+  autoScheduleTimetable: (body: { cohort_id?: string; class_ids?: string[]; start_date: string; end_date: string; campus_id?: string }) =>
+    send<{ draft_placed_count: number; unplaced_items: Array<{ class_id: string; class_code: string; title: string }>; audit: TimetableAuditReport }>(
+      'POST',
+      '/timetable/auto-schedule',
+      body
+    ),
+  copyTimetable: (body: Record<string, unknown>) =>
+    send<{ copied_count: number; skipped_count: number }>('POST', '/timetable/copy', body),
+  auditTimetable: (p: { cohort_id?: string; class_id?: string } = {}) =>
+    get<TimetableAuditReport>(`/timetable/audit${qs(p)}`),
+  publishTimetable: (body: { cohort_id?: string; class_ids?: string[]; allow_with_warnings?: boolean }) =>
+    send<{ published_sessions: number; assignments_due_resolved: number; notifications_sent: number; audit: TimetableAuditReport }>(
+      'POST',
+      '/timetable/publish',
+      body
+    ),
+  adjustTimetableSession: (sessionId: string, body: Record<string, unknown>) =>
+    send<Record<string, unknown>>('POST', `/timetable/sessions/${sessionId}/adjust`, body),
+
+  // 2.2 Thống kê & Chốt Giờ dạy chuyển Tài chính
+  recordSessionActualHours: (
+    sessionId: string,
+    body: {
+      actual_start_at?: string;
+      actual_end_at?: string;
+      actual_periods?: number;
+      hour_category?: 'THEORY' | 'PRACTICE' | 'ONLINE';
+      actual_instructor_id?: string;
+      substitute_reason?: string;
+    }
+  ) => send<Record<string, unknown>>('PATCH', `/teaching-hours/sessions/${sessionId}/record`, body),
+  listInstructorQuotas: (p: { period_key?: string; instructor_id?: string } = {}) =>
+    get<{ period_key: string; items: InstructorQuotaRow[] }>(`/teaching-hours/quotas${qs(p)}`),
+  saveInstructorQuota: (body: { instructor_id: string; period_key: string; standard_periods: number; standard_hours: number; note?: string }) =>
+    send<InstructorQuotaRow>('PUT', '/teaching-hours/quotas', body),
+  getTeachingHoursAnalytics: (p: {
+    period_month?: string;
+    from?: string;
+    to?: string;
+    instructor_id?: string;
+    course_id?: string;
+    class_id?: string;
+    include_future?: string;
+  } = {}) => get<TeachingHoursAnalytics>(`/teaching-hours/analytics${qs(p)}`),
+  listTeachingTimesheets: (p: { period_month?: string; instructor_id?: string } = {}) =>
+    get<{ period_month: string; items: TeachingTimesheetItem[] }>(`/teaching-hours/timesheets${qs(p)}`),
+  getTeachingTimesheetDetail: (timesheetId: string) =>
+    get<TeachingTimesheetItem & { items: TeachingTimesheetLineItem[] }>(`/teaching-hours/timesheets/${timesheetId}`),
+  generateTeachingTimesheets: (body: { period_month: string; instructor_id?: string; review_note?: string }) =>
+    send<{ period_month: string; generated_count: number; skipped_locked_ids: string[]; items: TeachingTimesheetItem[] }>(
+      'POST',
+      '/teaching-hours/timesheets/generate',
+      body
+    ),
+  teacherReviewTimesheet: (timesheetId: string, body: { decision: 'CONFIRM' | 'DISPUTE'; teacher_note?: string }) =>
+    send<TeachingTimesheetItem>('POST', `/teaching-hours/timesheets/${timesheetId}/teacher-review`, body),
+  approveTimesheet: (timesheetId: string, body: { review_note?: string; force_approve?: boolean } = {}) =>
+    send<TeachingTimesheetItem>('POST', `/teaching-hours/timesheets/${timesheetId}/approve`, body),
+  lockTimesheet: (timesheetId: string, body: { finance_batch_code?: string } = {}) =>
+    send<TeachingTimesheetItem>('POST', `/teaching-hours/timesheets/${timesheetId}/lock`, body),
+  exportFinanceTimesheetsCsv: (period_month: string) =>
+    apiDownload(`${T}/teaching-hours/timesheets/export-finance${qs({ period_month, format: 'csv', only_locked: 'false' })}`),
+  exportFinanceTimesheetsJson: (period_month: string) =>
+    get<{ period_month: string; exported_at: string; records_count: number; items: Array<TeachingTimesheetItem & { line_items: TeachingTimesheetLineItem[] }> }>(
+      `/teaching-hours/timesheets/export-finance${qs({ period_month, format: 'json', only_locked: 'false' })}`
+    ),
 };
+
+export type LifecycleStatus = 'DRAFT' | 'PENDING_APPROVAL' | 'PUBLISHED' | 'DEPRECATED';
+export type RoomType = 'THEORY_ROOM' | 'COMPUTER_LAB' | 'ONLINE';
+export type AssessmentSourceType = 'ATTENDANCE' | 'ASSIGNMENT' | 'EXAM' | 'EXAM_MATRIX' | 'MANUAL';
+
+export interface AssessmentComponentItem {
+  id?: string;
+  code: string;
+  title: string;
+  weight_pct: number;
+  source_type: AssessmentSourceType;
+  is_mandatory: boolean;
+}
+
+export interface SessionPlanItem {
+  id: string;
+  session_order: number;
+  title: string;
+  duration_minutes: number;
+  periods_count: number;
+  delivery_mode: DeliveryMode;
+  required_room_type: RoomType;
+  lesson_ids: string[];
+  lessons: Array<{ id: string; title: string; duration_minutes: number; chapter_title: string }>;
+  note: string;
+}
+
+export interface CourseTrainingProfile {
+  course: {
+    id: string;
+    code: string;
+    title: string;
+    subject: string;
+    department_id: string;
+    department_name: string;
+    instructor_id: string;
+    instructor_name: string;
+    description: string;
+    objectives: string;
+    outcomes: Array<{ code: string; text: string }>;
+    reference_tuition_fee: number;
+    theory_periods: number;
+    practice_periods: number;
+    self_study_periods: number;
+    minutes_per_period: number;
+    total_periods: number;
+    total_hours: number;
+    required_room_type: RoomType;
+    grading_scale: number;
+    pass_score: number;
+    exam_conditions: { min_attendance_pct: number; require_all_mandatory_assignments: boolean; extra_note?: string };
+    lifecycle_status: LifecycleStatus;
+    version_code: string;
+  };
+  prerequisites: Array<{ id: string; prerequisite_course_id: string; code: string; title: string; lifecycle_status: LifecycleStatus }>;
+  candidate_courses: Array<{ id: string; code: string; title: string; subject: string; lifecycle_status: LifecycleStatus }>;
+  assessment_components: AssessmentComponentItem[];
+  weight_sum_pct: number;
+  is_weight_valid: boolean;
+  session_plan: SessionPlanItem[];
+  lessons: Array<{ id: string; title: string; duration_minutes: number; chapter_title: string }>;
+  versions: Array<{ id: string; version_number: number; version_label: string; status: string; changelog_note: string; published_by_name: string; published_at: string }>;
+  capabilities: { can_manage: boolean; can_approve: boolean };
+}
+
+export interface CourseSyllabusData {
+  course: { id: string; code: string; title: string };
+  tree: Array<{
+    id: string;
+    code: string;
+    title: string;
+    chapters: Array<{
+      id: string;
+      code: string;
+      title: string;
+      lessons: Array<{
+        id: string;
+        code: string;
+        title: string;
+        duration_minutes: number;
+        publish_status: LessonStatus;
+        questions: Array<{ id: string; question_type: QuestionType; difficulty: string; prompt: string; points: number }>;
+        assignments: Array<{ id: string; title: string; submission_type: string; max_score: number; relative_due_days: number | null; is_mandatory: boolean }>;
+        resources: Array<{ id: string; title: string; resource_type: string; url: string | null; file_name: string | null; usage_type: 'MANDATORY' | 'REFERENCE'; tags: string[] }>;
+      }>;
+    }>;
+  }>;
+}
+
+export interface CourseVersionCompareData {
+  available_versions: Array<{ id: string; version_number: number; version_label: string; published_at: string }>;
+  diff: {
+    lessons_added: Array<{ id: string; title: string; duration_minutes: number }>;
+    lessons_removed: Array<{ id: string; title: string; duration_minutes: number }>;
+    lessons_modified: Array<{ id: string; old_title: string; new_title: string; old_duration: number; new_duration: number; content_changed: boolean }>;
+    duration_before: { theory: number; practice: number; self_study: number };
+    duration_after: { theory: number; practice: number; self_study: number };
+    tuition_before: number;
+    tuition_after: number;
+    assessment_before: AssessmentComponentItem[];
+    assessment_after: AssessmentComponentItem[];
+  } | null;
+}
+
+export interface CurriculumStageItem {
+  id: string;
+  code: string;
+  title: string;
+  stage_type: 'SEMESTER' | 'PHASE' | 'CUSTOM';
+  sort_order: number;
+  subjects_count: number;
+  total_periods: number;
+  total_hours: number;
+}
+
+export interface CurriculumStructureSubject {
+  id: string;
+  course_id: string;
+  course_code: string;
+  course_title: string;
+  stage_id: string | null;
+  semester_order: number;
+  sort_order: number;
+  planned_periods: number;
+  effective_periods: number;
+  effective_hours: number;
+  reference_tuition_fee: number;
+  required_room_type: RoomType;
+  is_mandatory: boolean;
+  prerequisite_course_ids: string[];
+  note: string;
+}
+
+export interface CurriculumServiceFeeItem {
+  id?: string;
+  code: string;
+  title: string;
+  amount: number;
+  is_mandatory: boolean;
+  note?: string;
+}
+
+export interface CurriculumStructureTotals {
+  stages: CurriculumStageItem[];
+  subjects: CurriculumStructureSubject[];
+  service_fees: CurriculumServiceFeeItem[];
+  prerequisite_warnings: Array<{
+    type: 'MISSING_PREREQUISITE_IN_CURRICULUM' | 'PREREQUISITE_ORDER_VIOLATION';
+    course_id: string;
+    course_code: string;
+    prerequisite_course_id: string;
+    prerequisite_code: string;
+    message: string;
+  }>;
+  totals: {
+    subjects_count: number;
+    mandatory_count: number;
+    elective_count: number;
+    total_periods: number;
+    total_hours: number;
+    subjects_tuition: number;
+    services_tuition: number;
+    auto_tuition_fee: number;
+    final_tuition_fee: number;
+    is_tuition_overridden: boolean;
+  };
+}
+
+export interface CurriculumBlueprintData extends CurriculumStructureTotals {
+  curriculum: {
+    id: string;
+    code: string;
+    title: string;
+    description: string;
+    version: string;
+    effective_date: string | null;
+    status: CurriculumStatus;
+    lifecycle_status: LifecycleStatus;
+    program_type: 'INSTRUCTOR_LED' | 'SELF_PACED';
+    delivery_mode: DeliveryMode;
+    standard_duration_months: number;
+    standard_duration_text: string;
+    target_audience: string;
+    entry_requirements: string;
+    auto_tuition_fee: number;
+    final_tuition_fee: number;
+    is_tuition_overridden: boolean;
+    graduation_criteria: {
+      pass_all_mandatory: boolean;
+      min_electives_passed: number;
+      min_avg_score: number;
+      min_attendance_pct: number;
+      extra_requirements: string[];
+      certificate_template_code: string;
+    };
+  };
+  session_plans_by_course: Record<string, SessionPlanItem[]>;
+  certificate_templates: Array<{ id: string; code: string; title: string; issuer_name: string }>;
+  candidate_courses: Array<{ id: string; code: string; title: string; reference_tuition_fee: number; theory_periods: number; practice_periods: number; lifecycle_status: LifecycleStatus }>;
+  versions: Array<{ id: string; version_number: number; version_label: string; changelog_note: string; published_by_name: string; published_at: string }>;
+  audit_logs: Array<{ id: string; action_type: string; actor_name: string; payload: Record<string, unknown>; created_at: string }>;
+  capabilities: { can_manage: boolean };
+}
+
+export interface CurriculumVersionCompareData {
+  available_versions: Array<{ id: string; version_number: number; version_label: string; published_at: string }>;
+  diff: {
+    subjects_added: Array<{ course_id: string; code: string; title: string; periods: number }>;
+    subjects_removed: Array<{ course_id: string; code: string; title: string; periods: number }>;
+    subjects_changed: Array<{ course_id: string; code: string; title: string; old_periods: number; new_periods: number }>;
+    periods_before: number;
+    periods_after: number;
+    tuition_before: number;
+    tuition_after: number;
+    graduation_changed: boolean;
+  } | null;
+}
+
+export interface CampusItem {
+  id: string;
+  code: string;
+  name: string;
+  address: string;
+  open_time: string;
+  close_time: string;
+  travel_buffers: Record<string, number>;
+}
+
+export interface ClassroomItem {
+  id: string;
+  campus_id: string;
+  campus_code?: string;
+  campus_name?: string;
+  code: string;
+  name: string;
+  room_type: RoomType;
+  capacity: number;
+  equipment_note: string;
+}
+
+export interface ShiftPresetItem {
+  id: string;
+  code: string;
+  title: string;
+  start_time: string;
+  end_time: string;
+  periods_count: number;
+}
+
+export interface AcademicHolidayItem {
+  id: string;
+  campus_id: string | null;
+  title: string;
+  start_date: string;
+  end_date: string;
+  is_recurring_yearly: number | boolean;
+  note: string;
+}
+
+export interface InstructorAvailabilityItem {
+  id: string;
+  instructor_id: string;
+  instructor_name?: string;
+  instructor_code?: string;
+  rule_type: 'WEEKLY' | 'DATE';
+  weekday: number | null;
+  specific_date: string | null;
+  start_time: string;
+  end_time: string;
+  status: 'BUSY' | 'AVAILABLE';
+  note: string;
+}
+
+export interface FacilitiesOverview {
+  campuses: CampusItem[];
+  classrooms: ClassroomItem[];
+  shifts: ShiftPresetItem[];
+  holidays: AcademicHolidayItem[];
+  instructors: Array<{ id: string; code: string; full_name: string; email: string; department_id: string | null }>;
+  availabilities: InstructorAvailabilityItem[];
+  capabilities: { can_manage_facilities: boolean };
+}
+
+export interface TimetableSessionItem {
+  id: string;
+  class_id: string;
+  class_code: string;
+  class_title: string;
+  cohort_id: string | null;
+  course_id: string | null;
+  title: string;
+  start_at: string;
+  end_at: string;
+  date: string;
+  start_time: string;
+  end_time: string;
+  schedule_state: 'UNSCHEDULED' | 'DRAFT' | 'PUBLISHED';
+  session_status: string;
+  session_kind: 'REGULAR' | 'MAKEUP';
+  planned_periods: number;
+  campus_id: string | null;
+  campus_code: string;
+  campus_name: string;
+  classroom_id: string | null;
+  classroom_code: string;
+  classroom_name: string;
+  classroom_capacity: number | null;
+  instructor_id: string | null;
+  instructor_name: string;
+  is_substitute: boolean;
+  merged_group_code: string | null;
+  delivery_mode: DeliveryMode;
+}
+
+export interface UnscheduledSessionItem {
+  id: string;
+  class_id: string;
+  class_code: string;
+  class_title: string;
+  title: string;
+  planned_periods: number;
+  required_room_type: RoomType;
+  instructor_id: string | null;
+  instructor_name: string;
+}
+
+export interface TimetableGridData {
+  from: string;
+  to: string;
+  items: TimetableSessionItem[];
+  unscheduled_items: UnscheduledSessionItem[];
+}
+
+export interface TimetableSlotHint {
+  date: string;
+  shift_code: string;
+  shift_title: string;
+  start_time: string;
+  end_time: string;
+  valid: boolean;
+  conflicts: Array<{ code: string; message: string }>;
+}
+
+export interface TimetableAuditReport {
+  checked_classes: number;
+  total_conflicts: number;
+  classes: Array<{
+    class_id: string;
+    class_code: string;
+    class_title: string;
+    planned_periods: number;
+    scheduled_periods: number;
+    unscheduled_sessions: number;
+    is_hours_sufficient: boolean;
+    conflicts_count: number;
+    conflicts: Array<{ session_id: string; session_title: string; date: string; code: string; message: string }>;
+  }>;
+}
+
+export interface InstructorQuotaRow {
+  instructor_id: string;
+  instructor_code: string;
+  instructor_name: string;
+  email: string;
+  department_id: string | null;
+  department_name: string;
+  period_key: string;
+  standard_periods: number;
+  standard_hours: number;
+  note: string;
+}
+
+export interface TeachingHoursAnalytics {
+  period_month: string;
+  from: string;
+  to: string;
+  totals: {
+    total_sessions: number;
+    confirmed_sessions: number;
+    substitute_sessions: number;
+    makeup_sessions: number;
+    cancelled_sessions: number;
+    theory_periods: number;
+    practice_periods: number;
+    online_periods: number;
+    total_periods: number;
+    total_hours: number;
+    overtime_hours: number;
+  };
+  by_instructor: Array<{
+    instructor_id: string;
+    instructor_name: string;
+    department_id: string | null;
+    total_sessions: number;
+    confirmed_sessions: number;
+    regular_sessions: number;
+    substitute_sessions: number;
+    substituted_out_sessions: number;
+    makeup_sessions: number;
+    cancelled_sessions: number;
+    theory_periods: number;
+    practice_periods: number;
+    online_periods: number;
+    total_periods: number;
+    total_hours: number;
+    quota_periods: number;
+    quota_hours: number;
+    overtime_periods: number;
+    overtime_hours: number;
+  }>;
+  by_course: Array<{
+    course_id: string | null;
+    course_code: string;
+    course_title: string;
+    sessions_count: number;
+    theory_periods: number;
+    practice_periods: number;
+    online_periods: number;
+    total_periods: number;
+    total_hours: number;
+  }>;
+  by_class: Array<{
+    class_id: string;
+    class_code: string;
+    class_title: string;
+    course_code: string;
+    sessions_count: number;
+    substitute_sessions: number;
+    makeup_sessions: number;
+    total_periods: number;
+    total_hours: number;
+  }>;
+  sessions: Array<{
+    session_id: string;
+    class_id: string;
+    class_code: string;
+    class_title: string;
+    course_code: string;
+    course_title: string;
+    session_title: string;
+    scheduled_start_at: string;
+    scheduled_end_at: string;
+    actual_start_at: string;
+    actual_end_at: string;
+    scheduled_instructor_id: string;
+    scheduled_instructor_name: string;
+    actual_instructor_id: string;
+    actual_instructor_name: string;
+    is_substitute: boolean;
+    substitute_reason: string;
+    session_kind: 'REGULAR' | 'MAKEUP';
+    session_status: string;
+    confirmation_status: string;
+    hour_category: 'THEORY' | 'PRACTICE' | 'ONLINE';
+    periods: number;
+    hours: number;
+    timesheet_locked_id: string | null;
+  }>;
+}
+
+export interface TeachingTimesheetItem {
+  id: string;
+  period_month: string;
+  instructor_id: string;
+  instructor_name: string;
+  department_id: string | null;
+  total_sessions: number;
+  regular_sessions: number;
+  substitute_sessions: number;
+  makeup_sessions: number;
+  cancelled_sessions: number;
+  theory_periods: number;
+  practice_periods: number;
+  online_periods: number;
+  total_periods: number;
+  total_hours: number;
+  quota_hours: number;
+  overtime_hours: number;
+  status: 'DRAFT' | 'PENDING_TEACHER' | 'DISPUTED' | 'TEACHER_CONFIRMED' | 'APPROVED' | 'LOCKED';
+  teacher_note: string | null;
+  review_note: string | null;
+  teacher_confirmed_at: string | null;
+  approved_by_name: string | null;
+  approved_at: string | null;
+  locked_by_name: string | null;
+  locked_at: string | null;
+  finance_batch_code: string | null;
+  updated_at: string;
+}
+
+export interface TeachingTimesheetLineItem {
+  id: string;
+  timesheet_id: string;
+  session_id: string;
+  subject_class_id: string;
+  class_code: string;
+  course_code: string;
+  course_title: string;
+  session_title: string;
+  session_date: string;
+  start_at: string;
+  end_at: string;
+  hour_category: 'THEORY' | 'PRACTICE' | 'ONLINE';
+  role_kind: 'PRIMARY' | 'SUBSTITUTE' | 'MAKEUP';
+  periods: number;
+  hours: number;
+}
 
 /** Tải Blob xuống máy người dùng. */
 export function saveBlob(result: { blob: Blob; filename: string } | { url: string }) {

@@ -28,10 +28,12 @@ import {
   errMsg,
   fmtDate,
   fmtDateTime,
+  fmtMoney,
   useAsync,
   useDebounced,
   useToast,
 } from '../ui';
+import { CohortInitializeWizardModal, CurriculumBlueprintWorkspace } from './CurriculumBlueprintPanels';
 
 export const CurriculumListPage: React.FC = () => {
   const nav = useNavigate();
@@ -52,7 +54,7 @@ export const CurriculumListPage: React.FC = () => {
     <div className="t-page">
       <PageHeader
         title="Khung chương trình đào tạo"
-        subtitle="Cấp 1 — Quản lý danh mục môn học, định mức tiết học và các khóa đào tạo sử dụng khung chương trình."
+        subtitle="Quản lý danh mục môn học, định mức tiết học và các khóa đào tạo sử dụng khung chương trình."
         actions={
           <Btn variant="primary" onClick={() => setCreating(true)}>
             + Tạo khung chương trình
@@ -119,10 +121,15 @@ export const CurriculumListPage: React.FC = () => {
                         </Link>
                         {c.description && <div className="t-muted t-small">{c.description}</div>}
                       </td>
-                      <td className="tabular-nums">v{c.version}</td>
+                      <td className="tabular-nums">{String(c.version || '').startsWith('v') ? c.version : `v${c.version}`}</td>
                       <td className="tabular-nums t-nowrap">{c.subjects_count} môn</td>
                       <td className="tabular-nums t-nowrap">{c.cohorts_count} khóa</td>
-                      <td><Badge kind="curriculum" value={c.status} /></td>
+                      <td>
+                        <Badge kind="lifecycleStatus" value={c.lifecycle_status || (c.status === 'ACTIVE' ? 'PUBLISHED' : c.status === 'ARCHIVED' ? 'DEPRECATED' : 'DRAFT')} />
+                        {typeof c.final_tuition_fee === 'number' && c.final_tuition_fee > 0 && (
+                          <div className="t-muted t-small tabular-nums">{fmtMoney(c.final_tuition_fee)}</div>
+                        )}
+                      </td>
                       <td className="tabular-nums t-nowrap">{fmtDate(c.updated_at)}</td>
                       <td className="actions">
                         <div className="t-actions">
@@ -233,17 +240,20 @@ const CreateCurriculumModal: React.FC<{ onClose: () => void; onCreated: (c: Curr
 
 export const CurriculumDetailPage: React.FC = () => {
   const { curriculumId = '' } = useParams();
+  const nav = useNavigate();
   const toast = useToast();
   const push = (title: string, detail = '', tone: 'success' | 'error' | 'info' = 'info') => toast({ title, detail: detail || undefined, tone });
   const detail = useAsync(() => masterApi.getCurriculum(curriculumId), [curriculumId]);
-  const [tab, setTab] = useState('subjects');
+  const [tab, setTab] = useState('overview');
   const [editingInfo, setEditingInfo] = useState(false);
   const [addingSubject, setAddingSubject] = useState(false);
+  const [openingWizard, setOpeningWizard] = useState(false);
   const [removingItem, setRemovingItem] = useState<{ id: string; title: string } | null>(null);
 
   if (detail.loading) return <div className="t-page"><Loading rows={6} /></div>;
   if (detail.error) return <div className="t-page"><ErrorState error={detail.error} onRetry={detail.reload} /></div>;
   const c = detail.data!;
+  const effLifecycle = c.lifecycle_status || (c.status === 'ACTIVE' ? 'PUBLISHED' : c.status === 'ARCHIVED' ? 'DEPRECATED' : 'DRAFT');
 
   return (
     <div className="t-page">
@@ -255,7 +265,7 @@ export const CurriculumDetailPage: React.FC = () => {
         }
         title={
           <span className="t-title-inline">
-            {c.title} <Badge kind="curriculum" value={c.status} />
+            {c.title} <Badge kind="lifecycleStatus" value={effLifecycle} />
           </span>
         }
         subtitle={`Mã ${c.code} · Phiên bản ${c.version} · Hiệu lực ${fmtDate(c.effective_date)} · ${c.subjects.length} môn học`}
@@ -263,8 +273,13 @@ export const CurriculumDetailPage: React.FC = () => {
           <>
             {c.capabilities.can_manage && (
               <>
-                <Btn onClick={() => setEditingInfo(true)}>Sửa thông tin</Btn>
-                <Btn variant="primary" onClick={() => setAddingSubject(true)}>+ Thêm môn học vào khung</Btn>
+                <Btn onClick={() => setEditingInfo(true)}>Sửa tên & mô tả</Btn>
+                <Btn onClick={() => setAddingSubject(true)}>+ Thêm môn học vào khung</Btn>
+                {effLifecycle === 'PUBLISHED' && (
+                  <Btn variant="primary" onClick={() => setOpeningWizard(true)}>
+                    🚀 Mở khóa học từ khung này
+                  </Btn>
+                )}
               </>
             )}
           </>
@@ -275,11 +290,24 @@ export const CurriculumDetailPage: React.FC = () => {
         active={tab}
         onChange={setTab}
         tabs={[
-          { id: 'subjects', label: 'Danh sách giáo trình', badge: c.subjects.length },
+          { id: 'overview', label: 'Học phí, Dịch vụ & Tốt nghiệp' },
+          { id: 'structure', label: 'Giai đoạn & Tiên quyết', badge: c.subjects.length },
+          { id: 'sessions', label: 'Chia buổi học' },
+          { id: 'lifecycle', label: 'Phiên bản & Ban hành' },
+          { id: 'subjects', label: 'Danh sách môn học', badge: c.subjects.length },
           { id: 'cohorts', label: 'Khóa học áp dụng', badge: c.cohorts.length },
-          { id: 'audit', label: 'Nhật ký thay đổi', badge: c.audit_logs.length },
+          { id: 'audit', label: 'Lịch sử', badge: c.audit_logs.length },
         ]}
       />
+
+      {(tab === 'overview' || tab === 'structure' || tab === 'sessions' || tab === 'lifecycle') && (
+        <CurriculumBlueprintWorkspace
+          curriculumId={c.id}
+          section={tab}
+          onChanged={detail.reload}
+          onOpenAddSubject={() => setAddingSubject(true)}
+        />
+      )}
 
       {tab === 'subjects' && (
         <Card title="Cấu trúc môn học theo học kỳ">
@@ -404,6 +432,17 @@ export const CurriculumDetailPage: React.FC = () => {
             setEditingInfo(false);
             push('Đã cập nhật khung chương trình', '', 'success');
             detail.reload();
+          }}
+        />
+      )}
+
+      {openingWizard && (
+        <CohortInitializeWizardModal
+          defaultCurriculumId={c.id}
+          onClose={() => setOpeningWizard(false)}
+          onInitialized={(cohortId) => {
+            setOpeningWizard(false);
+            nav(`/teaching/cohorts/${cohortId}`);
           }}
         />
       )}

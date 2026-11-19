@@ -29,12 +29,12 @@ export const CourseListPage: React.FC = () => {
   return (
     <div className="t-page">
       <PageHeader
-        title="Giáo trình môn"
-        subtitle="Nội dung đào tạo: chương, bài học, video và tài liệu. Một giáo trình có thể dùng cho nhiều lớp học."
+        title="Môn học"
+        subtitle="Đơn vị nội dung dùng chung cho nhiều Khung chương trình: chuẩn đầu ra, tiên quyết, thời lượng, đánh giá & đề cương."
         actions={
           me.data?.can_create_course && (
             <button type="button" className="t-btn t-btn--primary" onClick={() => setParams({ new: '1' })}>
-              + Tạo giáo trình
+              + Tạo môn học
             </button>
           )
         }

@@ -6,18 +6,25 @@ import {
   errMsg, fmtBytes, fmtDate, fmtDateTime, useAsync, useToast,
 } from '../ui';
 import { CourseFormModal } from './CourseFormModal';
+import {
+  CourseLifecycleAndDiffPanel,
+  CourseSyllabusAndSessionPlanSection,
+  CourseTrainingProfileSection,
+} from './CourseTrainingPanels';
 import { CourseWikiPanel } from './WikiPanel';
 import { ForumWorkspace } from './ForumPanel';
 
-type Section = 'overview' | 'content' | 'versions' | 'resources' | 'wiki' | 'forum' | 'classes' | 'stats';
+type Section = 'overview' | 'training' | 'syllabus' | 'content' | 'versions' | 'resources' | 'wiki' | 'forum' | 'classes' | 'stats';
 const SECTIONS: Array<{ id: Section; label: string }> = [
   { id: 'overview', label: 'Tổng quan' },
+  { id: 'training', label: 'Chuẩn đầu ra & Đầu điểm' },
+  { id: 'syllabus', label: 'Đề cương & Chia buổi' },
   { id: 'content', label: 'Chương & bài học' },
-  { id: 'versions', label: 'Phiên bản Snapshot' },
+  { id: 'versions', label: 'Phiên bản & Ban hành' },
   { id: 'resources', label: 'Tài liệu' },
   { id: 'wiki', label: 'Wiki môn học' },
   { id: 'forum', label: 'Diễn đàn môn học' },
-  { id: 'classes', label: 'Lớp học sử dụng' },
+  { id: 'classes', label: 'Lớp môn học sử dụng' },
   { id: 'stats', label: 'Thống kê' },
 ];
 
@@ -693,6 +700,7 @@ const VersionsSection: React.FC<{ course: CourseDetail; onCourseChanged: () => v
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+      <CourseLifecycleAndDiffPanel course={course} onChanged={() => { req.reload(); onCourseChanged(); }} />
       <div className="m-semantic-notice" data-tone={req.data.has_unpublished_snapshot_changes ? 'warning' : 'info'}>
         <div>
           <strong>Quy tắc phiên bản Snapshot bất biến:</strong> Mọi lớp học đang mở được ghim vào một bản Snapshot cụ thể. Khi bạn chỉnh sửa bài giảng ở bản nháp hiện tại, lớp đang chạy <strong>không bị tự động thay đổi</strong>; học viên chỉ nhận phiên bản mới cho các lớp mở sau hoặc khi được nâng cấp có kiểm soát.
@@ -905,6 +913,8 @@ export const CourseDetailPage: React.FC = () => {
             </>
           )}
 
+          {section === 'training' && <CourseTrainingProfileSection courseId={c.id} onChanged={reload} />}
+          {section === 'syllabus' && <CourseSyllabusAndSessionPlanSection courseId={c.id} canManage={canManage} />}
           {section === 'content' && <OutlineEditor course={c} onChanged={reload} setOutline={(o) => setData({ ...c, outline: o })} />}
           {section === 'versions' && <VersionsSection course={c} onCourseChanged={reload} />}
           {section === 'resources' && <ResourcesSection courseId={c.id} />}

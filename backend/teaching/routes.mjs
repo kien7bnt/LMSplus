@@ -15,6 +15,9 @@ import { registerContentTreeAndSnapshotRoutes } from './contentTreeAndSnapshots.
 import { registerBankRoutes } from './banks.mjs';
 import { registerAssessmentAndAssignmentRoutes } from './assessmentsAndAssignments.mjs';
 import { registerLeaveAndForumRoutes } from './leaveAndForums.mjs';
+import { registerTrainingPrepRoutes } from './trainingPrep.mjs';
+import { registerTimetableRoutes } from './timetableEngine.mjs';
+import { registerTeachingHoursRoutes } from './teachingHours.mjs';
 
 export const TEACHING_PREFIX = '/api/v1/teaching';
 
@@ -37,10 +40,13 @@ export function createTeachingRouter({
   registerVirtualClassroomRoutes(route, { jwtSecret });
   registerStrictVideoRoutes(route);
   registerCurriculaAndCohortRoutes(route);
+  registerTrainingPrepRoutes(route);
   registerContentTreeAndSnapshotRoutes(route);
   registerBankRoutes(route, { uploadsDir });
   registerAssessmentAndAssignmentRoutes(route);
   registerLeaveAndForumRoutes(route);
+  registerTimetableRoutes(route);
+  registerTeachingHoursRoutes(route);
 
   /**
    * @returns {undefined | Promise<void>} Promise khi handler bất đồng bộ (ví dụ kiểm tra YouTube).

@@ -15,6 +15,8 @@ import { CourseListPage } from './teaching/pages/CourseListPage';
 import { CurriculumDetailPage, CurriculumListPage } from './teaching/pages/CurriculumPages';
 import { StaffLeaveRequestsPage, StudentLeaveRequestsPage } from './teaching/pages/LeaveRequestsPage';
 import { SchedulePage } from './teaching/pages/SchedulePage';
+import { TeachingHoursPage } from './teaching/pages/TeachingHoursPage';
+import { TimetablePage } from './teaching/pages/TimetablePage';
 import { StudentAssignmentsPage, StudentExamsPage } from './teaching/pages/StudentAssessmentPages';
 import { StudentClassPage, StudentHomePage, StudentLessonPage } from './teaching/pages/StudentPages';
 import { TeachingDashboard } from './teaching/pages/TeachingDashboard';
@@ -184,15 +186,16 @@ export const App: React.FC = () => {
   const isAdmin = roles.includes('ADMIN');
   const homePath = isStudentOnly ? '/learn' : '/teaching';
 
-  const isCurriculumGroupActive = ['/teaching/curricula', '/teaching/cohorts', '/teaching/courses', '/teaching/classes'].some((p) =>
+  const isCurriculumGroupActive = ['/teaching/curricula', '/teaching/cohorts', '/teaching/courses', '/teaching/classes', '/teaching/timetable'].some((p) =>
     location.pathname.startsWith(p)
   );
 
   const curriculumMenuItems = [
-    { to: '/teaching/curricula', label: 'Khung chương trình', desc: 'Cấu trúc chương trình & danh mục đào tạo' },
-    { to: '/teaching/cohorts', label: 'Khóa học', desc: 'Quản lý niên khóa & danh sách học viên' },
-    { to: '/teaching/courses', label: 'Giáo trình môn', desc: 'Bài học, video tương tác & phiên bản Snapshot' },
-    { to: '/teaching/classes', label: 'Lớp học', desc: 'Lớp giảng dạy, lịch học & điểm danh' },
+    { to: '/teaching/courses', label: 'Môn học', desc: 'Chuẩn đầu ra, tiên quyết, đầu điểm & đề cương' },
+    { to: '/teaching/curricula', label: 'Khung chương trình', desc: 'Giai đoạn, học phí dịch vụ, chia buổi & ban hành' },
+    { to: '/teaching/cohorts', label: 'Khóa học', desc: 'Khởi tạo từ khung ban hành & quản lý học viên' },
+    { to: '/teaching/classes', label: 'Lớp môn học', desc: 'Lớp giảng dạy, điểm danh, kiểm tra & bảng điểm' },
+    { to: '/teaching/timetable', label: 'Xếp Thời khóa biểu', desc: 'Kéo thả buổi học, mẫu lặp, xếp tự động & công bố' },
   ];
 
   const navItems: Array<{ to: string; label: string; end?: boolean }> = isStudentOnly
@@ -207,6 +210,7 @@ export const App: React.FC = () => {
         { to: '/teaching', label: 'Tổng quan', end: true },
         { to: '/teaching/banks', label: 'Học liệu' },
         { to: '/teaching/schedule', label: 'Lịch dạy' },
+        { to: '/teaching/hours', label: 'Giờ dạy' },
         { to: '/teaching/leave-requests', label: 'Đơn nghỉ' },
         ...(isAdmin ? [{ to: '/admin/accounts', label: 'Tài khoản' }] : []),
       ];
@@ -323,7 +327,7 @@ export const App: React.FC = () => {
                   aria-expanded={isCurriculumMenuOpen}
                   onClick={() => setIsCurriculumMenuOpen((v) => !v)}
                 >
-                  <span>Khung chương trình</span>
+                  <span>Đào tạo</span>
                   <span className="app-nav-dropdown__caret" aria-hidden="true">▾</span>
                 </button>
                 <div className="app-nav-dropdown__menu" role="menu" aria-label="Menu Khung chương trình">
@@ -500,7 +504,10 @@ export const App: React.FC = () => {
           <Route path="/teaching/classes/:classId/studio" element={isStudentOnly ? <Navigate to="/learn" replace /> : <LessonStudioPage mode="CLASS" />} />
           <Route path="/teaching/classes/:classId/attendance" element={isStudentOnly ? <Navigate to="/learn" replace /> : <AttendancePage />} />
           <Route path="/teaching/classes/:classId/sessions/:sessionId/live" element={isStudentOnly ? <Navigate to="/learn" replace /> : <VirtualSessionPage />} />
+          <Route path="/teaching/timetable" element={isStudentOnly ? <Navigate to="/learn" replace /> : <TimetablePage />} />
           <Route path="/teaching/schedule" element={isStudentOnly ? <Navigate to="/learn" replace /> : <SchedulePage />} />
+          <Route path="/teaching/hours" element={isStudentOnly ? <Navigate to="/learn" replace /> : <TeachingHoursPage />} />
+          <Route path="/teaching-hours" element={<Navigate to="/teaching/hours" replace />} />
 
           {/* Cổng Học viên */}
           <Route path="/learn" element={<StudentHomePage />} />

@@ -131,7 +131,8 @@ export function registerLearnRoutes(route, { jwtSecret = 'lmsplus-production-gra
             `SELECT session_id, session_title, scheduled_start_at, scheduled_end_at, room_or_link,
                     delivery_mode, virtual_room_id, live_status, attendance_sync_status
              FROM sessions
-             WHERE subject_class_id = ? AND session_status <> 'CANCELLED' AND scheduled_end_at >= ?
+             WHERE subject_class_id = ? AND session_status <> 'CANCELLED'
+               AND COALESCE(schedule_state, 'PUBLISHED') = 'PUBLISHED' AND scheduled_end_at >= ?
              ORDER BY scheduled_start_at LIMIT 1`
           )
           .get(cls.id, now);
@@ -188,7 +189,8 @@ export function registerLearnRoutes(route, { jwtSecret = 'lmsplus-production-gra
     const upcomingSessions = db
       .prepare(
         `SELECT * FROM sessions
-         WHERE subject_class_id = ? AND session_status <> 'CANCELLED' AND scheduled_end_at >= ?
+         WHERE subject_class_id = ? AND session_status <> 'CANCELLED'
+           AND COALESCE(schedule_state, 'PUBLISHED') = 'PUBLISHED' AND scheduled_end_at >= ?
          ORDER BY scheduled_start_at ASC LIMIT 6`
       )
       .all(cls.id, now)

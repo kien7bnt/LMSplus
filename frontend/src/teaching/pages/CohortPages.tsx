@@ -35,6 +35,7 @@ import {
   useDebounced,
   useToast,
 } from '../ui';
+import { CohortInitializeWizardModal } from './CurriculumBlueprintPanels';
 
 export const CohortListPage: React.FC = () => {
   const nav = useNavigate();
@@ -45,18 +46,22 @@ export const CohortListPage: React.FC = () => {
   const [status, setStatus] = useState('');
   const [page, setPage] = useState(1);
   const [creating, setCreating] = useState(false);
+  const [wizardOpen, setWizardOpen] = useState(false);
 
   const list = useAsync(() => masterApi.listCohorts({ q: dq, status, page, page_size: 20 }), [dq, status, page]);
 
   return (
     <div className="t-page">
       <PageHeader
-        title="Khóa học"
-        subtitle="Cấp 2 — Quản lý học viên theo niên khóa, liên kết Khung chương trình và sinh tự động các Môn học."
+        title="Khóa học (Lớp khóa học)"
+        subtitle="Mở lớp từ Khung chương trình Đã ban hành: tự tạo Lớp môn học, sao chép học liệu/bài tập, gợi ý buổi & lên Thời khóa biểu."
         actions={
-          <Btn variant="primary" onClick={() => setCreating(true)}>
-            + Tạo khóa học
-          </Btn>
+          <div className="t-actions">
+            <Btn onClick={() => setCreating(true)}>+ Tạo cơ bản</Btn>
+            <Btn variant="primary" onClick={() => setWizardOpen(true)}>
+              🚀 Khởi tạo Khóa học (5 bước)
+            </Btn>
+          </div>
         }
       />
 
@@ -143,6 +148,16 @@ export const CohortListPage: React.FC = () => {
           }}
         />
       )}
+
+      {wizardOpen && (
+        <CohortInitializeWizardModal
+          onClose={() => setWizardOpen(false)}
+          onInitialized={(cohortId) => {
+            setWizardOpen(false);
+            nav(`/teaching/cohorts/${cohortId}`);
+          }}
+        />
+      )}
     </div>
   );
 };
@@ -213,7 +228,7 @@ const CreateCohortModal: React.FC<{ onClose: () => void; onCreated: (c: CohortSu
     >
       {curricula.loading && <Loading rows={2} />}
       {!curricula.loading && items.length === 0 ? (
-        <EmptyState title="Chưa có Khung chương trình" text="Hãy tạo Khung chương trình ở Cấp 1 trước." />
+        <EmptyState title="Chưa có Khung chương trình" text="Hãy tạo Khung chương trình trước." />
       ) : (
         <form id="cohort-create-form" className="t-form-grid" onSubmit={submit}>
           <Field label="Khung chương trình áp dụng" required wide>
@@ -483,7 +498,7 @@ export const CohortDetailPage: React.FC = () => {
       )}
 
       {tab === 'classes' && (
-        <Card title="Các Lớp môn học (Cấp 3) liên kết với Lớp khóa học này">
+        <Card title="Các Lớp môn học liên kết với Lớp khóa học này">
           {c.subject_classes.length === 0 ? (
             <EmptyState
               title="Chưa có Lớp môn học nào được tạo"
