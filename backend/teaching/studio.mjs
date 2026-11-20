@@ -500,6 +500,39 @@ function questionBankDto(r) {
   };
 }
 
+function loadCourseWikiPages(db, courseId, { includeDraft = false } = {}) {
+  if (!courseId) return [];
+  try {
+    const statusClause = includeDraft ? "AND w.status <> 'ARCHIVED'" : "AND w.status = 'PUBLISHED'";
+    const rows = db
+      .prepare(
+        `SELECT w.id, w.course_id, w.topic_id, w.chapter_id, w.lesson_id, w.slug, w.title,
+                w.summary, w.content_markdown, w.tags_json, w.related_page_ids_json, w.status, w.updated_at
+         FROM course_wiki_pages w
+         WHERE w.course_id = ? AND w.deleted_at IS NULL ${statusClause}
+         ORDER BY w.updated_at DESC`
+      )
+      .all(courseId);
+    return rows.map((r) => ({
+      id: r.id,
+      course_id: r.course_id,
+      topic_id: r.topic_id || null,
+      chapter_id: r.chapter_id || null,
+      lesson_id: r.lesson_id || null,
+      slug: r.slug,
+      title: r.title,
+      summary: r.summary || '',
+      content_markdown: r.content_markdown || '',
+      tags: safeJson(r.tags_json, []),
+      related_page_ids: safeJson(r.related_page_ids_json, []),
+      status: r.status,
+      updated_at: r.updated_at,
+    }));
+  } catch {
+    return [];
+  }
+}
+
 // ------------------------------------------------------------------ Đăng ký Routes
 
 export function registerStudioRoutes(route, { uploadsDir, jwtSecret }) {
@@ -566,6 +599,7 @@ export function registerStudioRoutes(route, { uploadsDir, jwtSecret }) {
       },
       outline: enrichedOutline,
       resources,
+      wiki_pages: loadCourseWikiPages(db, course.id, { includeDraft: true }),
       question_bank_count: qbCount,
       classes_using: classes,
       capabilities: {
@@ -1101,6 +1135,7 @@ export function registerStudioRoutes(route, { uploadsDir, jwtSecret }) {
       },
       outline: enrichedOutline,
       resources,
+      wiki_pages: loadCourseWikiPages(db, course.id, { includeDraft: false }),
       capabilities: {
         can_edit_class_content: canEditClassContent(db, user, cls),
         can_publish_class_content: canPublishClassContent(db, user, cls),
@@ -2180,6 +2215,7 @@ export function buildStudentLessonPayload(db, { user, cls, lesson, chapterInfo, 
     video_progress: videoProgress,
     quiz_states: quizStates,
     resources: resourcesMap,
+    wiki_pages: loadCourseWikiPages(db, cls.course_id, { includeDraft: false }),
     progress_status: prog ? prog.status : 'IN_PROGRESS',
     position: { index: idx + 1, total: list.length },
     prev_lesson: idx > 0 ? { id: list[idx - 1].id, title: list[idx - 1].title } : null,

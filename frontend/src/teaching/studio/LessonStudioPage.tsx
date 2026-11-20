@@ -16,6 +16,7 @@ import {
   StudioClassLessonData,
   StudioCourseData,
   VideoQuizMarker,
+  WikiPageItem,
   saveBlob,
   teachingApi,
 } from '../api';
@@ -25,6 +26,7 @@ import {
   QUIZ_KIND_LABELS,
   SUBMISSION_TYPE_LABELS,
 } from '../BlockRenderer';
+import { WikiAnnotatedText, WikiReaderProvider, WikiTermTrigger, findMatchedWikiTerms } from '../WikiText';
 import {
   Badge,
   Btn,
@@ -43,6 +45,39 @@ import {
   useUnsavedWarning,
 } from '../ui';
 import { QuestionBankModal, QuestionForm, createDefaultQuestionSpec } from './QuestionEditorFields';
+import {
+  BlockTypeIcon,
+  IconAlertTriangle,
+  IconArrowDown,
+  IconArrowLeft,
+  IconArrowUp,
+  IconCheck,
+  IconChevronDown,
+  IconChevronRight,
+  IconCopy,
+  IconDatabase,
+  IconEdit,
+  IconEye,
+  IconGlobe,
+  IconGripVertical,
+  IconHistory,
+  IconLibrary,
+  IconMonitor,
+  IconMoreHorizontal,
+  IconPlay,
+  IconPlus,
+  IconRedo,
+  IconSearch,
+  IconSidebarLeft,
+  IconSidebarRight,
+  IconSliders,
+  IconSmartphone,
+  IconTools,
+  IconTrash,
+  IconUndo,
+  IconUpload,
+  IconX,
+} from './StudioIcons';
 import { extractLocalVideoMetadata, formatTimestamp } from './videoAdapter';
 import { VideoQuizTimelineEditor } from './VideoQuizTimelineEditor';
 
@@ -82,39 +117,97 @@ const BLOCK_TYPE_NAMES: Record<string, string> = {
 
 const BLOCK_PALETTE_GROUPS: Array<{
   group: string;
-  items: Array<{ type: BlockType; label: string; icon: string }>;
+  items: Array<{ type: BlockType; label: string; quick?: boolean }>;
 }> = [
   {
     group: 'Văn bản & Trình bày',
     items: [
-      { type: 'heading', label: 'Tiêu đề', icon: 'H2' },
-      { type: 'paragraph', label: 'Văn bản', icon: '¶' },
-      { type: 'callout', label: 'Ghi chú', icon: '💡' },
-      { type: 'quote', label: 'Trích dẫn', icon: '❝' },
-      { type: 'table', label: 'Bảng', icon: '⊞' },
-      { type: 'math', label: 'Công thức', icon: '∑' },
-      { type: 'code', label: 'Mã nguồn', icon: '</>' },
+      { type: 'paragraph', label: 'Đoạn văn bản', quick: true },
+      { type: 'heading', label: 'Tiêu đề mục' },
+      { type: 'callout', label: 'Hộp ghi chú' },
+      { type: 'quote', label: 'Trích dẫn' },
+      { type: 'table', label: 'Bảng dữ liệu' },
+      { type: 'math', label: 'Công thức Toán' },
+      { type: 'code', label: 'Khối mã nguồn' },
     ],
   },
   {
     group: 'Video & Học liệu số',
     items: [
-      { type: 'video', label: 'Video & Quiz mốc giờ', icon: '🎬' },
-      { type: 'pdf', label: 'Tài liệu PDF', icon: '📕' },
-      { type: 'image', label: 'Hình ảnh', icon: '🖼' },
-      { type: 'file', label: 'Tệp đính kèm', icon: '📎' },
-      { type: 'link', label: 'Liên kết ngoài', icon: '🔗' },
-      { type: 'embed', label: 'Nhúng mô phỏng', icon: '🧩' },
+      { type: 'video', label: 'Video & Quiz', quick: true },
+      { type: 'image', label: 'Hình ảnh', quick: true },
+      { type: 'pdf', label: 'Tài liệu PDF', quick: true },
+      { type: 'file', label: 'Tệp đính kèm' },
+      { type: 'link', label: 'Liên kết ngoài' },
+      { type: 'embed', label: 'Nhúng mô phỏng' },
     ],
   },
   {
     group: 'Kiểm tra & Bài tập',
     items: [
-      { type: 'quiz', label: 'Bài kiểm tra (Quiz)', icon: '☑' },
-      { type: 'assignment', label: 'Bài tập nộp', icon: '📝' },
+      { type: 'quiz', label: 'Bài kiểm tra', quick: true },
+      { type: 'assignment', label: 'Bài tập nộp' },
     ],
   },
 ];
+
+const QUICK_PALETTE_ITEMS = BLOCK_PALETTE_GROUPS.flatMap((g) => g.items).filter((it) => it.quick);
+
+function formatChapterHeading(index: number, rawTitle: string): string {
+  const title = (rawTitle || '').trim();
+  if (!title) return `Chương ${index + 1}`;
+  if (/^chương\s+\d+/i.test(title)) return title;
+  return `Chương ${index + 1}. ${title}`;
+}
+
+function formatLessonHeading(chapterIdx: number, lessonIdx: number, rawTitle: string): string {
+  const title = (rawTitle || '').trim();
+  if (!title) return `${chapterIdx + 1}.${lessonIdx + 1}. Bài học mới`;
+  if (/^(\d+(\.\d+)?[\s.:-]|bài\s+\d+)/i.test(title)) return title;
+  return `${chapterIdx + 1}.${lessonIdx + 1}. ${title}`;
+}
+
+function getBlockSummary(block: LessonBlock, markerCount: number): string {
+  const c = block.content || {};
+  switch (block.block_type) {
+    case 'heading':
+    case 'paragraph':
+    case 'quote':
+      return String(c.text || '').trim().slice(0, 72) || 'Chưa nhập nội dung';
+    case 'callout':
+      return String(c.title || c.text || '').trim().slice(0, 72) || 'Ghi chú sư phạm';
+    case 'video':
+    case 'youtube': {
+      const title = String(c.title || '').trim() || (c.video_id ? `YouTube (${c.video_id})` : 'Chưa gắn nguồn video');
+      return markerCount > 0 ? `${title} · ${markerCount} mốc câu hỏi` : title;
+    }
+    case 'image':
+      return String(c.caption || c.alt || (c.url ? 'Đã gắn hình ảnh' : 'Chưa gắn hình ảnh')).slice(0, 72);
+    case 'pdf':
+    case 'file':
+      return String(c.title || (c.resource_id ? 'Đã đính kèm tệp' : 'Chưa chọn tệp')).slice(0, 72);
+    case 'quiz': {
+      const qs = Array.isArray(c.questions) ? c.questions.length : 0;
+      return `${String(c.title || 'Bài kiểm tra').slice(0, 48)} · ${qs} câu hỏi`;
+    }
+    case 'assignment':
+      return String(c.title || 'Bài tập thực hành').slice(0, 72);
+    case 'link':
+    case 'embed':
+      return String(c.title || c.url || c.embed_url || 'Chưa gắn liên kết').slice(0, 72);
+    case 'code':
+    case 'code_block':
+      return `${c.language || 'code'} · ${String(c.code || '').split('\n')[0]?.slice(0, 52) || ''}`;
+    case 'math':
+      return String(c.latex || 'Công thức').slice(0, 64);
+    case 'table': {
+      const rows = Array.isArray(c.rows) ? c.rows.length : 0;
+      return `Bảng ${rows} dòng`;
+    }
+    default:
+      return String(c.title || c.prompt || '').slice(0, 72);
+  }
+}
 
 const ALLOWED_EMBED_HOST_HINTS = [
   { name: 'GeoGebra', example: 'https://www.geogebra.org/material/iframe/id/...' },
@@ -313,11 +406,46 @@ export const LessonStudioPage: React.FC<{ mode?: 'COURSE' | 'CLASS' }> = ({ mode
 
   // UI Panes & Modals
   const [selectedBlockId, setSelectedBlockId] = useState<string | null>(null);
+  const [leftPaneOpen, setLeftPaneOpen] = useState<boolean>(true);
   const [inspectorOpen, setInspectorOpen] = useState<boolean>(true);
   const [inspectorTab, setInspectorTab] = useState<'block' | 'lesson'>('lesson');
   const [mobilePane, setMobilePane] = useState<'tree' | 'canvas' | 'inspector'>('canvas');
   const [collapsedChapters, setCollapsedChapters] = useState<Record<string, boolean>>({});
   const [expandedInheritedVideoId, setExpandedInheritedVideoId] = useState<string | null>(null);
+  const [toolsMenuOpen, setToolsMenuOpen] = useState<boolean>(false);
+  const [treeSearch, setTreeSearch] = useState<string>('');
+  const [treeMenuKey, setTreeMenuKey] = useState<string | null>(null);
+  const [collapsedBlocks, setCollapsedBlocks] = useState<Record<string, boolean>>({});
+  const [videoSetupOpen, setVideoSetupOpen] = useState<Record<string, boolean>>({});
+  const [inserterAt, setInserterAt] = useState<number | null>(null);
+  const [inserterQuery, setInserterQuery] = useState<string>('');
+  const [showAllBottomPalette, setShowAllBottomPalette] = useState<boolean>(false);
+  const [dragBlockIdx, setDragBlockIdx] = useState<number | null>(null);
+  const [dragOverIdx, setDragOverIdx] = useState<number | null>(null);
+
+  useEffect(() => {
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.key === 'Escape') {
+        setToolsMenuOpen(false);
+        setTreeMenuKey(null);
+        setInserterAt(null);
+      }
+    };
+    const onPointerDown = (ev: MouseEvent) => {
+      const target = ev.target as HTMLElement | null;
+      if (!target?.closest('[data-ls-popover]')) {
+        setToolsMenuOpen(false);
+        setTreeMenuKey(null);
+        setInserterAt(null);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    document.addEventListener('mousedown', onPointerDown);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      document.removeEventListener('mousedown', onPointerDown);
+    };
+  }, []);
 
   // Left tree inline forms
   const [newChapterTitle, setNewChapterTitle] = useState('');
@@ -360,6 +488,11 @@ export const LessonStudioPage: React.FC<{ mode?: 'COURSE' | 'CLASS' }> = ({ mode
 
   const resources = useMemo<Resource[]>(
     () => (studioMode === 'COURSE' ? courseShell?.resources || [] : classShell?.resources || []),
+    [studioMode, courseShell, classShell]
+  );
+
+  const wikiPages = useMemo<WikiPageItem[]>(
+    () => (studioMode === 'COURSE' ? courseShell?.wiki_pages || [] : classShell?.wiki_pages || []),
     [studioMode, courseShell, classShell]
   );
 
@@ -750,19 +883,39 @@ export const LessonStudioPage: React.FC<{ mode?: 'COURSE' | 'CLASS' }> = ({ mode
     [blocks, selectedBlockId]
   );
 
-  const insertBlock = (type: BlockType) => {
+  const insertBlock = (type: BlockType, insertAfterIndex?: number) => {
     const nb = makeNewBlock(type, resources);
     if (studioMode === 'CLASS') {
       nb.origin = 'CLASS_CUSTOM';
       nb.anchor_block_id = null;
     }
-    const idx = selectedBlockId ? blocks.findIndex((b) => b.id === selectedBlockId) : -1;
     const next = [...blocks];
-    if (idx >= 0) next.splice(idx + 1, 0, nb);
-    else next.push(nb);
+    if (typeof insertAfterIndex === 'number') {
+      const targetPos = Math.max(0, Math.min(next.length, insertAfterIndex + 1));
+      next.splice(targetPos, 0, nb);
+    } else {
+      const idx = selectedBlockId ? blocks.findIndex((b) => b.id === selectedBlockId) : -1;
+      if (idx >= 0) next.splice(idx + 1, 0, nb);
+      else next.push(nb);
+    }
     applyBlocksAndMarkers(next, markers, true);
     setSelectedBlockId(nb.id);
     setInspectorTab('block');
+    setInserterAt(null);
+    setInserterQuery('');
+    if (type === 'video') {
+      setVideoSetupOpen((p) => ({ ...p, [nb.id]: true }));
+    }
+  };
+
+  const reorderBlock = (fromIndex: number, toIndex: number) => {
+    if (fromIndex === toIndex || fromIndex < 0 || toIndex < 0 || fromIndex >= blocks.length || toIndex >= blocks.length) {
+      return;
+    }
+    const next = [...blocks];
+    const [moved] = next.splice(fromIndex, 1);
+    next.splice(toIndex, 0, moved);
+    applyBlocksAndMarkers(next, markers, true);
   };
 
   const updateBlockContent = (blockId: string, patch: Record<string, any>) => {
@@ -1183,6 +1336,115 @@ export const LessonStudioPage: React.FC<{ mode?: 'COURSE' | 'CLASS' }> = ({ mode
     });
   };
 
+  const totalLessonsCount = outline.reduce((sum, ch) => sum + ch.lessons.length, 0);
+  const normalizedTreeSearch = treeSearch.trim().toLowerCase();
+  const filteredOutline = normalizedTreeSearch
+    ? outline
+        .map((ch, ci) => {
+          const chMatches = ch.title.toLowerCase().includes(normalizedTreeSearch);
+          const matchingLessons = ch.lessons
+            .map((l, li) => ({ l, li }))
+            .filter(({ l }) => chMatches || l.title.toLowerCase().includes(normalizedTreeSearch));
+          return { ch, ci, lessons: matchingLessons };
+        })
+        .filter((entry) => entry.lessons.length > 0 || entry.ch.title.toLowerCase().includes(normalizedTreeSearch))
+    : outline.map((ch, ci) => ({ ch, ci, lessons: ch.lessons.map((l, li) => ({ l, li })) }));
+
+  const filteredPaletteGroups = (() => {
+    const q = inserterQuery.trim().toLowerCase();
+    if (!q) return BLOCK_PALETTE_GROUPS;
+    return BLOCK_PALETTE_GROUPS.map((g) => ({
+      ...g,
+      items: g.items.filter(
+        (it) =>
+          it.label.toLowerCase().includes(q) ||
+          it.type.toLowerCase().includes(q) ||
+          g.group.toLowerCase().includes(q)
+      ),
+    })).filter((g) => g.items.length > 0);
+  })();
+
+  const renderInlineInserter = (afterIndex: number) => {
+    if (!canEdit) return null;
+    const isOpen = inserterAt === afterIndex;
+    return (
+      <div className={`ls-inserter ${isOpen ? 'is-open' : ''}`} data-ls-popover>
+        <div className="ls-inserter__line" aria-hidden="true" />
+        <button
+          type="button"
+          className="ls-inserter__trigger"
+          aria-expanded={isOpen}
+          aria-label="Chèn khối nội dung tại vị trí này"
+          onClick={(ev) => {
+            ev.stopPropagation();
+            setInserterAt(isOpen ? null : afterIndex);
+            setInserterQuery('');
+          }}
+        >
+          <IconPlus size={14} />
+          <span>Chèn khối</span>
+        </button>
+        <div className="ls-inserter__line" aria-hidden="true" />
+
+        {isOpen && (
+          <div className="ls-inserter-popover" role="dialog" aria-label="Chọn khối nội dung để chèn">
+            <div className="ls-inserter-popover__search">
+              <IconSearch size={15} />
+              <input
+                type="search"
+                className="ls-inserter-popover__input"
+                autoFocus
+                value={inserterQuery}
+                onChange={(e) => setInserterQuery(e.target.value)}
+                placeholder="Tìm nhanh: video, văn bản, hình ảnh, PDF, bài kiểm tra…"
+                aria-label="Tìm loại khối nội dung"
+              />
+              {inserterQuery && (
+                <button
+                  type="button"
+                  className="ls-inline-clear"
+                  onClick={() => setInserterQuery('')}
+                  aria-label="Xóa từ khóa"
+                >
+                  <IconX size={14} />
+                </button>
+              )}
+            </div>
+
+            {filteredPaletteGroups.length === 0 ? (
+              <p className="t-sub" style={{ padding: '12px 8px', margin: 0 }}>
+                Không tìm thấy thành phần phù hợp với “{inserterQuery}”.
+              </p>
+            ) : (
+              <div className="ls-inserter-popover__groups">
+                {filteredPaletteGroups.map((grp) => (
+                  <div key={grp.group} className="ls-inserter-popover__group">
+                    <span className="ls-palette-group__title">{grp.group}</span>
+                    <div className="ls-inserter-popover__grid">
+                      {grp.items.map((it) => (
+                        <button
+                          key={it.type}
+                          type="button"
+                          className="ls-palette-btn"
+                          onClick={() => insertBlock(it.type, afterIndex)}
+                        >
+                          <span className="ls-palette-btn__icon">
+                            <BlockTypeIcon type={it.type} size={15} />
+                          </span>
+                          <span>{it.label}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  };
+
   return (
     <div className="ls-shell">
       {/* =================================================================
@@ -1190,18 +1452,41 @@ export const LessonStudioPage: React.FC<{ mode?: 'COURSE' | 'CLASS' }> = ({ mode
       ================================================================= */}
       <div className="ls-topbar">
         <div className="ls-topbar__left">
-          <Link to={backUrl} className="t-btn t-btn--small t-btn--ghost">
-            ← {studioMode === 'COURSE' ? 'Khóa học' : 'Lớp học'}
+          <Link to={backUrl} className="t-btn t-btn--small t-btn--ghost ls-back-link">
+            <IconArrowLeft size={15} />
+            <span>{studioMode === 'COURSE' ? 'Môn học' : 'Lớp học'}</span>
           </Link>
+
+          <button
+            type="button"
+            className={`t-icon-btn ls-pane-toggle ${leftPaneOpen ? 'is-active' : ''}`}
+            onClick={() => {
+              setLeftPaneOpen((v) => {
+                const next = !v;
+                if (next) setMobilePane('tree');
+                else if (mobilePane === 'tree') setMobilePane('canvas');
+                return next;
+              });
+            }}
+            aria-pressed={leftPaneOpen}
+            title={leftPaneOpen ? 'Thu gọn cây chương bài' : 'Mở cây chương bài'}
+            aria-label={leftPaneOpen ? 'Thu gọn cây chương bài' : 'Mở cây chương bài'}
+          >
+            <IconSidebarLeft size={16} />
+          </button>
+
           <div className="ls-topbar__titles">
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-              <strong style={{ fontSize: 15 }}>
+            <div className="ls-topbar__title-row">
+              <strong className="ls-topbar__heading">
                 {studioMode === 'COURSE' ? courseShell?.course.title : classShell?.class.title}
               </strong>
-              <Tone tone={studioMode === 'COURSE' ? 'info' : 'success'}>
-                {studioMode === 'COURSE' ? 'Giáo án Khóa học chuẩn' : `Tùy biến riêng Lớp ${classShell?.class.code}`}
+              <Tone tone={studioMode === 'COURSE' ? 'neutral' : 'success'}>
+                {studioMode === 'COURSE' ? 'Giáo án chuẩn' : `Lớp ${classShell?.class.code}`}
               </Tone>
-              <Tone tone={saveBadge.tone}>{saveBadge.text}</Tone>
+              <span className={`ls-save-pill is-${saveStatus.toLowerCase()}`} role="status" aria-live="polite">
+                <span className="ls-save-pill__dot" aria-hidden="true" />
+                <span>{saveBadge.text}</span>
+              </span>
             </div>
             {saveErrorDetail && (
               <span className="t-field__error" style={{ fontSize: 12 }}>
@@ -1212,57 +1497,113 @@ export const LessonStudioPage: React.FC<{ mode?: 'COURSE' | 'CLASS' }> = ({ mode
         </div>
 
         <div className="ls-topbar__right">
-          {resolvedCourseId && (
-            <Link
-              to={`/teaching/banks?course_id=${resolvedCourseId}`}
-              className="t-btn t-btn--small t-btn--ghost"
-              title="Mở Học liệu (câu hỏi, bài tập & tài nguyên)"
-            >
-              Học liệu
-            </Link>
-          )}
           {canEdit && (
-            <>
+            <div className="ls-history-group" role="group" aria-label="Hoàn tác và làm lại">
               <button
                 type="button"
-                className="t-icon-btn"
+                className="ls-history-btn"
                 disabled={!canUndo}
                 onClick={handleUndo}
                 title="Hoàn tác (Ctrl+Z)"
                 aria-label="Hoàn tác"
               >
-                ↶
+                <IconUndo size={15} />
               </button>
               <button
                 type="button"
-                className="t-icon-btn"
+                className="ls-history-btn"
                 disabled={!canRedo}
                 onClick={handleRedo}
                 title="Làm lại (Ctrl+Y)"
                 aria-label="Làm lại"
               >
-                ↷
+                <IconRedo size={15} />
               </button>
-            </>
+            </div>
           )}
 
-          {resolvedCourseId && (
-            <Btn
-              small
-              variant="quiet"
-              onClick={() => {
-                setBankForQuizBlockId(null);
-                setBankModalOpen(true);
-              }}
-            >
-              Ngân hàng câu hỏi
-            </Btn>
-          )}
+          {(resolvedCourseId || (studioMode === 'COURSE' && activeLessonId)) && (
+            <div className="ls-popover-anchor" data-ls-popover>
+              <button
+                type="button"
+                className={`t-btn t-btn--small t-btn--quiet ${toolsMenuOpen ? 'is-open' : ''}`}
+                aria-haspopup="menu"
+                aria-expanded={toolsMenuOpen}
+                onClick={() => setToolsMenuOpen((v) => !v)}
+              >
+                <IconTools size={15} />
+                <span>Công cụ</span>
+                <IconChevronDown size={14} />
+              </button>
 
-          {studioMode === 'COURSE' && activeLessonId && (
-            <Btn small variant="quiet" onClick={openVersionHistory}>
-              Lịch sử phiên bản
-            </Btn>
+              {toolsMenuOpen && (
+                <div className="ls-dropdown-menu" role="menu">
+                  {resolvedCourseId && (
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className="ls-dropdown-item"
+                      onClick={() => {
+                        setToolsMenuOpen(false);
+                        setBankForQuizBlockId(null);
+                        setBankModalOpen(true);
+                      }}
+                    >
+                      <IconDatabase size={15} />
+                      <div>
+                        <strong>Ngân hàng câu hỏi</strong>
+                        <span>Tìm, soạn và gắn nhanh câu hỏi cho bài học</span>
+                      </div>
+                    </button>
+                  )}
+                  {studioMode === 'COURSE' && activeLessonId && (
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className="ls-dropdown-item"
+                      onClick={() => {
+                        setToolsMenuOpen(false);
+                        void openVersionHistory();
+                      }}
+                    >
+                      <IconHistory size={15} />
+                      <div>
+                        <strong>Lịch sử phiên bản</strong>
+                        <span>Xem các mốc xuất bản & khôi phục bản cũ</span>
+                      </div>
+                    </button>
+                  )}
+                  {resolvedCourseId && (
+                    <Link
+                      to={`/teaching/courses/${resolvedCourseId}?section=wiki`}
+                      role="menuitem"
+                      className="ls-dropdown-item"
+                      onClick={() => setToolsMenuOpen(false)}
+                    >
+                      <IconLibrary size={15} />
+                      <div>
+                        <strong>Wiki môn học ({wikiPages.length})</strong>
+                        <span>Quản lý thẻ từ khóa tự động hiện trích dẫn kiểu Wikipedia</span>
+                      </div>
+                    </Link>
+                  )}
+                  {resolvedCourseId && (
+                    <Link
+                      to={`/teaching/banks?course_id=${resolvedCourseId}`}
+                      role="menuitem"
+                      className="ls-dropdown-item"
+                      onClick={() => setToolsMenuOpen(false)}
+                    >
+                      <IconLibrary size={15} />
+                      <div>
+                        <strong>Thư viện Học liệu</strong>
+                        <span>Quản lý câu hỏi, bài tập & tài nguyên của môn</span>
+                      </div>
+                    </Link>
+                  )}
+                </div>
+              )}
+            </div>
           )}
 
           <Btn
@@ -1271,15 +1612,17 @@ export const LessonStudioPage: React.FC<{ mode?: 'COURSE' | 'CLASS' }> = ({ mode
             disabled={!activeLessonId}
             onClick={() => setPreviewModal({ scope: 'LESSON', viewport: 'DESKTOP' })}
           >
-            👁 Xem trước học viên
+            <IconEye size={15} />
+            <span>Xem trước</span>
           </Btn>
 
           {canEdit && activeLessonId && (
             <Btn
               small
-              variant="quiet"
+              variant={saveStatus === 'DIRTY' ? 'secondary' : 'quiet'}
               loading={saveStatus === 'SAVING'}
               onClick={() => saveDraftNow(false)}
+              title="Lưu bản nháp (Ctrl+S)"
             >
               Lưu nháp
             </Btn>
@@ -1297,7 +1640,7 @@ export const LessonStudioPage: React.FC<{ mode?: 'COURSE' | 'CLASS' }> = ({ mode
 
           <button
             type="button"
-            className="t-icon-btn"
+            className={`t-icon-btn ls-pane-toggle ${inspectorOpen ? 'is-active' : ''}`}
             onClick={() => {
               setInspectorOpen((v) => {
                 const next = !v;
@@ -1306,10 +1649,11 @@ export const LessonStudioPage: React.FC<{ mode?: 'COURSE' | 'CLASS' }> = ({ mode
                 return next;
               });
             }}
+            aria-pressed={inspectorOpen}
             title={inspectorOpen ? 'Thu gọn thanh thuộc tính phải' : 'Mở thanh thuộc tính phải'}
             aria-label={inspectorOpen ? 'Thu gọn thanh thuộc tính' : 'Mở thanh thuộc tính'}
           >
-            ◫
+            <IconSidebarRight size={16} />
           </button>
         </div>
       </div>
@@ -1330,9 +1674,12 @@ export const LessonStudioPage: React.FC<{ mode?: 'COURSE' | 'CLASS' }> = ({ mode
           type="button"
           role="tab"
           aria-selected={mobilePane === 'tree'}
-          onClick={() => setMobilePane('tree')}
+          onClick={() => {
+            setLeftPaneOpen(true);
+            setMobilePane('tree');
+          }}
         >
-          Chương & Bài ({outline.length})
+          Chương & Bài (<span className="tabular-nums">{totalLessonsCount}</span>)
         </button>
         <button
           type="button"
@@ -1359,321 +1706,412 @@ export const LessonStudioPage: React.FC<{ mode?: 'COURSE' | 'CLASS' }> = ({ mode
           3-PANE WORKSPACE (LEFT TREE / CENTER CANVAS / RIGHT INSPECTOR)
       ================================================================= */}
       <div
-        className={`ls-workspace ${inspectorOpen ? '' : 'is-inspector-closed'}`}
+        className={`ls-workspace ${leftPaneOpen ? '' : 'is-tree-closed'} ${
+          inspectorOpen ? '' : 'is-inspector-closed'
+        }`}
         data-mobile-pane={mobilePane}
       >
         {/* ----------------- LEFT PANE: CURRICULUM TREE ----------------- */}
-        <aside className="ls-left-pane" aria-label="Cấu trúc chương và bài học">
-          <div className="ls-pane-head">
-            <strong>Cấu trúc chương bài</strong>
-            <span className="t-sub tabular-nums">{outline.length} chương</span>
-          </div>
-
-          {studioMode === 'COURSE' && classesUsing.length > 1 && (
-            <div className="ls-tree-notice">
-              Đang dùng chung cho <strong className="tabular-nums">{classesUsing.length} lớp</strong>. Khi cần nội dung riêng từng lớp, mở Lesson Studio từ trang lớp học.
+        {leftPaneOpen && (
+          <aside className="ls-left-pane" aria-label="Cấu trúc chương và bài học">
+            <div className="ls-pane-head">
+              <strong>Cấu trúc chương bài</strong>
+              <span className="t-sub tabular-nums">
+                {outline.length} chương · {totalLessonsCount} bài
+              </span>
             </div>
-          )}
 
-          {studioMode === 'CLASS' && classShell && (
-            <div className="ls-tree-notice">
-              Kế thừa từ khóa <strong>{classShell.course.title}</strong>. Mọi chỉnh sửa tại đây chỉ áp dụng cho lớp <strong>{classShell.class.code}</strong>.
-              {classShell.capabilities.can_open_canonical_course && (
-                <div style={{ marginTop: 6 }}>
-                  <Link
-                    to={`/teaching/courses/${classShell.course.id}/studio${activeLessonId ? `?lesson=${activeLessonId}` : ''}`}
-                    className="t-row-link"
+            {totalLessonsCount >= 3 && (
+              <div className="ls-tree-search">
+                <IconSearch size={14} />
+                <input
+                  type="search"
+                  className="ls-tree-search__input"
+                  value={treeSearch}
+                  onChange={(e) => setTreeSearch(e.target.value)}
+                  placeholder="Tìm chương hoặc bài học…"
+                  aria-label="Tìm chương hoặc bài học"
+                />
+                {treeSearch && (
+                  <button
+                    type="button"
+                    className="ls-inline-clear"
+                    onClick={() => setTreeSearch('')}
+                    aria-label="Xóa tìm kiếm"
                   >
-                    Mở Giáo án Khóa học gốc ↗
-                  </Link>
-                </div>
-              )}
-            </div>
-          )}
+                    <IconX size={13} />
+                  </button>
+                )}
+              </div>
+            )}
 
-          <div className="ls-tree-scroll">
-            {outline.length === 0 ? (
-              <EmptyState title="Chưa có chương nào" text="Tạo chương đầu tiên ở khung bên dưới để bắt đầu soạn bài." />
-            ) : (
-              outline.map((ch, ci) => {
-                const isCollapsed = Boolean(collapsedChapters[ch.id]);
-                return (
-                  <div key={ch.id} className="ls-tree-chapter">
-                    <div className="ls-tree-chapter__head">
-                      <button
-                        type="button"
-                        className="ls-tree-collapse-btn"
-                        onClick={() => setCollapsedChapters((p) => ({ ...p, [ch.id]: !isCollapsed }))}
-                        aria-expanded={!isCollapsed}
-                        aria-label={`Thu gọn hoặc mở rộng chương ${ci + 1}`}
-                      >
-                        {isCollapsed ? '▸' : '▾'}
-                      </button>
+            {studioMode === 'COURSE' && classesUsing.length > 1 && (
+              <div className="ls-tree-notice">
+                Đang dùng chung cho <strong className="tabular-nums">{classesUsing.length} lớp</strong>. Khi cần nội dung riêng từng lớp, mở Studio từ trang lớp học.
+              </div>
+            )}
 
-                      {renamingChapter?.id === ch.id ? (
-                        <form
-                          style={{ display: 'flex', gap: 4, flex: '1 1 180px', minWidth: 0 }}
-                          onSubmit={async (e) => {
-                            e.preventDefault();
-                            if (!renamingChapter.title.trim()) return;
-                            try {
-                              await teachingApi.updateChapter(ch.id, { title: renamingChapter.title.trim() });
-                              setRenamingChapter(null);
-                              await loadStudioShell(activeLessonId);
-                            } catch (err) {
-                              toast({ tone: 'error', title: 'Không đổi được tên chương', detail: errMsg(err) });
-                            }
-                          }}
+            {studioMode === 'CLASS' && classShell && (
+              <div className="ls-tree-notice">
+                Kế thừa từ môn <strong>{classShell.course.title}</strong>. Mọi chỉnh sửa tại đây chỉ áp dụng cho lớp <strong>{classShell.class.code}</strong>.
+                {classShell.capabilities.can_open_canonical_course && (
+                  <div style={{ marginTop: 6 }}>
+                    <Link
+                      to={`/teaching/courses/${classShell.course.id}/studio${activeLessonId ? `?lesson=${activeLessonId}` : ''}`}
+                      className="t-row-link"
+                    >
+                      Mở Giáo án chuẩn gốc ↗
+                    </Link>
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div className="ls-tree-scroll">
+              {outline.length === 0 ? (
+                <EmptyState title="Chưa có chương nào" text="Tạo chương đầu tiên ở khung bên dưới để bắt đầu soạn bài." />
+              ) : filteredOutline.length === 0 ? (
+                <p className="t-sub" style={{ padding: '12px 8px', margin: 0 }}>
+                  Không có chương/bài nào khớp “{treeSearch}”.
+                </p>
+              ) : (
+                filteredOutline.map(({ ch, ci, lessons }) => {
+                  const isCollapsed = !normalizedTreeSearch && Boolean(collapsedChapters[ch.id]);
+                  const chMenuId = `ch_${ch.id}`;
+                  return (
+                    <div key={ch.id} className="ls-tree-chapter">
+                      <div className="ls-tree-chapter__head">
+                        <button
+                          type="button"
+                          className="ls-tree-collapse-btn"
+                          onClick={() => setCollapsedChapters((p) => ({ ...p, [ch.id]: !isCollapsed }))}
+                          aria-expanded={!isCollapsed}
+                          aria-label={`Thu gọn hoặc mở rộng chương ${ci + 1}`}
                         >
-                          <input
-                            className="t-input"
-                            style={{ minWidth: 0, flex: 1 }}
-                            value={renamingChapter.title}
-                            autoFocus
-                            onChange={(e) => setRenamingChapter({ id: ch.id, title: e.target.value })}
-                            aria-label="Tên chương"
-                          />
-                          <Btn small type="submit" variant="primary">Lưu</Btn>
-                        </form>
-                      ) : (
-                        <strong className="ls-tree-chapter__title">
-                          Chương {ci + 1}. {ch.title}
-                        </strong>
-                      )}
+                          {isCollapsed ? <IconChevronRight size={14} /> : <IconChevronDown size={14} />}
+                        </button>
 
-                      {canManageTree && renamingChapter?.id !== ch.id && (
-                        <div className="ls-tree-mini-actions">
-                          <button
-                            type="button"
-                            className="ls-mini-btn"
-                            disabled={ci === 0}
-                            onClick={() => moveOutlineChapter(ci, -1)}
-                            title="Chuyển chương lên"
-                            aria-label="Chuyển chương lên"
-                          >
-                            ↑
-                          </button>
-                          <button
-                            type="button"
-                            className="ls-mini-btn"
-                            disabled={ci === outline.length - 1}
-                            onClick={() => moveOutlineChapter(ci, 1)}
-                            title="Chuyển chương xuống"
-                            aria-label="Chuyển chương xuống"
-                          >
-                            ↓
-                          </button>
-                          <button
-                            type="button"
-                            className="ls-mini-btn"
-                            onClick={() => setRenamingChapter({ id: ch.id, title: ch.title })}
-                            title="Đổi tên chương"
-                            aria-label="Đổi tên chương"
-                          >
-                            ✎
-                          </button>
-                          <button
-                            type="button"
-                            className="ls-mini-btn"
-                            onClick={async () => {
+                        {renamingChapter?.id === ch.id ? (
+                          <form
+                            style={{ display: 'flex', gap: 6, flex: '1 1 160px', minWidth: 0 }}
+                            onSubmit={async (e) => {
+                              e.preventDefault();
+                              if (!renamingChapter.title.trim()) return;
                               try {
-                                await teachingApi.duplicateChapter(ch.id);
+                                await teachingApi.updateChapter(ch.id, { title: renamingChapter.title.trim() });
+                                setRenamingChapter(null);
                                 await loadStudioShell(activeLessonId);
-                                toast({ tone: 'success', title: 'Đã nhân bản chương' });
                               } catch (err) {
-                                toast({ tone: 'error', title: 'Không nhân bản được chương', detail: errMsg(err) });
+                                toast({ tone: 'error', title: 'Không đổi được tên chương', detail: errMsg(err) });
                               }
                             }}
-                            title="Nhân bản chương"
-                            aria-label="Nhân bản chương"
                           >
-                            ⧉
-                          </button>
+                            <input
+                              className="t-input"
+                              style={{ minWidth: 0, flex: 1 }}
+                              value={renamingChapter.title}
+                              autoFocus
+                              onChange={(e) => setRenamingChapter({ id: ch.id, title: e.target.value })}
+                              aria-label="Tên chương"
+                            />
+                            <Btn small type="submit" variant="primary">Lưu</Btn>
+                          </form>
+                        ) : (
+                          <strong
+                            className="ls-tree-chapter__title"
+                            title={formatChapterHeading(ci, ch.title)}
+                          >
+                            {formatChapterHeading(ci, ch.title)}
+                          </strong>
+                        )}
+
+                        {canManageTree && renamingChapter?.id !== ch.id && (
+                          <div className="ls-popover-anchor" data-ls-popover>
+                            <button
+                              type="button"
+                              className="ls-mini-btn ls-row-more-btn"
+                              aria-haspopup="menu"
+                              aria-expanded={treeMenuKey === chMenuId}
+                              aria-label="Tùy chọn chương"
+                              title="Tùy chọn chương"
+                              onClick={() => setTreeMenuKey(treeMenuKey === chMenuId ? null : chMenuId)}
+                            >
+                              <IconMoreHorizontal size={15} />
+                            </button>
+
+                            {treeMenuKey === chMenuId && (
+                              <div className="ls-row-menu" role="menu">
+                                <button
+                                  type="button"
+                                  role="menuitem"
+                                  className="ls-row-menu__item"
+                                  onClick={() => {
+                                    setTreeMenuKey(null);
+                                    setRenamingChapter({ id: ch.id, title: ch.title });
+                                  }}
+                                >
+                                  <IconEdit size={14} /> Đổi tên chương
+                                </button>
+                                <button
+                                  type="button"
+                                  role="menuitem"
+                                  className="ls-row-menu__item"
+                                  disabled={ci === 0}
+                                  onClick={() => {
+                                    setTreeMenuKey(null);
+                                    void moveOutlineChapter(ci, -1);
+                                  }}
+                                >
+                                  <IconArrowUp size={14} /> Chuyển lên
+                                </button>
+                                <button
+                                  type="button"
+                                  role="menuitem"
+                                  className="ls-row-menu__item"
+                                  disabled={ci === outline.length - 1}
+                                  onClick={() => {
+                                    setTreeMenuKey(null);
+                                    void moveOutlineChapter(ci, 1);
+                                  }}
+                                >
+                                  <IconArrowDown size={14} /> Chuyển xuống
+                                </button>
+                                <button
+                                  type="button"
+                                  role="menuitem"
+                                  className="ls-row-menu__item"
+                                  onClick={async () => {
+                                    setTreeMenuKey(null);
+                                    try {
+                                      await teachingApi.duplicateChapter(ch.id);
+                                      await loadStudioShell(activeLessonId);
+                                      toast({ tone: 'success', title: 'Đã nhân bản chương' });
+                                    } catch (err) {
+                                      toast({ tone: 'error', title: 'Không nhân bản được chương', detail: errMsg(err) });
+                                    }
+                                  }}
+                                >
+                                  <IconCopy size={14} /> Nhân bản chương
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+
+                      {!isCollapsed && (
+                        <div className="ls-tree-lessons">
+                          {lessons.map(({ l, li }) => {
+                            const isCurrent = l.id === activeLessonId;
+                            const hasWarnings = (l.warnings?.length || 0) > 0;
+                            const lsMenuId = `ls_${l.id}`;
+                            const formattedName = formatLessonHeading(ci, li, l.title);
+                            return (
+                              <div
+                                key={l.id}
+                                className={`ls-tree-lesson ${isCurrent ? 'is-active' : ''}`}
+                              >
+                                <button
+                                  type="button"
+                                  className="ls-tree-lesson__select"
+                                  onClick={() => selectLessonFromTree(l.id)}
+                                  title={formattedName}
+                                >
+                                  {studioMode === 'COURSE' && (
+                                    <span
+                                      className={`ls-dot ${
+                                        l.publish_status === 'PUBLISHED' ? 'ls-dot--published' : 'ls-dot--draft'
+                                      }`}
+                                      title={l.publish_status === 'PUBLISHED' ? 'Đã xuất bản' : 'Bản nháp'}
+                                    />
+                                  )}
+                                  <span className="ls-tree-lesson__content">
+                                    <span className="ls-tree-lesson__name">{formattedName}</span>
+                                    {(l.has_unpublished_changes ||
+                                      hasWarnings ||
+                                      (studioMode === 'CLASS' && l.class_publish_status)) && (
+                                      <span className="ls-tree-lesson__badges">
+                                        {studioMode === 'COURSE' ? (
+                                          <>
+                                            {l.has_unpublished_changes && (
+                                              <span className="ls-mini-tag">Sửa nháp</span>
+                                            )}
+                                            {hasWarnings && (
+                                              <span
+                                                className="ls-mini-warn"
+                                                title={l.warnings?.join(' • ')}
+                                                aria-label="Bài học còn mục cần hoàn thiện"
+                                              >
+                                                <IconAlertTriangle size={12} />
+                                              </span>
+                                            )}
+                                          </>
+                                        ) : (
+                                          <>
+                                            {l.class_publish_status === 'PUBLISHED' && (
+                                              <span className="ls-mini-tag">Đã tùy biến</span>
+                                            )}
+                                            {l.class_publish_status === 'DRAFT' && (
+                                              <span className="ls-mini-warn">Nháp lớp</span>
+                                            )}
+                                          </>
+                                        )}
+                                      </span>
+                                    )}
+                                  </span>
+                                </button>
+
+                                {canManageTree && (
+                                  <div className="ls-popover-anchor" data-ls-popover>
+                                    <button
+                                      type="button"
+                                      className="ls-mini-btn ls-row-more-btn"
+                                      aria-haspopup="menu"
+                                      aria-expanded={treeMenuKey === lsMenuId}
+                                      aria-label={`Tùy chọn bài học ${formattedName}`}
+                                      title="Tùy chọn bài học"
+                                      onClick={() => setTreeMenuKey(treeMenuKey === lsMenuId ? null : lsMenuId)}
+                                    >
+                                      <IconMoreHorizontal size={15} />
+                                    </button>
+
+                                    {treeMenuKey === lsMenuId && (
+                                      <div className="ls-row-menu" role="menu">
+                                        <button
+                                          type="button"
+                                          role="menuitem"
+                                          className="ls-row-menu__item"
+                                          disabled={li === 0}
+                                          onClick={() => {
+                                            setTreeMenuKey(null);
+                                            void moveOutlineLesson(ci, li, -1);
+                                          }}
+                                        >
+                                          <IconArrowUp size={14} /> Chuyển bài lên
+                                        </button>
+                                        <button
+                                          type="button"
+                                          role="menuitem"
+                                          className="ls-row-menu__item"
+                                          disabled={li === ch.lessons.length - 1}
+                                          onClick={() => {
+                                            setTreeMenuKey(null);
+                                            void moveOutlineLesson(ci, li, 1);
+                                          }}
+                                        >
+                                          <IconArrowDown size={14} /> Chuyển bài xuống
+                                        </button>
+                                        <button
+                                          type="button"
+                                          role="menuitem"
+                                          className="ls-row-menu__item"
+                                          onClick={async () => {
+                                            setTreeMenuKey(null);
+                                            try {
+                                              const dup = await teachingApi.duplicateLesson(l.id);
+                                              await loadStudioShell(dup.id);
+                                              setActiveLessonId(dup.id);
+                                              toast({ tone: 'success', title: 'Đã nhân bản bài học' });
+                                            } catch (err) {
+                                              toast({ tone: 'error', title: 'Không nhân bản được bài học', detail: errMsg(err) });
+                                            }
+                                          }}
+                                        >
+                                          <IconCopy size={14} /> Nhân bản bài học
+                                        </button>
+                                        <button
+                                          type="button"
+                                          role="menuitem"
+                                          className="ls-row-menu__item is-danger"
+                                          onClick={() => {
+                                            setTreeMenuKey(null);
+                                            setTreeConfirm({
+                                              title: l.published_version > 0 ? 'Lưu trữ bài học?' : 'Xóa bài học nháp?',
+                                              message:
+                                                l.published_version > 0
+                                                  ? 'Bài học đã từng xuất bản nên hệ thống sẽ lưu trữ an toàn để giữ lịch sử học tập của học viên.'
+                                                  : 'Bài học bản nháp này sẽ bị xóa vĩnh viễn.',
+                                              label: l.published_version > 0 ? 'Lưu trữ' : 'Xóa bài',
+                                              danger: true,
+                                              run: async () => {
+                                                if (l.published_version > 0) await teachingApi.archiveLesson(l.id);
+                                                else await teachingApi.deleteLesson(l.id);
+                                                await loadStudioShell();
+                                              },
+                                            });
+                                          }}
+                                        >
+                                          <IconTrash size={14} /> {l.published_version > 0 ? 'Lưu trữ bài học' : 'Xóa bài học'}
+                                        </button>
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+
+                          {canManageTree && (
+                            addingLessonChapterId === ch.id ? (
+                              <form
+                                onSubmit={(e) => handleAddLesson(e, ch.id)}
+                                style={{ display: 'flex', flexDirection: 'column', gap: 8, padding: '8px 4px' }}
+                              >
+                                <input
+                                  className="t-input"
+                                  value={newLessonTitle}
+                                  autoFocus
+                                  onChange={(e) => setNewLessonTitle(e.target.value)}
+                                  placeholder="Nhập tên bài học mới…"
+                                  aria-label="Tên bài học mới"
+                                />
+                                <div className="t-actions">
+                                  <Btn small type="submit" variant="primary" disabled={!newLessonTitle.trim()}>
+                                    Tạo bài học
+                                  </Btn>
+                                  <Btn small variant="ghost" onClick={() => setAddingLessonChapterId(null)}>
+                                    Hủy
+                                  </Btn>
+                                </div>
+                              </form>
+                            ) : (
+                              <button
+                                type="button"
+                                className="ls-add-lesson-btn"
+                                onClick={() => {
+                                  setAddingLessonChapterId(ch.id);
+                                  setNewLessonTitle('');
+                                }}
+                              >
+                                <IconPlus size={14} />
+                                <span>Thêm bài học</span>
+                              </button>
+                            )
+                          )}
                         </div>
                       )}
                     </div>
+                  );
+                })
+              )}
+            </div>
 
-                    {!isCollapsed && (
-                      <div className="ls-tree-lessons">
-                        {ch.lessons.map((l, li) => {
-                          const isCurrent = l.id === activeLessonId;
-                          const hasWarnings = (l.warnings?.length || 0) > 0;
-                          return (
-                            <div
-                              key={l.id}
-                              className={`ls-tree-lesson ${isCurrent ? 'is-active' : ''}`}
-                            >
-                              <button
-                                type="button"
-                                className="ls-tree-lesson__select"
-                                onClick={() => selectLessonFromTree(l.id)}
-                              >
-                                <span className="ls-tree-lesson__name">
-                                  {ci + 1}.{li + 1}. {l.title}
-                                </span>
-                                <span className="ls-tree-lesson__badges">
-                                  {studioMode === 'COURSE' ? (
-                                    <>
-                                      {l.publish_status === 'PUBLISHED' ? (
-                                        <span className="ls-dot ls-dot--published" title="Đã xuất bản" />
-                                      ) : (
-                                        <span className="ls-dot ls-dot--draft" title="Bản nháp" />
-                                      )}
-                                      {l.has_unpublished_changes && (
-                                        <span className="ls-mini-tag">Sửa nháp</span>
-                                      )}
-                                      {hasWarnings && (
-                                        <span
-                                          className="ls-mini-warn"
-                                          title={l.warnings?.join(' • ')}
-                                          aria-label="Bài học còn mục cần hoàn thiện"
-                                        >
-                                          ⚠
-                                        </span>
-                                      )}
-                                    </>
-                                  ) : (
-                                    <>
-                                      {l.class_publish_status === 'PUBLISHED' && (
-                                        <span className="ls-mini-tag">Đã tùy biến</span>
-                                      )}
-                                      {l.class_publish_status === 'DRAFT' && (
-                                        <span className="ls-mini-warn">Nháp lớp</span>
-                                      )}
-                                    </>
-                                  )}
-                                </span>
-                              </button>
-
-                              {canManageTree && (
-                                <div className="ls-tree-mini-actions">
-                                  <button
-                                    type="button"
-                                    className="ls-mini-btn"
-                                    disabled={li === 0}
-                                    onClick={() => moveOutlineLesson(ci, li, -1)}
-                                    title="Lên"
-                                    aria-label="Chuyển bài lên"
-                                  >
-                                    ↑
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className="ls-mini-btn"
-                                    disabled={li === ch.lessons.length - 1}
-                                    onClick={() => moveOutlineLesson(ci, li, 1)}
-                                    title="Xuống"
-                                    aria-label="Chuyển bài xuống"
-                                  >
-                                    ↓
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className="ls-mini-btn"
-                                    onClick={async () => {
-                                      try {
-                                        const dup = await teachingApi.duplicateLesson(l.id);
-                                        await loadStudioShell(dup.id);
-                                        setActiveLessonId(dup.id);
-                                        toast({ tone: 'success', title: 'Đã nhân bản bài học' });
-                                      } catch (err) {
-                                        toast({ tone: 'error', title: 'Không nhân bản được bài học', detail: errMsg(err) });
-                                      }
-                                    }}
-                                    title="Nhân bản bài học"
-                                    aria-label="Nhân bản bài học"
-                                  >
-                                    ⧉
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className="ls-mini-btn"
-                                    onClick={() =>
-                                      setTreeConfirm({
-                                        title: l.published_version > 0 ? 'Lưu trữ bài học?' : 'Xóa bài học nháp?',
-                                        message:
-                                          l.published_version > 0
-                                            ? 'Bài học đã từng xuất bản nên hệ thống sẽ lưu trữ an toàn để giữ lịch sử học tập của học viên.'
-                                            : 'Bài học bản nháp này sẽ bị xóa vĩnh viễn.',
-                                        label: l.published_version > 0 ? 'Lưu trữ' : 'Xóa bài',
-                                        danger: true,
-                                        run: async () => {
-                                          if (l.published_version > 0) await teachingApi.archiveLesson(l.id);
-                                          else await teachingApi.deleteLesson(l.id);
-                                          await loadStudioShell();
-                                        },
-                                      })
-                                    }
-                                    title={l.published_version > 0 ? 'Lưu trữ bài học' : 'Xóa bài học'}
-                                    aria-label={l.published_version > 0 ? 'Lưu trữ bài học' : 'Xóa bài học'}
-                                  >
-                                    🗑
-                                  </button>
-                                </div>
-                              )}
-                            </div>
-                          );
-                        })}
-
-                        {canManageTree && (
-                          addingLessonChapterId === ch.id ? (
-                            <form
-                              onSubmit={(e) => handleAddLesson(e, ch.id)}
-                              style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: '8px 0' }}
-                            >
-                              <input
-                                className="t-input"
-                                value={newLessonTitle}
-                                autoFocus
-                                onChange={(e) => setNewLessonTitle(e.target.value)}
-                                placeholder="Nhập tên bài học mới…"
-                                aria-label="Tên bài học mới"
-                              />
-                              <div className="t-actions">
-                                <Btn small type="submit" variant="primary" disabled={!newLessonTitle.trim()}>
-                                  Tạo bài học
-                                </Btn>
-                                <Btn small variant="ghost" onClick={() => setAddingLessonChapterId(null)}>
-                                  Hủy
-                                </Btn>
-                              </div>
-                            </form>
-                          ) : (
-                            <button
-                              type="button"
-                              className="ls-add-lesson-btn"
-                              onClick={() => {
-                                setAddingLessonChapterId(ch.id);
-                                setNewLessonTitle('');
-                              }}
-                            >
-                              + Thêm bài học vào Chương {ci + 1}
-                            </button>
-                          )
-                        )}
-                      </div>
-                    )}
-                  </div>
-                );
-              })
+            {canManageTree && (
+              <form className="ls-tree-foot" onSubmit={handleAddChapter}>
+                <input
+                  className="t-input"
+                  value={newChapterTitle}
+                  onChange={(e) => setNewChapterTitle(e.target.value)}
+                  placeholder="Tên chương mới…"
+                  aria-label="Tên chương mới"
+                />
+                <Btn small type="submit" variant="secondary" disabled={!newChapterTitle.trim()}>
+                  <IconPlus size={14} /> Chương
+                </Btn>
+              </form>
             )}
-          </div>
-
-          {canManageTree && (
-            <form className="ls-tree-foot" onSubmit={handleAddChapter}>
-              <input
-                className="t-input"
-                value={newChapterTitle}
-                onChange={(e) => setNewChapterTitle(e.target.value)}
-                placeholder="Tên chương mới…"
-                aria-label="Tên chương mới"
-              />
-              <Btn small type="submit" variant="primary" disabled={!newChapterTitle.trim()}>
-                + Chương
-              </Btn>
-            </form>
-          )}
-        </aside>
+          </aside>
+        )}
 
         {/* ----------------- CENTER PANE: BLOCK CANVAS ----------------- */}
         <section className="ls-center-pane" aria-label="Vùng soạn thảo nội dung bài học">
@@ -1694,24 +2132,28 @@ export const LessonStudioPage: React.FC<{ mode?: 'COURSE' | 'CLASS' }> = ({ mode
             </div>
           ) : (
             <div className="ls-canvas-inner">
-              {/* Lesson Header Card */}
+              {/* Lesson Header Card — Clean Editorial Surface */}
               <div className="ls-lesson-hero">
                 {studioMode === 'COURSE' ? (
                   <>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-                      <span className="t-sub">{courseLesson?.chapter.title}</span>
-                      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                    <div className="ls-lesson-hero__meta">
+                      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                        <span className="t-sub">{courseLesson?.chapter.title}</span>
+                        <span className="t-sub" aria-hidden="true">·</span>
+                        <span className="t-sub tabular-nums">{blocks.length} khối nội dung</span>
+                      </div>
+                      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
                         <Badge kind="lesson" value={courseLesson?.publish_status} />
                         {(courseLesson?.published_version || 0) > 0 && (
                           <Tone tone="neutral">
-                            <span className="tabular-nums">Phiên bản v{courseLesson?.published_version}</span>
+                            <span className="tabular-nums">v{courseLesson?.published_version}</span>
                           </Tone>
                         )}
                       </div>
                     </div>
-                    <textarea
+                    <input
+                      type="text"
                       className="ls-title-input"
-                      rows={2}
                       disabled={!canEdit}
                       value={lessonMeta.title}
                       onChange={(e) => {
@@ -1722,7 +2164,7 @@ export const LessonStudioPage: React.FC<{ mode?: 'COURSE' | 'CLASS' }> = ({ mode
                       aria-label="Tiêu đề bài học"
                     />
                     <textarea
-                      className="t-input"
+                      className="ls-desc-input"
                       rows={2}
                       disabled={!canEdit}
                       value={lessonMeta.description}
@@ -1730,13 +2172,13 @@ export const LessonStudioPage: React.FC<{ mode?: 'COURSE' | 'CLASS' }> = ({ mode
                         setLessonMeta((m) => ({ ...m, description: e.target.value }));
                         setSaveStatus('DIRTY');
                       }}
-                      placeholder="Tóm tắt ngắn gọn nội dung bài học cho học viên…"
+                      placeholder="Thêm mô tả ngắn gọn để học viên nắm nhanh mục tiêu bài học…"
                       aria-label="Mô tả ngắn bài học"
                     />
                   </>
                 ) : (
                   <>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+                    <div className="ls-lesson-hero__meta">
                       <span className="t-sub">{classLesson?.chapter.title}</span>
                       <Tone tone={classLesson?.custom.publish_status === 'PUBLISHED' ? 'success' : 'warning'}>
                         {classLesson?.custom.publish_status === 'PUBLISHED'
@@ -1744,7 +2186,7 @@ export const LessonStudioPage: React.FC<{ mode?: 'COURSE' | 'CLASS' }> = ({ mode
                           : 'Bổ sung lớp: Bản nháp'}
                       </Tone>
                     </div>
-                    <h1 style={{ margin: '4px 0 8px', fontSize: 24 }}>{classLesson?.lesson.title}</h1>
+                    <h1 className="ls-hero-static-title">{classLesson?.lesson.title}</h1>
                     <div className="t-form-grid">
                       <Field label="Ghi chú dặn dò riêng cho học viên lớp này">
                         <textarea
@@ -1821,10 +2263,11 @@ export const LessonStudioPage: React.FC<{ mode?: 'COURSE' | 'CLASS' }> = ({ mode
                               {isVid && (
                                 <Btn
                                   small
-                                  variant={isExpanded ? 'primary' : 'secondary'}
+                                  variant={isExpanded ? 'secondary' : 'quiet'}
                                   onClick={() => setExpandedInheritedVideoId(isExpanded ? null : ib.id)}
                                 >
-                                  🎬 Mốc câu hỏi riêng của lớp ({customMarkersOnThisVid.length})
+                                  <BlockTypeIcon type="video" size={14} />
+                                  <span>Mốc câu hỏi riêng của lớp (<span className="tabular-nums">{customMarkersOnThisVid.length}</span>)</span>
                                 </Btn>
                               )}
                               <Tone tone="neutral">Kế thừa</Tone>
@@ -1862,6 +2305,7 @@ export const LessonStudioPage: React.FC<{ mode?: 'COURSE' | 'CLASS' }> = ({ mode
                                 blocks={[ib]}
                                 ctx={{
                                   resources: resourceMap,
+                                  wikiPages,
                                   previewMode: true,
                                   videoMarkers: [...inheritedMarkersOnThisVid, ...customMarkersOnThisVid],
                                 }}
@@ -1896,104 +2340,178 @@ export const LessonStudioPage: React.FC<{ mode?: 'COURSE' | 'CLASS' }> = ({ mode
                         : 'Chưa có khối nội dung bổ sung riêng cho lớp'}
                     </strong>
                     <p className="t-sub">
-                      Chọn một loại khối trong thanh công cụ chèn nội dung bên dưới để bắt đầu biên soạn.
+                      Chọn nhanh một thành phần học tập bên dưới để bắt đầu biên soạn bài giảng.
                     </p>
                   </div>
                 ) : (
-                  blocks.map((b, bi) => {
-                    const isSelected = b.id === selectedBlockId;
-                    const c = b.content || {};
-                    const disp: BlockDisplayConfig =
-                      typeof c.display === 'object' && c.display !== null ? c.display : {};
-                    const blockUpload = uploadingBlockState[b.id];
-                    const videoResources = resources.filter((r) => r.resource_type === 'VIDEO');
-                    const pdfResources = resources.filter(
-                      (r) => r.resource_type === 'PDF' || r.mime_type === 'application/pdf'
-                    );
-                    const pickedRes = c.resource_id ? resourceMap[c.resource_id] : undefined;
+                  <>
+                    {renderInlineInserter(-1)}
+                    {blocks.map((b, bi) => {
+                      const isSelected = b.id === selectedBlockId;
+                      const isBlockCollapsed = Boolean(collapsedBlocks[b.id]);
+                      const c = b.content || {};
+                      const disp: BlockDisplayConfig =
+                        typeof c.display === 'object' && c.display !== null ? c.display : {};
+                      const blockUpload = uploadingBlockState[b.id];
+                      const videoResources = resources.filter((r) => r.resource_type === 'VIDEO');
+                      const pdfResources = resources.filter(
+                        (r) => r.resource_type === 'PDF' || r.mime_type === 'application/pdf'
+                      );
+                      const pickedRes = c.resource_id ? resourceMap[c.resource_id] : undefined;
+                      const blockMarkersCount = markers.filter((m) => m.block_id === b.id).length;
+                      const videoSourceType =
+                        b.block_type === 'youtube'
+                          ? 'YOUTUBE'
+                          : ((c.source_type || 'YOUTUBE') as 'UPLOAD' | 'YOUTUBE' | 'DIRECT_URL');
+                      const hasConfiguredVideo =
+                        (videoSourceType === 'UPLOAD' && Boolean(c.stream_url || pickedRes?.stream_url)) ||
+                        (videoSourceType === 'YOUTUBE' && Boolean(c.video_id)) ||
+                        (videoSourceType === 'DIRECT_URL' && Boolean(c.direct_url));
+                      const showVideoSetupForm = !hasConfiguredVideo || Boolean(videoSetupOpen[b.id]);
 
-                    return (
-                      <article
-                        key={b.id}
-                        className={`ls-block-card ${isSelected ? 'is-selected' : ''} ${
-                          disp.hidden ? 'is-hidden' : ''
-                        }`}
-                        onClick={() => {
-                          setSelectedBlockId(b.id);
-                          setInspectorTab('block');
-                        }}
-                      >
-                        <header className="ls-block-card__head">
-                          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                            <span className="ls-block-index tabular-nums">#{bi + 1}</span>
-                            <strong>{BLOCK_TYPE_NAMES[b.block_type] || b.block_type}</strong>
-                            {studioMode === 'CLASS' && <Tone tone="info">Riêng của lớp</Tone>}
-                            {disp.hidden && <Tone tone="muted">Đang ẩn tạm</Tone>}
-                            {disp.highlight && <Tone tone="warning">Nổi bật</Tone>}
-                            {disp.collapsible && <Tone tone="neutral">Có thể thu gọn</Tone>}
-                          </div>
+                      return (
+                        <React.Fragment key={b.id}>
+                          <article
+                            className={`ls-block-card ${isSelected ? 'is-selected' : ''} ${
+                              disp.hidden ? 'is-hidden' : ''
+                            } ${isBlockCollapsed ? 'is-collapsed' : ''} ${
+                              dragBlockIdx === bi ? 'is-dragging' : ''
+                            } ${dragOverIdx === bi && dragBlockIdx !== bi ? 'is-drag-over' : ''}`}
+                            onDragOver={(ev) => {
+                              if (!canEdit || dragBlockIdx === null) return;
+                              ev.preventDefault();
+                              if (dragOverIdx !== bi) setDragOverIdx(bi);
+                            }}
+                            onDragLeave={() => {
+                              if (dragOverIdx === bi) setDragOverIdx(null);
+                            }}
+                            onDrop={(ev) => {
+                              if (!canEdit || dragBlockIdx === null) return;
+                              ev.preventDefault();
+                              reorderBlock(dragBlockIdx, bi);
+                              setDragBlockIdx(null);
+                              setDragOverIdx(null);
+                            }}
+                            onClick={() => {
+                              setSelectedBlockId(b.id);
+                              setInspectorTab('block');
+                            }}
+                          >
+                            <header className="ls-block-card__head">
+                              <div className="ls-block-card__title-group">
+                                {canEdit && (
+                                  <span
+                                    className="ls-drag-handle"
+                                    draggable
+                                    onDragStart={(ev) => {
+                                      setDragBlockIdx(bi);
+                                      ev.dataTransfer.effectAllowed = 'move';
+                                      ev.dataTransfer.setData('text/plain', b.id);
+                                    }}
+                                    onDragEnd={() => {
+                                      setDragBlockIdx(null);
+                                      setDragOverIdx(null);
+                                    }}
+                                    title="Kéo thả để sắp xếp lại thứ tự khối"
+                                    aria-label="Kéo thả sắp xếp khối"
+                                    onClick={(ev) => ev.stopPropagation()}
+                                  >
+                                    <IconGripVertical size={15} />
+                                  </span>
+                                )}
+                                <button
+                                  type="button"
+                                  className="ls-block-fold-btn"
+                                  aria-expanded={!isBlockCollapsed}
+                                  aria-label={isBlockCollapsed ? 'Mở rộng khối' : 'Thu gọn khối'}
+                                  title={isBlockCollapsed ? 'Mở rộng khối' : 'Thu gọn khối để xem gọn'}
+                                  onClick={(ev) => {
+                                    ev.stopPropagation();
+                                    setCollapsedBlocks((p) => ({ ...p, [b.id]: !isBlockCollapsed }));
+                                  }}
+                                >
+                                  {isBlockCollapsed ? <IconChevronRight size={15} /> : <IconChevronDown size={15} />}
+                                </button>
+                                <span className="ls-block-index tabular-nums">#{bi + 1}</span>
+                                <span className="ls-block-type-icon">
+                                  <BlockTypeIcon type={b.block_type} size={15} />
+                                </span>
+                                <strong className="ls-block-type-name">
+                                  {BLOCK_TYPE_NAMES[b.block_type] || b.block_type}
+                                </strong>
+                                {isBlockCollapsed && (
+                                  <span className="ls-block-summary">
+                                    {getBlockSummary(b, blockMarkersCount)}
+                                  </span>
+                                )}
+                                {studioMode === 'CLASS' && <Tone tone="info">Riêng lớp</Tone>}
+                                {disp.hidden && <Tone tone="muted">Đang ẩn</Tone>}
+                                {disp.highlight && <Tone tone="warning">Nổi bật</Tone>}
+                                {disp.collapsible && <Tone tone="neutral">Thu gọn</Tone>}
+                              </div>
 
-                          {canEdit && (
-                            <div className="t-actions" onClick={(ev) => ev.stopPropagation()}>
-                              <button
-                                type="button"
-                                className="t-icon-btn"
-                                disabled={bi === 0}
-                                onClick={() => moveBlock(bi, -1)}
-                                aria-label="Di chuyển khối lên"
-                                title="Di chuyển lên"
-                              >
-                                ↑
-                              </button>
-                              <button
-                                type="button"
-                                className="t-icon-btn"
-                                disabled={bi === blocks.length - 1}
-                                onClick={() => moveBlock(bi, 1)}
-                                aria-label="Di chuyển khối xuống"
-                                title="Di chuyển xuống"
-                              >
-                                ↓
-                              </button>
-                              <button
-                                type="button"
-                                className="t-icon-btn"
-                                onClick={() => duplicateBlock(b, bi)}
-                                aria-label="Nhân bản khối"
-                                title="Nhân bản khối"
-                              >
-                                ⧉
-                              </button>
-                              <button
-                                type="button"
-                                className="t-icon-btn"
-                                onClick={() => {
-                                  const hasAttachedQuiz =
-                                    markers.some((m) => m.block_id === b.id) ||
-                                    (b.block_type === 'quiz' && Array.isArray(c.questions) && c.questions.length > 0);
-                                  if (hasAttachedQuiz) {
-                                    setTreeConfirm({
-                                      title: 'Xóa khối nội dung này?',
-                                      message:
-                                        'Khối này đang chứa câu hỏi tương tác hoặc mốc thời gian trên video. Bạn có chắc chắn muốn xóa khỏi bài học?',
-                                      label: 'Xóa khối',
-                                      danger: true,
-                                      run: async () => removeBlock(b.id),
-                                    });
-                                  } else {
-                                    removeBlock(b.id);
-                                  }
-                                }}
-                                aria-label="Xóa khối"
-                                title="Xóa khối"
-                              >
-                                🗑
-                              </button>
-                            </div>
-                          )}
-                        </header>
+                              {canEdit && (
+                                <div className="ls-block-actions" onClick={(ev) => ev.stopPropagation()}>
+                                  <button
+                                    type="button"
+                                    className="t-icon-btn"
+                                    disabled={bi === 0}
+                                    onClick={() => moveBlock(bi, -1)}
+                                    aria-label="Di chuyển khối lên"
+                                    title="Di chuyển lên"
+                                  >
+                                    <IconArrowUp size={15} />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="t-icon-btn"
+                                    disabled={bi === blocks.length - 1}
+                                    onClick={() => moveBlock(bi, 1)}
+                                    aria-label="Di chuyển khối xuống"
+                                    title="Di chuyển xuống"
+                                  >
+                                    <IconArrowDown size={15} />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="t-icon-btn"
+                                    onClick={() => duplicateBlock(b, bi)}
+                                    aria-label="Nhân bản khối"
+                                    title="Nhân bản khối"
+                                  >
+                                    <IconCopy size={15} />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="t-icon-btn ls-icon-btn-danger"
+                                    onClick={() => {
+                                      const hasAttachedQuiz =
+                                        markers.some((m) => m.block_id === b.id) ||
+                                        (b.block_type === 'quiz' && Array.isArray(c.questions) && c.questions.length > 0);
+                                      if (hasAttachedQuiz) {
+                                        setTreeConfirm({
+                                          title: 'Xóa khối nội dung này?',
+                                          message:
+                                            'Khối này đang chứa câu hỏi tương tác hoặc mốc thời gian trên video. Bạn có chắc chắn muốn xóa khỏi bài học?',
+                                          label: 'Xóa khối',
+                                          danger: true,
+                                          run: async () => removeBlock(b.id),
+                                        });
+                                      } else {
+                                        removeBlock(b.id);
+                                      }
+                                    }}
+                                    aria-label="Xóa khối"
+                                    title="Xóa khối"
+                                  >
+                                    <IconTrash size={15} />
+                                  </button>
+                                </div>
+                              )}
+                            </header>
 
-                        <div className="ls-block-card__body">
+                            {!isBlockCollapsed && (
+                              <div className="ls-block-card__body">
                           {/* 1. HEADING */}
                           {b.block_type === 'heading' && (
                             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -2021,17 +2539,42 @@ export const LessonStudioPage: React.FC<{ mode?: 'COURSE' | 'CLASS' }> = ({ mode
                           )}
 
                           {/* 2. PARAGRAPH */}
-                          {b.block_type === 'paragraph' && (
-                            <textarea
-                              className="t-input"
-                              rows={4}
-                              disabled={!canEdit}
-                              value={c.text || ''}
-                              onChange={(e) => updateBlockContent(b.id, { text: e.target.value })}
-                              placeholder="Nhập nội dung kiến thức bài giảng…"
-                              aria-label="Nội dung đoạn văn"
-                            />
-                          )}
+                          {b.block_type === 'paragraph' && (() => {
+                            const detectedWiki = findMatchedWikiTerms(String(c.text || ''), wikiPages);
+                            return (
+                              <>
+                                <textarea
+                                  className="t-input"
+                                  rows={4}
+                                  disabled={!canEdit}
+                                  value={c.text || ''}
+                                  onChange={(e) => updateBlockContent(b.id, { text: e.target.value })}
+                                  placeholder="Nhập nội dung kiến thức bài giảng… (từ khóa trùng thẻ Wiki sẽ tự động hiển thị thẻ trích dẫn kiểu Wikipedia)"
+                                  aria-label="Nội dung đoạn văn"
+                                />
+                                {detectedWiki.length > 0 && (
+                                  <WikiReaderProvider wikiPages={wikiPages}>
+                                    <div className="ls-wiki-detected">
+                                      <span className="ls-wiki-detected__label">
+                                        Thẻ Wiki tự động gắn (<span className="tabular-nums">{detectedWiki.length}</span>):
+                                      </span>
+                                      <div className="ls-wiki-detected__chips">
+                                        {detectedWiki.map((m) => (
+                                          <WikiTermTrigger
+                                            key={`${m.page.id}_${m.matchedKey}`}
+                                            variant="chip"
+                                            label={m.matchedText}
+                                            matchedKey={m.matchedKey}
+                                            page={m.page}
+                                          />
+                                        ))}
+                                      </div>
+                                    </div>
+                                  </WikiReaderProvider>
+                                )}
+                              </>
+                            );
+                          })()}
 
                           {/* 3. IMAGE */}
                           {b.block_type === 'image' && (
@@ -2072,183 +2615,237 @@ export const LessonStudioPage: React.FC<{ mode?: 'COURSE' | 'CLASS' }> = ({ mode
                           {/* 4. VIDEO & INTERACTIVE TIMESTAMP VIDEO QUIZ */}
                           {(b.block_type === 'video' || b.block_type === 'youtube') && (
                             <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-                              {b.block_type === 'video' && canEdit && (
-                                <div className="t-seg" role="tablist" aria-label="Chọn nguồn video">
-                                  {[
-                                    { id: 'UPLOAD', label: '⬆ Tải tệp Video lên' },
-                                    { id: 'YOUTUBE', label: '▶ Liên kết YouTube' },
-                                    { id: 'DIRECT_URL', label: '🌐 Nguồn HTTPS trực tiếp' },
-                                  ].map((tab) => {
-                                    const curSource = c.source_type || 'YOUTUBE';
-                                    return (
-                                      <button
-                                        key={tab.id}
-                                        type="button"
-                                        aria-pressed={curSource === tab.id}
-                                        onClick={() => updateBlockContent(b.id, { source_type: tab.id })}
-                                      >
-                                        {tab.label}
-                                      </button>
-                                    );
-                                  })}
-                                </div>
-                              )}
-
-                              {/* Source A: Chunked Video Upload + Library Reuse */}
-                              {b.block_type === 'video' && (c.source_type || 'YOUTUBE') === 'UPLOAD' && (
-                                <div className="ls-upload-zone">
-                                  {blockUpload ? (
-                                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                                        <strong style={{ overflowWrap: 'anywhere', minWidth: 0 }}>Đang tải lên: {blockUpload.fileName}</strong>
-                                        <span className="tabular-nums">{blockUpload.pct}%</span>
-                                      </div>
-                                      <div className="t-meter__bar">
-                                        <span style={{ width: `${blockUpload.pct}%` }} />
-                                      </div>
-                                      <div>
-                                        <Btn small variant="danger" onClick={() => handleCancelVideoUpload(b.id)}>
-                                          Hủy tải lên
-                                        </Btn>
-                                      </div>
+                              {!showVideoSetupForm ? (
+                                <div className="ls-video-summary-bar">
+                                  <div className="ls-video-summary-bar__info">
+                                    <span className="ls-video-source-chip">
+                                      {videoSourceType === 'UPLOAD' ? (
+                                        <><IconUpload size={13} /> Tệp video</>
+                                      ) : videoSourceType === 'DIRECT_URL' ? (
+                                        <><IconGlobe size={13} /> HTTPS</>
+                                      ) : (
+                                        <><IconPlay size={13} /> YouTube</>
+                                      )}
+                                    </span>
+                                    <div style={{ minWidth: 0 }}>
+                                      <strong className="ls-video-summary-bar__title">
+                                        {c.title || pickedRes?.title || (c.video_id ? `YouTube · ${c.video_id}` : 'Video bài giảng')}
+                                      </strong>
+                                      {c.description && (
+                                        <span className="ls-video-summary-bar__note">{c.description}</span>
+                                      )}
                                     </div>
-                                  ) : (
-                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-                                      <div style={{ minWidth: 0 }}>
-                                        <strong style={{ overflowWrap: 'anywhere' }}>
-                                          {pickedRes
-                                            ? `Đã gắn tệp: ${pickedRes.title} (${fmtBytes(pickedRes.file_size_bytes)})`
-                                            : 'Tải tệp video từ máy tính (.mp4, .webm, .m4v, .mov)'}
-                                        </strong>
-                                        <span className="t-sub" style={{ display: 'block' }}>
-                                          Hỗ trợ tải lên theo mảnh dung lượng lớn, tự động trích xuất thời lượng và phát tua qua HTTP Range.
-                                        </span>
-                                      </div>
-                                      {canEdit && (
-                                        <div className="t-actions">
-                                          <label className="t-btn t-btn--primary t-btn--small" style={{ cursor: 'pointer' }}>
-                                            {pickedRes ? 'Thay thế video khác' : '+ Chọn tệp Video'}
-                                            <input
-                                              type="file"
-                                              accept="video/mp4,video/webm,video/quicktime,.mp4,.webm,.m4v,.mov"
-                                              style={{ display: 'none' }}
-                                              onChange={(e) => {
-                                                const f = e.target.files?.[0];
-                                                if (f) void handleVideoFileChosen(b.id, f);
-                                                e.currentTarget.value = '';
-                                              }}
-                                            />
-                                          </label>
-                                          {videoResources.length > 0 && (
-                                            <select
-                                              className="t-input"
-                                              style={{ flex: '1 1 200px', minWidth: 0, maxWidth: '100%' }}
-                                              value={c.resource_id || ''}
-                                              onChange={(e) => {
-                                                const r = resourceMap[e.target.value];
-                                                if (r) {
-                                                  updateBlockContent(b.id, {
-                                                    source_type: 'UPLOAD',
-                                                    resource_id: r.id,
-                                                    title: c.title || r.title,
-                                                    duration_seconds: r.duration_seconds || 0,
-                                                    thumbnail_url: r.thumbnail_url?.startsWith('https://') ? r.thumbnail_url : '',
-                                                    stream_url: r.stream_url || undefined,
-                                                  });
-                                                }
-                                              }}
-                                              aria-label="Chọn từ thư viện video đã tải lên"
+                                  </div>
+                                  {canEdit && (
+                                    <Btn
+                                      small
+                                      variant="quiet"
+                                      onClick={() => setVideoSetupOpen((p) => ({ ...p, [b.id]: true }))}
+                                    >
+                                      <IconSliders size={14} /> Đổi nguồn & tiêu đề
+                                    </Btn>
+                                  )}
+                                </div>
+                              ) : (
+                                <div className="ls-video-setup-panel">
+                                  <div className="ls-video-setup-panel__top">
+                                    {b.block_type === 'video' && canEdit && (
+                                      <div className="ls-seg-pills" role="tablist" aria-label="Chọn nguồn video">
+                                        {(
+                                          [
+                                            { id: 'UPLOAD', label: 'Tải tệp Video', icon: <IconUpload size={14} /> },
+                                            { id: 'YOUTUBE', label: 'Liên kết YouTube', icon: <IconPlay size={14} /> },
+                                            { id: 'DIRECT_URL', label: 'Nguồn HTTPS', icon: <IconGlobe size={14} /> },
+                                          ] as const
+                                        ).map((tab) => {
+                                          const curSource = c.source_type || 'YOUTUBE';
+                                          return (
+                                            <button
+                                              key={tab.id}
+                                              type="button"
+                                              role="tab"
+                                              aria-selected={curSource === tab.id}
+                                              className={`ls-seg-pill ${curSource === tab.id ? 'is-active' : ''}`}
+                                              onClick={() => updateBlockContent(b.id, { source_type: tab.id })}
                                             >
-                                              <option value="">— Hoặc chọn từ thư viện video —</option>
-                                              {videoResources.map((vr) => (
-                                                <option key={vr.id} value={vr.id}>
-                                                  {vr.title} ({vr.duration_seconds ? formatTimestamp(vr.duration_seconds) : fmtBytes(vr.file_size_bytes)})
-                                                </option>
-                                              ))}
-                                            </select>
+                                              {tab.icon}
+                                              <span>{tab.label}</span>
+                                            </button>
+                                          );
+                                        })}
+                                      </div>
+                                    )}
+                                    {hasConfiguredVideo && (
+                                      <Btn
+                                        small
+                                        variant="ghost"
+                                        onClick={() => setVideoSetupOpen((p) => ({ ...p, [b.id]: false }))}
+                                      >
+                                        Thu gọn
+                                      </Btn>
+                                    )}
+                                  </div>
+
+                                  {/* Source A: Chunked Video Upload + Library Reuse */}
+                                  {b.block_type === 'video' && (c.source_type || 'YOUTUBE') === 'UPLOAD' && (
+                                    <div className="ls-upload-zone">
+                                      {blockUpload ? (
+                                        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                                            <strong style={{ overflowWrap: 'anywhere', minWidth: 0 }}>Đang tải lên: {blockUpload.fileName}</strong>
+                                            <span className="tabular-nums">{blockUpload.pct}%</span>
+                                          </div>
+                                          <div className="t-meter__bar">
+                                            <span style={{ width: `${blockUpload.pct}%` }} />
+                                          </div>
+                                          <div>
+                                            <Btn small variant="danger" onClick={() => handleCancelVideoUpload(b.id)}>
+                                              Hủy tải lên
+                                            </Btn>
+                                          </div>
+                                        </div>
+                                      ) : (
+                                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+                                          <div style={{ minWidth: 0 }}>
+                                            <strong style={{ overflowWrap: 'anywhere' }}>
+                                              {pickedRes
+                                                ? `Đã gắn tệp: ${pickedRes.title} (${fmtBytes(pickedRes.file_size_bytes)})`
+                                                : 'Tải tệp video từ máy tính (.mp4, .webm, .m4v, .mov)'}
+                                            </strong>
+                                            <span className="t-sub" style={{ display: 'block' }}>
+                                              Hỗ trợ tải lên theo mảnh dung lượng lớn, tự động trích xuất thời lượng và phát tua qua HTTP Range.
+                                            </span>
+                                          </div>
+                                          {canEdit && (
+                                            <div className="t-actions">
+                                              <label className="t-btn t-btn--secondary t-btn--small" style={{ cursor: 'pointer' }}>
+                                                <IconUpload size={14} />
+                                                <span>{pickedRes ? 'Thay thế video khác' : 'Chọn tệp Video'}</span>
+                                                <input
+                                                  type="file"
+                                                  accept="video/mp4,video/webm,video/quicktime,.mp4,.webm,.m4v,.mov"
+                                                  style={{ display: 'none' }}
+                                                  onChange={(e) => {
+                                                    const f = e.target.files?.[0];
+                                                    if (f) void handleVideoFileChosen(b.id, f);
+                                                    e.currentTarget.value = '';
+                                                  }}
+                                                />
+                                              </label>
+                                              {videoResources.length > 0 && (
+                                                <select
+                                                  className="t-input"
+                                                  style={{ flex: '1 1 200px', minWidth: 0, maxWidth: '100%' }}
+                                                  value={c.resource_id || ''}
+                                                  onChange={(e) => {
+                                                    const r = resourceMap[e.target.value];
+                                                    if (r) {
+                                                      updateBlockContent(b.id, {
+                                                        source_type: 'UPLOAD',
+                                                        resource_id: r.id,
+                                                        title: c.title || r.title,
+                                                        duration_seconds: r.duration_seconds || 0,
+                                                        thumbnail_url: r.thumbnail_url?.startsWith('https://') ? r.thumbnail_url : '',
+                                                        stream_url: r.stream_url || undefined,
+                                                      });
+                                                    }
+                                                  }}
+                                                  aria-label="Chọn từ thư viện video đã tải lên"
+                                                >
+                                                  <option value="">— Hoặc chọn từ thư viện video —</option>
+                                                  {videoResources.map((vr) => (
+                                                    <option key={vr.id} value={vr.id}>
+                                                      {vr.title} ({vr.duration_seconds ? formatTimestamp(vr.duration_seconds) : fmtBytes(vr.file_size_bytes)})
+                                                    </option>
+                                                  ))}
+                                                </select>
+                                              )}
+                                            </div>
                                           )}
                                         </div>
                                       )}
                                     </div>
                                   )}
-                                </div>
-                              )}
 
-                              {/* Source B: YouTube Link */}
-                              {(b.block_type === 'youtube' || (c.source_type || 'YOUTUBE') === 'YOUTUBE') && (
-                                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                                  <input
-                                    className="t-input"
-                                    style={{ flex: '1 1 280px' }}
-                                    disabled={!canEdit}
-                                    defaultValue={c.video_id ? `https://www.youtube.com/watch?v=${c.video_id}` : ''}
-                                    placeholder="Dán liên kết YouTube (https://www.youtube.com/watch?v=...)"
-                                    aria-label="Liên kết YouTube"
-                                    onBlur={(e) => {
-                                      if (e.target.value.trim() && canEdit) {
-                                        void handleValidateVideoUrl(b.id, e.target.value);
-                                      }
-                                    }}
-                                  />
-                                  {canEdit && (
-                                    <Btn
-                                      small
-                                      loading={linkCheckingId === b.id}
-                                      onClick={(ev) => {
-                                        const input = ev.currentTarget.previousElementSibling as HTMLInputElement | null;
-                                        if (input?.value) void handleValidateVideoUrl(b.id, input.value);
-                                      }}
-                                    >
-                                      Kiểm tra link
-                                    </Btn>
+                                  {/* Source B: YouTube Link */}
+                                  {(b.block_type === 'youtube' || (c.source_type || 'YOUTUBE') === 'YOUTUBE') && (
+                                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                                      <input
+                                        className="t-input"
+                                        style={{ flex: '1 1 280px' }}
+                                        disabled={!canEdit}
+                                        defaultValue={c.video_id ? `https://www.youtube.com/watch?v=${c.video_id}` : ''}
+                                        placeholder="Dán liên kết YouTube (https://www.youtube.com/watch?v=...)"
+                                        aria-label="Liên kết YouTube"
+                                        onBlur={(e) => {
+                                          if (e.target.value.trim() && canEdit) {
+                                            void handleValidateVideoUrl(b.id, e.target.value);
+                                          }
+                                        }}
+                                      />
+                                      {canEdit && (
+                                        <Btn
+                                          small
+                                          variant="secondary"
+                                          loading={linkCheckingId === b.id}
+                                          onClick={(ev) => {
+                                            const input = ev.currentTarget.previousElementSibling as HTMLInputElement | null;
+                                            if (input?.value) void handleValidateVideoUrl(b.id, input.value);
+                                          }}
+                                        >
+                                          Kiểm tra link
+                                        </Btn>
+                                      )}
+                                    </div>
                                   )}
-                                </div>
-                              )}
 
-                              {/* Source C: Direct HTTPS Video URL */}
-                              {b.block_type === 'video' && c.source_type === 'DIRECT_URL' && (
-                                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                                  <input
-                                    className="t-input"
-                                    style={{ flex: '1 1 280px' }}
-                                    disabled={!canEdit}
-                                    value={c.direct_url || ''}
-                                    onChange={(e) => updateBlockContent(b.id, { direct_url: e.target.value })}
-                                    placeholder="https://commondatastorage.googleapis.com/.../video.mp4"
-                                    aria-label="Đường dẫn tệp video HTTPS trực tiếp"
-                                  />
-                                  {canEdit && (
-                                    <Btn
-                                      small
-                                      loading={linkCheckingId === b.id}
-                                      onClick={() => handleValidateVideoUrl(b.id, c.direct_url || '')}
-                                    >
-                                      Kiểm tra nguồn
-                                    </Btn>
+                                  {/* Source C: Direct HTTPS Video URL */}
+                                  {b.block_type === 'video' && c.source_type === 'DIRECT_URL' && (
+                                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                                      <input
+                                        className="t-input"
+                                        style={{ flex: '1 1 280px' }}
+                                        disabled={!canEdit}
+                                        value={c.direct_url || ''}
+                                        onChange={(e) => updateBlockContent(b.id, { direct_url: e.target.value })}
+                                        placeholder="https://commondatastorage.googleapis.com/.../video.mp4"
+                                        aria-label="Đường dẫn tệp video HTTPS trực tiếp"
+                                      />
+                                      {canEdit && (
+                                        <Btn
+                                          small
+                                          variant="secondary"
+                                          loading={linkCheckingId === b.id}
+                                          onClick={() => handleValidateVideoUrl(b.id, c.direct_url || '')}
+                                        >
+                                          Kiểm tra nguồn
+                                        </Btn>
+                                      )}
+                                    </div>
                                   )}
+
+                                  <div className="t-form-grid">
+                                    <Field label="Tiêu đề video">
+                                      <input
+                                        className="t-input"
+                                        disabled={!canEdit}
+                                        value={c.title || ''}
+                                        onChange={(e) => updateBlockContent(b.id, { title: e.target.value })}
+                                        placeholder="Tên video bài giảng…"
+                                      />
+                                    </Field>
+                                    <Field label="Ghi chú hướng dẫn dưới video">
+                                      <input
+                                        className="t-input"
+                                        disabled={!canEdit}
+                                        value={c.description || ''}
+                                        onChange={(e) => updateBlockContent(b.id, { description: e.target.value })}
+                                        placeholder="Lưu ý cho học viên khi xem…"
+                                      />
+                                    </Field>
+                                  </div>
                                 </div>
                               )}
-
-                              <div className="t-form-grid">
-                                <Field label="Tiêu đề video">
-                                  <input
-                                    className="t-input"
-                                    disabled={!canEdit}
-                                    value={c.title || ''}
-                                    onChange={(e) => updateBlockContent(b.id, { title: e.target.value })}
-                                    placeholder="Tên video bài giảng…"
-                                  />
-                                </Field>
-                                <Field label="Ghi chú hướng dẫn dưới video">
-                                  <input
-                                    className="t-input"
-                                    disabled={!canEdit}
-                                    value={c.description || ''}
-                                    onChange={(e) => updateBlockContent(b.id, { description: e.target.value })}
-                                    placeholder="Lưu ý cho học viên khi xem…"
-                                  />
-                                </Field>
-                              </div>
 
                               {/* Inline Interactive Video Quiz Timeline Editor */}
                               <VideoQuizTimelineEditor
@@ -2589,6 +3186,30 @@ export const LessonStudioPage: React.FC<{ mode?: 'COURSE' | 'CLASS' }> = ({ mode
                                   value={c.text || ''}
                                   onChange={(e) => updateBlockContent(b.id, { text: e.target.value })}
                                 />
+                                {(() => {
+                                  const detectedWiki = findMatchedWikiTerms(String(c.text || ''), wikiPages);
+                                  if (detectedWiki.length === 0) return null;
+                                  return (
+                                    <WikiReaderProvider wikiPages={wikiPages}>
+                                      <div className="ls-wiki-detected" style={{ marginTop: 8 }}>
+                                        <span className="ls-wiki-detected__label">
+                                          Thẻ Wiki tự động gắn (<span className="tabular-nums">{detectedWiki.length}</span>):
+                                        </span>
+                                        <div className="ls-wiki-detected__chips">
+                                          {detectedWiki.map((m) => (
+                                            <WikiTermTrigger
+                                              key={`${m.page.id}_${m.matchedKey}`}
+                                              variant="chip"
+                                              label={m.matchedText}
+                                              matchedKey={m.matchedKey}
+                                              page={m.page}
+                                            />
+                                          ))}
+                                        </div>
+                                      </div>
+                                    </WikiReaderProvider>
+                                  );
+                                })()}
                               </Field>
                             </div>
                           )}
@@ -2748,7 +3369,7 @@ export const LessonStudioPage: React.FC<{ mode?: 'COURSE' | 'CLASS' }> = ({ mode
                                       })
                                     }
                                   >
-                                    {o.is_correct ? '✓ Đúng' : 'Đặt đúng'}
+                                    {o.is_correct ? <><IconCheck size={14} /> Đúng</> : 'Đặt đúng'}
                                   </button>
                                   <input
                                     className="t-input"
@@ -2884,41 +3505,72 @@ export const LessonStudioPage: React.FC<{ mode?: 'COURSE' | 'CLASS' }> = ({ mode
                               </div>
                             </div>
                           )}
-                        </div>
-                      </article>
-                    );
-                  })
+                              </div>
+                            )}
+                          </article>
+                          {renderInlineInserter(bi)}
+                        </React.Fragment>
+                      );
+                    })}
+                  </>
                 )}
               </div>
 
-              {/* Categorized + Insert Block Palette */}
+              {/* Streamlined Quick-Insert Bar + Expandable Full Block Palette */}
               {canEdit && (
                 <div className="ls-palette">
-                  <strong style={{ display: 'block', marginBottom: 12, fontSize: 14 }}>
-                    + Chèn thành phần học tập vào bài giảng
-                  </strong>
-                  <div className="ls-palette-groups">
-                    {BLOCK_PALETTE_GROUPS.map((grp) => (
-                      <div key={grp.group} className="ls-palette-group">
-                        <span className="ls-palette-group__title">{grp.group}</span>
-                        <div className="ls-palette-buttons">
-                          {grp.items.map((it) => (
-                            <button
-                              key={it.type}
-                              type="button"
-                              className="ls-palette-btn"
-                              onClick={() => insertBlock(it.type)}
-                            >
-                              <span className="ls-palette-btn__icon" aria-hidden="true">
-                                {it.icon}
-                              </span>
-                              <span>{it.label}</span>
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                    ))}
+                  <div className="ls-palette__quick-bar">
+                    <div className="ls-palette__quick-items">
+                      <span className="ls-palette__quick-label">Thêm nhanh</span>
+                      {QUICK_PALETTE_ITEMS.map((it) => (
+                        <button
+                          key={it.type}
+                          type="button"
+                          className="ls-palette-btn ls-palette-btn--quick"
+                          onClick={() => insertBlock(it.type, blocks.length - 1)}
+                        >
+                          <span className="ls-palette-btn__icon">
+                            <BlockTypeIcon type={it.type} size={15} />
+                          </span>
+                          <span>{it.label}</span>
+                        </button>
+                      ))}
+                    </div>
+                    <button
+                      type="button"
+                      className="t-btn t-btn--small t-btn--quiet"
+                      aria-expanded={showAllBottomPalette}
+                      onClick={() => setShowAllBottomPalette((v) => !v)}
+                    >
+                      <span>{showAllBottomPalette ? 'Thu gọn danh mục' : 'Tất cả khối (15)'}</span>
+                      {showAllBottomPalette ? <IconChevronDown size={14} /> : <IconChevronRight size={14} />}
+                    </button>
                   </div>
+
+                  {showAllBottomPalette && (
+                    <div className="ls-palette-groups" style={{ marginTop: 16 }}>
+                      {BLOCK_PALETTE_GROUPS.map((grp) => (
+                        <div key={grp.group} className="ls-palette-group">
+                          <span className="ls-palette-group__title">{grp.group}</span>
+                          <div className="ls-palette-buttons">
+                            {grp.items.map((it) => (
+                              <button
+                                key={it.type}
+                                type="button"
+                                className="ls-palette-btn"
+                                onClick={() => insertBlock(it.type, blocks.length - 1)}
+                              >
+                                <span className="ls-palette-btn__icon">
+                                  <BlockTypeIcon type={it.type} size={15} />
+                                </span>
+                                <span>{it.label}</span>
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -3172,6 +3824,47 @@ export const LessonStudioPage: React.FC<{ mode?: 'COURSE' | 'CLASS' }> = ({ mode
                         </label>
                       </div>
                     )}
+
+                    {canEdit && (
+                      <div className="ls-inspector-footer">
+                        <Btn
+                          small
+                          variant="quiet"
+                          onClick={() => {
+                            const idx = blocks.findIndex((x) => x.id === selectedBlock.id);
+                            if (idx >= 0) duplicateBlock(selectedBlock, idx);
+                          }}
+                        >
+                          <IconCopy size={14} /> Nhân bản
+                        </Btn>
+                        <Btn
+                          small
+                          variant="danger"
+                          onClick={() => {
+                            const c = selectedBlock.content || {};
+                            const hasAttachedQuiz =
+                              markers.some((m) => m.block_id === selectedBlock.id) ||
+                              (selectedBlock.block_type === 'quiz' &&
+                                Array.isArray(c.questions) &&
+                                c.questions.length > 0);
+                            if (hasAttachedQuiz) {
+                              setTreeConfirm({
+                                title: 'Xóa khối nội dung này?',
+                                message:
+                                  'Khối này đang chứa câu hỏi tương tác hoặc mốc thời gian trên video. Bạn có chắc chắn muốn xóa khỏi bài học?',
+                                label: 'Xóa khối',
+                                danger: true,
+                                run: async () => removeBlock(selectedBlock.id),
+                              });
+                            } else {
+                              removeBlock(selectedBlock.id);
+                            }
+                          }}
+                        >
+                          <IconTrash size={14} /> Xóa khối
+                        </Btn>
+                      </div>
+                    )}
                   </div>
                 )
               ) : studioMode === 'COURSE' ? (
@@ -3322,14 +4015,14 @@ export const LessonStudioPage: React.FC<{ mode?: 'COURSE' | 'CLASS' }> = ({ mode
                 aria-pressed={previewModal.viewport === 'DESKTOP'}
                 onClick={() => setPreviewModal({ ...previewModal, viewport: 'DESKTOP' })}
               >
-                🖥 Máy tính
+                <IconMonitor size={14} /> Máy tính
               </button>
               <button
                 type="button"
                 aria-pressed={previewModal.viewport === 'MOBILE'}
                 onClick={() => setPreviewModal({ ...previewModal, viewport: 'MOBILE' })}
               >
-                📱 Điện thoại
+                <IconSmartphone size={14} /> Điện thoại
               </button>
             </div>
           </div>
@@ -3346,29 +4039,34 @@ export const LessonStudioPage: React.FC<{ mode?: 'COURSE' | 'CLASS' }> = ({ mode
                 <span style={{ whiteSpace: 'pre-wrap' }}>{previewPayload.instructorNote}</span>
               </div>
             )}
-            {previewPayload.objectives && (
-              <div className="t-callout" style={{ marginBottom: 20 }}>
-                <strong>Mục tiêu bài học</strong>
-                <span style={{ whiteSpace: 'pre-wrap' }}>{previewPayload.objectives}</span>
-              </div>
-            )}
+            <WikiReaderProvider wikiPages={wikiPages}>
+              {previewPayload.objectives && (
+                <div className="t-callout" style={{ marginBottom: 20 }}>
+                  <strong>Mục tiêu bài học</strong>
+                  <span style={{ whiteSpace: 'pre-wrap' }}>
+                    <WikiAnnotatedText text={previewPayload.objectives} wikiPages={wikiPages} />
+                  </span>
+                </div>
+              )}
 
-            {previewPayload.blocks.length === 0 ? (
-              <EmptyState title="Chưa có nội dung hiển thị trong chế độ xem này" />
-            ) : (
-              <BlockList
-                blocks={previewPayload.blocks}
-                ctx={{
-                  previewMode: true,
-                  resources: resourceMap,
-                  videoMarkers: previewPayload.markers,
-                  onDownload: async (resId) => {
-                    const f = await teachingApi.downloadResource(resId);
-                    saveBlob(f);
-                  },
-                }}
-              />
-            )}
+              {previewPayload.blocks.length === 0 ? (
+                <EmptyState title="Chưa có nội dung hiển thị trong chế độ xem này" />
+              ) : (
+                <BlockList
+                  blocks={previewPayload.blocks}
+                  ctx={{
+                    previewMode: true,
+                    resources: resourceMap,
+                    wikiPages,
+                    videoMarkers: previewPayload.markers,
+                    onDownload: async (resId) => {
+                      const f = await teachingApi.downloadResource(resId);
+                      saveBlob(f);
+                    },
+                  }}
+                />
+              )}
+            </WikiReaderProvider>
           </div>
         </Modal>
       )}

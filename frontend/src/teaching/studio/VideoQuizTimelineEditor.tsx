@@ -3,6 +3,7 @@ import { MarkerBehavior, QuestionBankItem, VideoQuizMarker } from '../api';
 import { Btn, Field, Modal, Tone } from '../ui';
 import { InteractiveVideoPlayer } from './InteractiveVideoPlayer';
 import { QUESTION_TYPE_LABELS, QuestionBankModal, QuestionForm, createDefaultQuestionSpec } from './QuestionEditorFields';
+import { IconDatabase, IconPlay, IconPlus } from './StudioIcons';
 import { VideoPlayerAdapter, formatTimestamp, parseTimestampInput } from './videoAdapter';
 
 export const MARKER_BEHAVIOR_LABELS: Record<MarkerBehavior, string> = {
@@ -234,16 +235,16 @@ export const VideoQuizTimelineEditor: React.FC<VideoQuizTimelineEditorProps> = (
               setPreviewOpen(true);
             }}
           >
-            ▶ Xem trước tương tác
+            <IconPlay size={14} /> Xem trước tương tác
           </Btn>
           {canEdit && onSaveMarkersNow && (
             <Btn
               small
-              variant="primary"
+              variant="quiet"
               loading={savingMarkers}
               onClick={() => onSaveMarkersNow(markers)}
             >
-              Lưu các mốc câu hỏi
+              Lưu mốc câu hỏi
             </Btn>
           )}
         </div>
@@ -359,11 +360,18 @@ export const VideoQuizTimelineEditor: React.FC<VideoQuizTimelineEditorProps> = (
 
         {canEdit && (
           <div className="ls-timeline-actions">
-            <Btn variant="primary" small onClick={handleAddAtCurrentTime}>
-              + Thêm câu hỏi tại <span className="tabular-nums">{formatTimestamp(currentTime)}</span>
-            </Btn>
+            <button
+              type="button"
+              className="t-btn t-btn--small ls-btn-ink"
+              onClick={handleAddAtCurrentTime}
+            >
+              <IconPlus size={14} />
+              <span>
+                Thêm câu hỏi tại <span className="tabular-nums">{formatTimestamp(currentTime)}</span>
+              </span>
+            </button>
             <Btn small variant="secondary" onClick={() => setBankPickerOpen(true)}>
-              + Chọn từ Ngân hàng câu hỏi
+              <IconDatabase size={14} /> Chọn từ Ngân hàng
             </Btn>
             <form onSubmit={handleAddAtManualTime} style={{ display: 'inline-flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
               <input

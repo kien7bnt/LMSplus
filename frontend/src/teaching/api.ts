@@ -383,6 +383,7 @@ export interface StudioCourseData {
   };
   outline: OutlineChapter[];
   resources: Resource[];
+  wiki_pages?: WikiPageItem[];
   question_bank_count: number;
   classes_using: Array<{ id: string; code: string; title: string; status: ClassStatus; student_count: number }>;
   capabilities: {
@@ -399,6 +400,7 @@ export interface StudioClassData {
   course: { id: string; code: string; title: string; status: CourseStatus };
   outline: OutlineChapter[];
   resources: Resource[];
+  wiki_pages?: WikiPageItem[];
   capabilities: {
     can_edit_class_content: boolean;
     can_publish_class_content: boolean;
@@ -1001,6 +1003,7 @@ export interface LearnLesson {
   video_progress?: Record<string, VideoWatchProgress>;
   quiz_states?: Record<string, QuizBlockState>;
   resources: Record<string, Resource & { available: boolean }>;
+  wiki_pages?: WikiPageItem[];
   progress_status: 'IN_PROGRESS' | 'COMPLETED';
   position: { index: number; total: number };
   prev_lesson: { id: string; title: string } | null;

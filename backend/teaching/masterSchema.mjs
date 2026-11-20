@@ -1110,6 +1110,25 @@ export function seedMasterLmsStarterData(db) {
          '### 1. Định nghĩa\nPhân số thập phân là phân số có mẫu số là 10, 100, 1000...', 'Khởi tạo trang Wiki chuẩn', ?, ?, ?)`
     ).run(gv1 ? gv1.id : null, gv1 ? gv1.full_name : 'Giảng viên', now);
 
+    db.prepare(
+      `INSERT OR IGNORE INTO course_wiki_pages (
+         id, course_id, topic_id, chapter_id, lesson_id, slug, title, summary, content_markdown, tags_json, related_page_ids_json,
+         status, created_by, updated_by, created_at, updated_at
+       ) VALUES (
+         'wiki_tv5_tu_dong_nghia', 'crs_tv5', 'top_tv5_1', 'ch_tv5_1', 'les_tv5_1', 'tu-dong-nghia',
+         'Từ đồng nghĩa & Cách phân loại',
+         'Từ đồng nghĩa là những từ có nghĩa giống nhau hoặc gần giống nhau, giúp diễn đạt linh hoạt và tránh lặp từ.',
+         '### 1. Khái niệm\nTừ đồng nghĩa là những từ có nghĩa giống nhau hoặc gần giống nhau.\n\n### 2. Hai loại chính\n- **Từ đồng nghĩa hoàn toàn**: có thể thay thế cho nhau trong mọi ngữ cảnh (VD: quả – trái, hổ – cọp).\n- **Từ đồng nghĩa không hoàn toàn**: khác nhau về sắc thái nghĩa hoặc cách dùng (VD: ăn – xơi – chén, mang – vác – khiêng).',
+         '["từ đồng nghĩa","đồng nghĩa hoàn toàn","sắc thái nghĩa"]', '[]', 'PUBLISHED', ?, ?, ?, ?
+       )`
+    ).run(tvInstructor ? tvInstructor.id : null, tvInstructor ? tvInstructor.id : null, now, now);
+
+    db.prepare(
+      `INSERT OR IGNORE INTO course_wiki_revisions (id, page_id, revision_number, title, content_markdown, change_note, edited_by, edited_by_name, created_at)
+       VALUES ('wrev_tv5_1', 'wiki_tv5_tu_dong_nghia', 1, 'Từ đồng nghĩa & Cách phân loại',
+         '### 1. Khái niệm\nTừ đồng nghĩa là những từ có nghĩa giống nhau hoặc gần giống nhau.', 'Khởi tạo trang Wiki chuẩn', ?, ?, ?)`
+    ).run(tvInstructor ? tvInstructor.id : null, tvInstructor ? tvInstructor.full_name : 'Giảng viên', now);
+
     // 7. Seed Đề kiểm tra & Bài tập tách biệt cho lớp sc_toan5_5a1 (để học viên có trải nghiệm thực tế ngay)
     const toanQb = db.prepare('SELECT * FROM question_bank_items WHERE course_id = ? AND deleted_at IS NULL LIMIT 3').all(toanCourse.id);
     if (toanQb.length > 0 && !db.prepare("SELECT 1 FROM class_exams WHERE id = 'ex_seed_5a1_1'").get()) {

@@ -3,6 +3,7 @@
  */
 import React, { useState } from 'react';
 import { WikiPageDetail, WikiPageItem, masterApi } from '../api';
+import { WikiMarkdownView, WikiReaderProvider } from '../WikiText';
 import {
   Badge,
   Btn,
@@ -68,8 +69,15 @@ export const CourseWikiPanel: React.FC<{ courseId: string; lessonIdFilter?: stri
                     {w.title}
                   </button>
                   {w.summary && <div className="t-small t-muted m-measure">{w.summary}</div>}
-                  <div className="t-small t-muted">
-                    {w.lesson_title ? `Bài: ${w.lesson_title} · ` : ''}
+                  {w.tags && w.tags.length > 0 && (
+                    <div className="wiki-tag-list" style={{ marginTop: 6 }}>
+                      {w.tags.map((tag) => (
+                        <span key={tag} className="wiki-tag-pill">#{tag}</span>
+                      ))}
+                    </div>
+                  )}
+                  <div className="t-small t-muted" style={{ marginTop: 4 }}>
+                    {w.lesson_title ? `Bài: ${w.lesson_title} · ` : 'Toàn môn · '}
                     Cập nhật {fmtDateTime(w.updated_at)}
                   </div>
                 </div>
@@ -93,6 +101,8 @@ export const CourseWikiPanel: React.FC<{ courseId: string; lessonIdFilter?: stri
             ) : activeDetail.data ? (
               <WikiDetailCard
                 detail={activeDetail.data}
+                allPages={data.items}
+                onSelectPage={(p) => setActiveId(p.id)}
                 onDelete={async () => {
                   await masterApi.deleteWikiPage(activeDetail.data!.id);
                   setActiveId(null);
@@ -143,44 +153,73 @@ export const StudentWikiPanel: React.FC<{ classId: string; lessonId?: string }> 
       {res.data!.items.length === 0 ? (
         <EmptyState title="Chưa có trang Wiki công khai" text="Giảng viên chưa đăng trang Wiki nào cho nội dung này." />
       ) : (
-        <div className="t-list">
-          {res.data!.items.map((w) => (
-            <div key={w.id} className="t-list-item" style={{ flexDirection: 'column', alignItems: 'stretch' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
-                <div>
-                  <strong>{w.title}</strong>
-                  {w.summary && <div className="t-small t-muted">{w.summary}</div>}
+        <WikiReaderProvider wikiPages={res.data!.items}>
+          <div className="t-list">
+            {res.data!.items.map((w) => (
+              <div key={w.id} className="t-list-item" style={{ flexDirection: 'column', alignItems: 'stretch' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
+                  <div style={{ minWidth: 0 }}>
+                    <strong>{w.title}</strong>
+                    {w.summary && <div className="t-small t-muted" style={{ marginTop: 2 }}>{w.summary}</div>}
+                    {w.tags && w.tags.length > 0 && (
+                      <div className="wiki-tag-list" style={{ marginTop: 6 }}>
+                        {w.tags.map((tag) => (
+                          <span key={tag} className="wiki-tag-pill">#{tag}</span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  <Btn small onClick={() => setActiveId(activeId === w.id ? null : w.id)}>
+                    {activeId === w.id ? 'Thu gọn' : 'Đọc chi tiết'}
+                  </Btn>
                 </div>
-                <Btn small onClick={() => setActiveId(activeId === w.id ? null : w.id)}>
-                  {activeId === w.id ? 'Thu gọn' : 'Đọc chi tiết'}
-                </Btn>
+                {activeId === w.id && detail.data && (
+                  <div className="ls-block-surface m-measure" style={{ marginTop: 12 }}>
+                    <WikiMarkdownView
+                      content={detail.data.content_markdown}
+                      wikiPages={res.data!.items}
+                      excludePageId={detail.data.id}
+                    />
+                  </div>
+                )}
               </div>
-              {activeId === w.id && detail.data && (
-                <div className="ls-block-surface m-measure" style={{ marginTop: 12, whiteSpace: 'pre-wrap' }}>
-                  {detail.data.content_markdown}
-                </div>
-              )}
-            </div>
-          ))}
-        </div>
+            ))}
+          </div>
+        </WikiReaderProvider>
       )}
     </Card>
   );
 };
 
-const WikiDetailCard: React.FC<{ detail: WikiPageDetail; onDelete: () => Promise<void> }> = ({ detail, onDelete }) => (
+const WikiDetailCard: React.FC<{
+  detail: WikiPageDetail;
+  allPages?: WikiPageItem[];
+  onSelectPage?: (p: WikiPageItem) => void;
+  onDelete: () => Promise<void>;
+}> = ({ detail, allPages = [], onSelectPage, onDelete }) => (
   <div className="ls-block-surface">
     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, marginBottom: 12 }}>
       <div>
         <h3 style={{ margin: 0 }}>{detail.title}</h3>
-        {detail.tags.length > 0 && <div className="t-small t-muted">Thẻ: {detail.tags.join(', ')}</div>}
+        {detail.tags.length > 0 && (
+          <div className="wiki-tag-list" style={{ marginTop: 8 }}>
+            {detail.tags.map((tag) => (
+              <span key={tag} className="wiki-tag-pill">#{tag}</span>
+            ))}
+          </div>
+        )}
       </div>
       {detail.can_edit && (
         <Btn small variant="ghost" onClick={onDelete}>Xóa trang</Btn>
       )}
     </div>
-    <div className="m-measure" style={{ whiteSpace: 'pre-wrap', lineHeight: 1.65 }}>
-      {detail.content_markdown}
+    <div className="m-measure">
+      <WikiMarkdownView
+        content={detail.content_markdown}
+        wikiPages={allPages}
+        excludePageId={detail.id}
+        onOpenWiki={onSelectPage}
+      />
     </div>
     {detail.revisions.length > 0 && (
       <div style={{ marginTop: 16, paddingTop: 12, borderTop: '1px solid var(--border-subtle)' }}>
@@ -265,8 +304,12 @@ const WikiEditorModal: React.FC<{
             <option value="DRAFT">Bản nháp</option>
           </select>
         </Field>
-        <Field label="Thẻ (cách nhau bởi dấu phẩy)">
-          <input className="t-input" value={tagsText} onChange={(e) => setTagsText(e.target.value)} placeholder="công thức, trọng tâm" />
+        <Field
+          label="Thẻ từ khóa tự động liên kết trong bài học (cách nhau bởi dấu phẩy)"
+          hint="Khi bất kỳ từ khóa nào trong thẻ (hoặc tiêu đề trang Wiki) xuất hiện trong bài học, học viên di chuột hoặc chạm vào từ đó sẽ thấy thẻ trích dẫn nội dung kiểu Wikipedia."
+          wide
+        >
+          <input className="t-input" value={tagsText} onChange={(e) => setTagsText(e.target.value)} placeholder="VD: phân số, công thức, từ đồng nghĩa" />
         </Field>
         <Field label="Tóm tắt ngắn" wide>
           <input className="t-input" value={summary} onChange={(e) => setSummary(e.target.value)} />

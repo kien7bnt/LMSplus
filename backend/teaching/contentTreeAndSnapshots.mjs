@@ -630,8 +630,12 @@ export function registerContentTreeAndSnapshotRoutes(route) {
     const lessonId = url.searchParams.get('lesson_id');
     const where = ['w.course_id = ?', 'w.deleted_at IS NULL', "w.status = 'PUBLISHED'"];
     const qParams = [cls.course_id];
-    if (q) { where.push('(w.title LIKE ? OR w.summary LIKE ? OR w.content_markdown LIKE ?)'); qParams.push(`%${q}%`, `%${q}%`, `%${q}%`); }
-    if (lessonId) { where.push('w.lesson_id = ?'); qParams.push(lessonId); }
+    if (q) { where.push('(w.title LIKE ? OR w.summary LIKE ? OR w.content_markdown LIKE ? OR w.tags_json LIKE ?)'); qParams.push(`%${q}%`, `%${q}%`, `%${q}%`, `%${q}%`); }
+    if (lessonId) { where.push('(w.lesson_id = ? OR w.lesson_id IS NULL)'); qParams.push(lessonId); }
+    const orderBy = lessonId
+      ? 'CASE WHEN w.lesson_id = ? THEN 0 ELSE 1 END, w.title ASC'
+      : 'w.title ASC';
+    if (lessonId) qParams.push(lessonId);
     const rows = db
       .prepare(
         `SELECT w.*, t.title AS topic_title, ch.title AS chapter_title, l.title AS lesson_title
@@ -639,7 +643,7 @@ export function registerContentTreeAndSnapshotRoutes(route) {
          LEFT JOIN course_topics t ON t.id = w.topic_id
          LEFT JOIN chapters ch ON ch.id = w.chapter_id
          LEFT JOIN lessons l ON l.id = w.lesson_id
-         WHERE ${where.join(' AND ')} ORDER BY w.title ASC`
+         WHERE ${where.join(' AND ')} ORDER BY ${orderBy}`
       )
       .all(...qParams);
     return {

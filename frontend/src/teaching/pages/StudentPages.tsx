@@ -10,6 +10,7 @@ import { StudentAssignmentsPage, StudentExamsPage } from './StudentAssessmentPag
 import { StudentLeaveRequestsPage } from './LeaveRequestsPage';
 import { StudentWikiPanel } from './WikiPanel';
 import { ForumWorkspace } from './ForumPanel';
+import { WikiAnnotatedText, WikiReaderProvider } from '../WikiText';
 
 // ------------------------------------------------------------------ /learn — Trang chủ học viên
 
@@ -998,30 +999,37 @@ export const StudentLessonPage: React.FC = () => {
 
         <div className="m-player-center">
           <Card>
-            {lesson.class_custom_note?.instructor_note && (
-              <div className="t-callout m-measure" style={{ marginBottom: 16 }}>
-                <strong>Dặn dò từ giảng viên lớp học</strong>
-                <span style={{ whiteSpace: 'pre-wrap' }}>{lesson.class_custom_note.instructor_note}</span>
-              </div>
-            )}
+            <WikiReaderProvider wikiPages={lesson.wiki_pages || []}>
+              {lesson.class_custom_note?.instructor_note && (
+                <div className="t-callout m-measure" style={{ marginBottom: 16 }}>
+                  <strong>Dặn dò từ giảng viên lớp học</strong>
+                  <span style={{ whiteSpace: 'pre-wrap' }}>
+                    <WikiAnnotatedText text={lesson.class_custom_note.instructor_note} wikiPages={lesson.wiki_pages || []} />
+                  </span>
+                </div>
+              )}
 
-            {(lesson.class_custom_note?.custom_objectives || lesson.objectives) && (
-              <div className="t-callout m-measure" style={{ marginBottom: 24 }}>
-                <strong>Mục tiêu bài học</strong>
-                <span style={{ whiteSpace: 'pre-wrap' }}>
-                  {[lesson.objectives, lesson.class_custom_note?.custom_objectives].filter(Boolean).join('\n\n')}
-                </span>
-              </div>
-            )}
+              {(lesson.class_custom_note?.custom_objectives || lesson.objectives) && (
+                <div className="t-callout m-measure" style={{ marginBottom: 24 }}>
+                  <strong>Mục tiêu bài học</strong>
+                  <span style={{ whiteSpace: 'pre-wrap' }}>
+                    <WikiAnnotatedText
+                      text={[lesson.objectives, lesson.class_custom_note?.custom_objectives].filter(Boolean).join('\n\n')}
+                      wikiPages={lesson.wiki_pages || []}
+                    />
+                  </span>
+                </div>
+              )}
 
-          {lesson.blocks.length === 0 ? (
-            <EmptyState title="Bài học chưa có nội dung chi tiết" />
-          ) : (
-            <BlockList
-              blocks={lesson.blocks}
-              ctx={{
-                resources: lesson.resources,
-                onDownload: handleDownload,
+              {lesson.blocks.length === 0 ? (
+                <EmptyState title="Bài học chưa có nội dung chi tiết" />
+              ) : (
+                <BlockList
+                  blocks={lesson.blocks}
+                  ctx={{
+                    resources: lesson.resources,
+                    wikiPages: lesson.wiki_pages || [],
+                    onDownload: handleDownload,
                 answers,
                 onAnswer: (blockId, optionId) => setAnswers((prev) => ({ ...prev, [blockId]: optionId })),
                 onCheck: (blockId, optionId) => teachingApi.checkAnswer(classId, lesson.id, blockId, optionId),
@@ -1093,9 +1101,10 @@ export const StudentLessonPage: React.FC = () => {
                   );
                   return res;
                 },
-              }}
-            />
-          )}
+                }}
+              />
+              )}
+            </WikiReaderProvider>
 
           {(lesson.completion_rule === 'VIDEO_AND_QUIZ' ||
             Boolean(lesson.require_video_quizzes) ||

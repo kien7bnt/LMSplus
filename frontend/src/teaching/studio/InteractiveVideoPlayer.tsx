@@ -12,6 +12,15 @@ import {
 } from '../api';
 import { Btn, Tone } from '../ui';
 import {
+  IconCheck,
+  IconPause,
+  IconPlay,
+  IconRotateCcw,
+  IconVolume2,
+  IconVolumeX,
+  IconX,
+} from './StudioIcons';
+import {
   Html5VideoAdapter,
   VideoPlaybackState,
   VideoPlayerAdapter,
@@ -913,6 +922,32 @@ export const InteractiveVideoPlayer: React.FC<InteractiveVideoPlayerProps> = ({
     effectiveDuration > 0 ? Math.min(100, Math.max(0, (pb.currentTime / effectiveDuration) * 100)) : 0;
 
   const activeRt = activeMarker ? runtimeMap[activeMarker.id] : undefined;
+  const quizOverlayOpen = Boolean(activeMarker && mode !== 'AUTHOR');
+
+  useEffect(() => {
+    if (!quizOverlayOpen || !activeMarker) return;
+    const markerExhausted = Boolean(activeRt && !activeRt.canRetry && activeRt.completed);
+    const canDismiss =
+      activeMarker.behavior === 'INFO_ONLY' ||
+      reviewingOnly ||
+      Boolean(submitResult?.can_continue) ||
+      markerExhausted ||
+      activeMarker.behavior === 'PAUSE_OPTIONAL' ||
+      (!activeMarker.is_required && activeMarker.allow_skip);
+    if (!canDismiss) return;
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.key === 'Escape') {
+        if (reviewingOnly || submitResult?.can_continue || markerExhausted || activeMarker.behavior === 'INFO_ONLY') {
+          handleContinuePlayback();
+        } else {
+          handleSkipMarker();
+        }
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [quizOverlayOpen, activeMarker, activeRt, reviewingOnly, submitResult]);
 
   return (
     <div className="ls-player-wrap">
@@ -930,7 +965,7 @@ export const InteractiveVideoPlayer: React.FC<InteractiveVideoPlayerProps> = ({
       {resumeBannerSec !== null && mode === 'LEARNER' && (
         <div className="ls-resume-bar">
           <span className="tabular-nums">
-            Đã khôi phục vị trí xem gần nhất tại <strong>{formatTimestamp(resumeBannerSec)}</strong>
+            Tiếp tục từ vị trí gần nhất: <strong>{formatTimestamp(resumeBannerSec)}</strong>
           </span>
           <div className="t-actions">
             <Btn
@@ -943,7 +978,7 @@ export const InteractiveVideoPlayer: React.FC<InteractiveVideoPlayerProps> = ({
                 adapterRef.current?.seek(0);
               }}
             >
-              Xem lại từ đầu
+              Xem từ đầu
             </Btn>
             <Btn small variant="quiet" onClick={() => setResumeBannerSec(null)}>
               Đóng
@@ -952,7 +987,7 @@ export const InteractiveVideoPlayer: React.FC<InteractiveVideoPlayerProps> = ({
         </div>
       )}
 
-      <div className="ls-player-stage">
+      <div className={`ls-player-stage ${quizOverlayOpen ? 'is-quiz-active' : ''}`}>
         {(sourceType === 'UPLOAD' || sourceType === 'DIRECT_URL') && (
           <video
             ref={videoElRef}
@@ -1058,186 +1093,244 @@ export const InteractiveVideoPlayer: React.FC<InteractiveVideoPlayerProps> = ({
         )}
 
         {/* Interactive Timestamp Video Quiz Overlay */}
-        {activeMarker && mode !== 'AUTHOR' && (
-          <div className="ls-quiz-overlay" role="dialog" aria-modal="true" aria-label="Câu hỏi tương tác trong video">
-            <div className="ls-quiz-card">
-              <div className="ls-quiz-card__head">
-                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                  <Tone tone={activeMarker.behavior === 'INFO_ONLY' ? 'info' : 'warning'}>
-                    <span className="tabular-nums">Mốc {formatTimestamp(getEffectiveMarkerTime(activeMarker.timestamp_sec))}</span>
-                  </Tone>
-                  {activeMarker.origin === 'CLASS_CUSTOM' && <Tone tone="info">Bổ sung riêng cho lớp</Tone>}
-                  {activeMarker.behavior !== 'INFO_ONLY' && activeMarker.is_required && (
-                    <Tone tone="danger">Bắt buộc trả lời</Tone>
-                  )}
-                  {reviewingOnly && <Tone tone="success">Xem lại câu hỏi</Tone>}
-                </div>
-                {activeMarker.max_attempts > 0 && activeMarker.behavior !== 'INFO_ONLY' && (
-                  <span className="t-sub tabular-nums">
-                    Lượt làm: {activeRt?.attemptsUsed || 0}/{activeMarker.max_attempts}
-                  </span>
-                )}
-              </div>
+        {activeMarker && mode !== 'AUTHOR' && (() => {
+          const markerTimeStr = formatTimestamp(getEffectiveMarkerTime(activeMarker.timestamp_sec));
+          const markerExhausted = Boolean(activeRt && !activeRt.canRetry && activeRt.completed);
+          const quizLocked = Boolean(submitResult && !submitResult.can_retry) || markerExhausted || reviewingOnly;
+          const isInfoOnly = activeMarker.behavior === 'INFO_ONLY' || !activeMarker.question;
+          const canSkip =
+            (reviewingOnly ||
+              activeMarker.behavior === 'PAUSE_OPTIONAL' ||
+              (!activeMarker.is_required && activeMarker.allow_skip)) &&
+            !submitResult?.can_continue &&
+            !markerExhausted;
+          const canContinue = isInfoOnly || reviewingOnly || Boolean(submitResult?.can_continue) || markerExhausted;
+          const showCustomTitle =
+            Boolean(activeMarker.title?.trim()) &&
+            !/^câu hỏi tại \d{1,2}:\d{2}/i.test(activeMarker.title.trim());
+          const options = activeMarker.question?.options || [];
+          const isCompactOptionGrid =
+            options.length >= 2 &&
+            options.length <= 6 &&
+            options.every((o) => String(o.text || '').trim().length <= 36);
+          const feedbackShown = Boolean(
+            submitResult || ((reviewingOnly || markerExhausted) && activeRt?.lastFeedback)
+          );
+          const feedbackCorrect = submitResult ? submitResult.is_correct : Boolean(activeRt?.isCorrect);
 
-              {activeMarker.title && <h3 style={{ margin: '4px 0 0', fontSize: 17 }}>{activeMarker.title}</h3>}
+          return (
+            <div className="ls-quiz-overlay" role="dialog" aria-modal="true" aria-label="Câu hỏi tương tác trong video">
+              <div className="ls-quiz-card">
+                <div className="ls-quiz-card__head">
+                  <div className="ls-quiz-card__meta">
+                    <span className="ls-quiz-time-chip tabular-nums">{markerTimeStr}</span>
+                    {isInfoOnly ? (
+                      <Tone tone="info">Ghi chú kiến thức</Tone>
+                    ) : reviewingOnly || markerExhausted ? (
+                      <Tone tone="success">
+                        {feedbackCorrect ? 'Đã hoàn thành' : 'Xem lại câu hỏi'}
+                      </Tone>
+                    ) : activeMarker.is_required ? (
+                      <Tone tone="warning">Bắt buộc</Tone>
+                    ) : (
+                      <Tone tone="neutral">Câu hỏi nhanh</Tone>
+                    )}
+                    {activeMarker.origin === 'CLASS_CUSTOM' && <Tone tone="info">Riêng lớp</Tone>}
+                  </div>
 
-              {activeMarker.behavior === 'INFO_ONLY' || !activeMarker.question ? (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-                  <p style={{ margin: 0, whiteSpace: 'pre-wrap', lineHeight: 1.6 }}>
-                    {activeMarker.info_body || 'Ghi chú trọng tâm từ giảng viên tại thời điểm này.'}
-                  </p>
-                  <div className="t-actions" style={{ justifyContent: 'flex-end' }}>
-                    <Btn variant="primary" onClick={handleContinuePlayback}>
-                      Đã hiểu & Tiếp tục xem ▶
-                    </Btn>
+                  <div className="ls-quiz-card__head-right">
+                    {activeMarker.max_attempts > 0 && !isInfoOnly && (
+                      <span className="ls-quiz-attempts tabular-nums">
+                        Lượt {activeRt?.attemptsUsed || 0}/{activeMarker.max_attempts}
+                      </span>
+                    )}
+                    {(canContinue || canSkip) && (
+                      <button
+                        type="button"
+                        className="ls-quiz-close-btn"
+                        aria-label="Đóng và quay lại video"
+                        title="Đóng (Esc)"
+                        onClick={canContinue ? handleContinuePlayback : handleSkipMarker}
+                      >
+                        <IconX size={15} />
+                      </button>
+                    )}
                   </div>
                 </div>
-              ) : (() => {
-                const markerExhausted = Boolean(activeRt && !activeRt.canRetry && activeRt.completed);
-                const quizLocked = Boolean(submitResult && !submitResult.can_retry) || markerExhausted || reviewingOnly;
-                return (
-                <form onSubmit={handleSubmitQuizOverlay} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                  <p style={{ margin: 0, fontWeight: 600, fontSize: 15, lineHeight: 1.5 }}>
-                    {activeMarker.question.prompt}
-                  </p>
 
-                  {(activeMarker.question.question_type === 'SINGLE_CHOICE' ||
-                    activeMarker.question.question_type === 'TRUE_FALSE') && (
-                    <div className="ls-quiz-options" role="radiogroup" aria-label="Danh sách phương án">
-                      {(activeMarker.question.options || []).map((opt) => {
-                        const selected = singleChoiceId === opt.id;
-                        return (
-                          <button
-                            key={opt.id}
-                            type="button"
-                            className="t-option"
-                            aria-pressed={selected}
-                            disabled={submitting || quizLocked}
-                            onClick={() => {
-                              setSingleChoiceId(opt.id);
-                              if (submitResult?.can_retry) setSubmitResult(null);
-                            }}
-                          >
-                            {opt.text}
-                          </button>
-                        );
-                      })}
+                {isInfoOnly ? (
+                  <>
+                    <div className="ls-quiz-card__body">
+                      {showCustomTitle && <h3 className="ls-quiz-card__title">{activeMarker.title}</h3>}
+                      <p className="ls-quiz-card__prompt" style={{ fontWeight: 400, whiteSpace: 'pre-wrap' }}>
+                        {activeMarker.info_body || 'Ghi chú trọng tâm từ giảng viên tại thời điểm này.'}
+                      </p>
                     </div>
-                  )}
-
-                  {activeMarker.question.question_type === 'MULTIPLE_CHOICE' && (
-                    <div className="ls-quiz-options" role="group" aria-label="Chọn nhiều đáp án">
-                      {(activeMarker.question.options || []).map((opt) => {
-                        const selected = multiChoiceIds.includes(opt.id);
-                        return (
-                          <button
-                            key={opt.id}
-                            type="button"
-                            className="t-option"
-                            aria-pressed={selected}
-                            disabled={submitting || quizLocked}
-                            onClick={() => {
-                              setMultiChoiceIds((prev) =>
-                                prev.includes(opt.id) ? prev.filter((x) => x !== opt.id) : [...prev, opt.id]
-                              );
-                              if (submitResult?.can_retry) setSubmitResult(null);
-                            }}
-                          >
-                            {selected ? '☑ ' : '☐ '}
-                            {opt.text}
-                          </button>
-                        );
-                      })}
+                    <div className="ls-quiz-card__foot">
+                      <div />
+                      <Btn variant="primary" onClick={handleContinuePlayback}>
+                        <IconPlay size={14} /> Đã hiểu & Tiếp tục xem
+                      </Btn>
                     </div>
-                  )}
+                  </>
+                ) : (
+                  <form className="ls-quiz-form" onSubmit={handleSubmitQuizOverlay}>
+                    <div className="ls-quiz-card__body">
+                      {showCustomTitle && <span className="ls-quiz-card__eyebrow">{activeMarker.title}</span>}
+                      <h3 className="ls-quiz-card__prompt">{activeMarker.question!.prompt}</h3>
 
-                  {activeMarker.question.question_type === 'FILL_BLANK' && (
-                    <input
-                      className="t-input"
-                      value={textAnswer}
-                      disabled={submitting || quizLocked}
-                      onChange={(e) => {
-                        setTextAnswer(e.target.value);
-                        if (submitResult?.can_retry) setSubmitResult(null);
-                      }}
-                      placeholder="Nhập đáp án ngắn gọn…"
-                      aria-label="Đáp án điền vào chỗ trống"
-                    />
-                  )}
+                      {(activeMarker.question!.question_type === 'SINGLE_CHOICE' ||
+                        activeMarker.question!.question_type === 'TRUE_FALSE') && (
+                        <div
+                          className={`ls-quiz-options ${isCompactOptionGrid ? 'is-compact-grid' : ''}`}
+                          role="radiogroup"
+                          aria-label="Danh sách phương án"
+                        >
+                          {options.map((opt, idx) => {
+                            const selected = singleChoiceId === opt.id;
+                            const letter = String.fromCharCode(65 + idx);
+                            const optStateClass =
+                              selected && feedbackShown
+                                ? feedbackCorrect
+                                  ? 'is-result-correct'
+                                  : 'is-result-wrong'
+                                : '';
+                            return (
+                              <button
+                                key={opt.id}
+                                type="button"
+                                className={`ls-quiz-choice ${selected ? 'is-selected' : ''} ${optStateClass}`}
+                                aria-pressed={selected}
+                                disabled={submitting || quizLocked}
+                                onClick={() => {
+                                  setSingleChoiceId(opt.id);
+                                  if (submitResult?.can_retry) setSubmitResult(null);
+                                }}
+                              >
+                                <span className="ls-quiz-choice__key" aria-hidden="true">
+                                  {letter}
+                                </span>
+                                <span className="ls-quiz-choice__text">{opt.text}</span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
 
-                  {activeMarker.question.question_type === 'SHORT_ANSWER' && (
-                    <textarea
-                      className="t-input"
-                      rows={3}
-                      value={textAnswer}
-                      disabled={submitting || quizLocked}
-                      onChange={(e) => {
-                        setTextAnswer(e.target.value);
-                        if (submitResult?.can_retry) setSubmitResult(null);
-                      }}
-                      placeholder="Trình bày câu trả lời của bạn…"
-                      aria-label="Câu trả lời tự luận ngắn"
-                    />
-                  )}
+                      {activeMarker.question!.question_type === 'MULTIPLE_CHOICE' && (
+                        <div
+                          className={`ls-quiz-options ${isCompactOptionGrid ? 'is-compact-grid' : ''}`}
+                          role="group"
+                          aria-label="Chọn nhiều đáp án"
+                        >
+                          {options.map((opt) => {
+                            const selected = multiChoiceIds.includes(opt.id);
+                            return (
+                              <button
+                                key={opt.id}
+                                type="button"
+                                className={`ls-quiz-choice ${selected ? 'is-selected' : ''}`}
+                                aria-pressed={selected}
+                                disabled={submitting || quizLocked}
+                                onClick={() => {
+                                  setMultiChoiceIds((prev) =>
+                                    prev.includes(opt.id) ? prev.filter((x) => x !== opt.id) : [...prev, opt.id]
+                                  );
+                                  if (submitResult?.can_retry) setSubmitResult(null);
+                                }}
+                              >
+                                <span className="ls-quiz-choice__check" aria-hidden="true">
+                                  {selected ? <IconCheck size={13} /> : null}
+                                </span>
+                                <span className="ls-quiz-choice__text">{opt.text}</span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
 
-                  {submitError && (
-                    <p className="t-field__error" role="alert">
-                      {submitError}
-                    </p>
-                  )}
+                      {activeMarker.question!.question_type === 'FILL_BLANK' && (
+                        <input
+                          className="t-input"
+                          value={textAnswer}
+                          disabled={submitting || quizLocked}
+                          onChange={(e) => {
+                            setTextAnswer(e.target.value);
+                            if (submitResult?.can_retry) setSubmitResult(null);
+                          }}
+                          placeholder="Nhập đáp án ngắn gọn…"
+                          aria-label="Đáp án điền vào chỗ trống"
+                        />
+                      )}
 
-                  {(submitResult || ((reviewingOnly || markerExhausted) && activeRt?.lastFeedback)) && (
-                    <div
-                      className={`ls-quiz-feedback ${
-                        (submitResult ? submitResult.is_correct : activeRt?.isCorrect) ? 'is-correct' : 'is-wrong'
-                      }`}
-                      role="status"
-                    >
-                      <strong>
-                        {(submitResult ? submitResult.is_correct : activeRt?.isCorrect)
-                          ? '✓ Chính xác!'
-                          : '✗ Chưa chính xác'}
-                      </strong>
-                      <span>{submitResult ? submitResult.feedback : activeRt?.lastFeedback}</span>
-                      {(submitResult?.explanation || activeMarker.question.explanation) && (
-                        <span className="t-sub" style={{ marginTop: 4, display: 'block' }}>
-                          Giải thích: {submitResult?.explanation || activeMarker.question.explanation}
-                        </span>
+                      {activeMarker.question!.question_type === 'SHORT_ANSWER' && (
+                        <textarea
+                          className="t-input"
+                          rows={3}
+                          value={textAnswer}
+                          disabled={submitting || quizLocked}
+                          onChange={(e) => {
+                            setTextAnswer(e.target.value);
+                            if (submitResult?.can_retry) setSubmitResult(null);
+                          }}
+                          placeholder="Trình bày câu trả lời của bạn…"
+                          aria-label="Câu trả lời tự luận ngắn"
+                        />
+                      )}
+
+                      {submitError && (
+                        <p className="t-field__error" role="alert" style={{ margin: 0 }}>
+                          {submitError}
+                        </p>
+                      )}
+
+                      {feedbackShown && (
+                        <div
+                          className={`ls-quiz-feedback ${feedbackCorrect ? 'is-correct' : 'is-wrong'}`}
+                          role="status"
+                        >
+                          <strong className="ls-quiz-feedback__title">
+                            {feedbackCorrect ? <IconCheck size={15} /> : <IconX size={15} />}
+                            <span>{feedbackCorrect ? 'Chính xác!' : 'Chưa chính xác'}</span>
+                          </strong>
+                          <span>{submitResult ? submitResult.feedback : activeRt?.lastFeedback}</span>
+                          {(submitResult?.explanation || activeMarker.question!.explanation) && (
+                            <span className="ls-quiz-feedback__explain">
+                              <strong>Giải thích:</strong> {submitResult?.explanation || activeMarker.question!.explanation}
+                            </span>
+                          )}
+                        </div>
                       )}
                     </div>
-                  )}
 
-                  <div className="t-actions" style={{ justifyContent: 'space-between', marginTop: 4 }}>
-                    <div>
-                      {(reviewingOnly ||
-                        activeMarker.behavior === 'PAUSE_OPTIONAL' ||
-                        (!activeMarker.is_required && activeMarker.allow_skip)) &&
-                        !submitResult?.can_continue &&
-                        !markerExhausted && (
+                    <div className="ls-quiz-card__foot">
+                      <div>
+                        {canSkip && (
                           <Btn variant="ghost" onClick={handleSkipMarker}>
                             {reviewingOnly ? 'Đóng xem lại' : 'Bỏ qua & xem tiếp'}
                           </Btn>
                         )}
+                      </div>
+                      <div className="t-actions">
+                        {!reviewingOnly && !markerExhausted && (!submitResult || submitResult.can_retry) && (
+                          <Btn type="submit" variant="primary" loading={submitting}>
+                            {submitResult?.can_retry ? 'Thử lại đáp án khác' : 'Kiểm tra đáp án'}
+                          </Btn>
+                        )}
+                        {canContinue && (
+                          <Btn variant="primary" onClick={handleContinuePlayback}>
+                            <IconPlay size={14} />
+                            <span>{pb.error ? 'Đóng câu hỏi' : 'Tiếp tục xem video'}</span>
+                          </Btn>
+                        )}
+                      </div>
                     </div>
-                    <div className="t-actions">
-                      {!reviewingOnly && !markerExhausted && (!submitResult || submitResult.can_retry) && (
-                        <Btn type="submit" variant="primary" loading={submitting}>
-                          {submitResult?.can_retry ? 'Thử lại đáp án khác' : 'Kiểm tra đáp án'}
-                        </Btn>
-                      )}
-                      {(reviewingOnly || submitResult?.can_continue || markerExhausted) && (
-                        <Btn variant="primary" onClick={handleContinuePlayback}>
-                          {pb.error ? 'Đóng câu hỏi' : 'Tiếp tục phát video ▶'}
-                        </Btn>
-                      )}
-                    </div>
-                  </div>
-                </form>
-                );
-              })()}
+                  </form>
+                )}
+              </div>
             </div>
-          </div>
-        )}
+          );
+        })()}
       </div>
 
       {/* Accessible Transport & Interactive Marker Timeline */}
@@ -1334,7 +1427,7 @@ export const InteractiveVideoPlayer: React.FC<InteractiveVideoPlayerProps> = ({
               onClick={togglePlay}
               aria-label={pb.playing ? 'Tạm dừng video' : 'Phát video'}
             >
-              {pb.playing ? '❚❚' : '▶'}
+              {pb.playing ? <IconPause size={15} /> : <IconPlay size={15} />}
             </button>
             <button
               type="button"
@@ -1343,7 +1436,7 @@ export const InteractiveVideoPlayer: React.FC<InteractiveVideoPlayerProps> = ({
               aria-label="Lùi lại 10 giây"
               title="Lùi 10 giây"
             >
-              ↺
+              <IconRotateCcw size={15} />
             </button>
             <span className="ls-time-readout tabular-nums">
               {formatTimestamp(pb.currentTime)} / {formatTimestamp(effectiveDuration)}
@@ -1369,7 +1462,7 @@ export const InteractiveVideoPlayer: React.FC<InteractiveVideoPlayerProps> = ({
               onClick={() => adapterRef.current?.setMuted(!pb.muted)}
               aria-label={pb.muted ? 'Bật âm thanh' : 'Tắt âm thanh'}
             >
-              {pb.muted ? '🔇' : '🔊'}
+              {pb.muted ? <IconVolumeX size={15} /> : <IconVolume2 size={15} />}
             </button>
             {sourceType === 'YOUTUBE' && videoId && (
               <a

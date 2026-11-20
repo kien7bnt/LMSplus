@@ -12,10 +12,12 @@ import {
   StudentVideoMarker,
   VideoQuizMarker,
   VideoWatchProgress,
+  WikiPageItem,
 } from './api';
 import { InteractiveVideoPlayer } from './studio/InteractiveVideoPlayer';
 import { gradeQuestionInMemory } from './studio/videoAdapter';
 import { Btn, SmartImage, Tone } from './ui';
+import { WikiAnnotatedText, WikiReaderProvider } from './WikiText';
 
 /**
  * Trình phát YouTube an toàn (dành cho khối youtube tĩnh không gắn mốc câu hỏi tương tác).
@@ -161,6 +163,8 @@ export interface RenderCtx {
     blockId: string,
     payload: { idempotency_key: string; responses: Record<string, Record<string, any>> }
   ) => Promise<QuizSubmitResult>;
+  wikiPages?: WikiPageItem[];
+  onOpenWikiPage?: (page: WikiPageItem) => void;
 }
 
 const LegacyQuestion: React.FC<{ block: LessonBlock; ctx: RenderCtx }> = ({ block, ctx }) => {
@@ -482,7 +486,11 @@ const renderCoreBlock = (block: LessonBlock, ctx: RenderCtx): React.ReactNode =>
     case 'heading':
       return c.level === 3 ? <h3>{c.text}</h3> : <h2>{c.text}</h2>;
     case 'paragraph':
-      return <p>{c.text}</p>;
+      return (
+        <p style={{ whiteSpace: 'pre-wrap' }}>
+          <WikiAnnotatedText text={c.text} wikiPages={ctx.wikiPages} onOpenWiki={ctx.onOpenWikiPage} />
+        </p>
+      );
     case 'youtube': {
       const blockMarkers = (ctx.videoMarkers || []).filter((m) => m.block_id === block.id);
       if (blockMarkers.length > 0 || ctx.onSaveVideoProgress || ctx.previewMode) {
@@ -622,7 +630,9 @@ const renderCoreBlock = (block: LessonBlock, ctx: RenderCtx): React.ReactNode =>
               {(c.has_header ? (c.rows || []).slice(1) : c.rows || []).map((row: string[], ri: number) => (
                 <tr key={ri}>
                   {row.map((cell, i) => (
-                    <td key={i}>{cell}</td>
+                    <td key={i}>
+                      <WikiAnnotatedText text={cell} wikiPages={ctx.wikiPages} onOpenWiki={ctx.onOpenWikiPage} />
+                    </td>
                   ))}
                 </tr>
               ))}
@@ -646,7 +656,7 @@ const renderCoreBlock = (block: LessonBlock, ctx: RenderCtx): React.ReactNode =>
     case 'quote':
       return (
         <blockquote>
-          {c.text}
+          <WikiAnnotatedText text={c.text} wikiPages={ctx.wikiPages} onOpenWiki={ctx.onOpenWikiPage} />
           {c.cite && <span className="t-sub" style={{ display: 'block', marginTop: 4 }}>— {c.cite}</span>}
         </blockquote>
       );
@@ -654,7 +664,9 @@ const renderCoreBlock = (block: LessonBlock, ctx: RenderCtx): React.ReactNode =>
       return (
         <div className="t-callout">
           <strong>{c.title || CALLOUT_TITLES[c.variant] || 'Lưu ý'}</strong>
-          <span style={{ whiteSpace: 'pre-wrap' }}>{c.text}</span>
+          <span style={{ whiteSpace: 'pre-wrap' }}>
+            <WikiAnnotatedText text={c.text} wikiPages={ctx.wikiPages} onOpenWiki={ctx.onOpenWikiPage} />
+          </span>
         </div>
       );
     case 'link':
@@ -703,10 +715,15 @@ const renderCoreBlock = (block: LessonBlock, ctx: RenderCtx): React.ReactNode =>
               )}
             </div>
           </div>
-          {c.description && <p style={{ margin: '8px 0 0', whiteSpace: 'pre-wrap' }}>{c.description}</p>}
+          {c.description && (
+            <p style={{ margin: '8px 0 0', whiteSpace: 'pre-wrap' }}>
+              <WikiAnnotatedText text={c.description} wikiPages={ctx.wikiPages} onOpenWiki={ctx.onOpenWikiPage} />
+            </p>
+          )}
           {c.instructions && (
             <div className="t-sub" style={{ marginTop: 8, whiteSpace: 'pre-wrap' }}>
-              <strong>Hướng dẫn nộp bài:</strong> {c.instructions}
+              <strong>Hướng dẫn nộp bài:</strong>{' '}
+              <WikiAnnotatedText text={c.instructions} wikiPages={ctx.wikiPages} onOpenWiki={ctx.onOpenWikiPage} />
             </div>
           )}
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 12, flexWrap: 'wrap', gap: 8 }}>
@@ -744,11 +761,14 @@ const renderCoreBlock = (block: LessonBlock, ctx: RenderCtx): React.ReactNode =>
     case 'step_by_step_solution':
       return (
         <div className="t-callout">
-          <strong>{c.problem}</strong>
+          <strong>
+            <WikiAnnotatedText text={c.problem} wikiPages={ctx.wikiPages} onOpenWiki={ctx.onOpenWikiPage} />
+          </strong>
           <ol style={{ margin: '8px 0 0', paddingLeft: 20 }}>
             {(c.steps || []).map((s: any, i: number) => (
               <li key={i}>
-                <strong>{s.title}:</strong> {s.explanation}
+                <strong>{s.title}:</strong>{' '}
+                <WikiAnnotatedText text={s.explanation} wikiPages={ctx.wikiPages} onOpenWiki={ctx.onOpenWikiPage} />
               </li>
             ))}
           </ol>
@@ -804,9 +824,11 @@ export const BlockView: React.FC<{ block: LessonBlock; ctx?: RenderCtx }> = ({ b
 };
 
 export const BlockList: React.FC<{ blocks: LessonBlock[]; ctx?: RenderCtx }> = ({ blocks, ctx }) => (
-  <div className="t-reading">
-    {blocks.map((b) => (
-      <BlockView key={b.id} block={b} ctx={ctx} />
-    ))}
-  </div>
+  <WikiReaderProvider wikiPages={ctx?.wikiPages} onOpenWikiPage={ctx?.onOpenWikiPage}>
+    <div className="t-reading">
+      {blocks.map((b) => (
+        <BlockView key={b.id} block={b} ctx={ctx} />
+      ))}
+    </div>
+  </WikiReaderProvider>
 );
