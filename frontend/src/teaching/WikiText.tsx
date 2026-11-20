@@ -566,24 +566,28 @@ export const WikiTermTrigger: React.FC<{
     const spaceBelow = window.innerHeight - rect.bottom - margin;
     const spaceAbove = rect.top - margin;
 
-    // Avoid overlapping cross-origin video/PDF iframes below when flipping above fits cleanly
+    // Avoid overlapping cross-origin video/PDF iframes when the opposite side is clear
     const bottomTop = rect.bottom + gap;
     const bottomEnd = bottomTop + cardH;
+    const topStart = Math.max(margin, rect.top - cardH - gap);
+    const topEnd = topStart + cardH;
     let bottomHitsIframe = false;
+    let topHitsIframe = false;
     const iframes = document.querySelectorAll('iframe');
     for (let i = 0; i < iframes.length; i += 1) {
       const r = iframes[i].getBoundingClientRect();
       if (r.width <= 0 || r.height <= 0) continue;
       const overlapX = clampedLeft < r.right && clampedLeft + cardW > r.left;
-      const overlapY = bottomTop < r.bottom && bottomEnd > r.top;
-      if (overlapX && overlapY) {
+      if (overlapX && bottomTop < r.bottom && bottomEnd > r.top) {
         bottomHitsIframe = true;
-        break;
+      }
+      if (overlapX && topStart < r.bottom && topEnd > r.top) {
+        topHitsIframe = true;
       }
     }
 
     const preferTop =
-      (bottomHitsIframe && spaceAbove >= cardH + gap) ||
+      (bottomHitsIframe && !topHitsIframe && spaceAbove >= Math.min(cardH, 180)) ||
       (spaceBelow < cardH + gap && spaceAbove >= spaceBelow);
     const placement: 'top' | 'bottom' = preferTop ? 'top' : 'bottom';
 

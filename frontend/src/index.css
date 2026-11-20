@@ -5002,7 +5002,7 @@ textarea.t-input {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 8px 8px 8px 16px;
+  padding: 4px 8px 4px 16px;
   background: var(--bg-surface-subtle);
   border-bottom: 1px solid var(--border-subtle);
 }
@@ -5046,10 +5046,10 @@ textarea.t-input {
   color: var(--text-primary);
 }
 .wiki-hovercard__body {
-  padding: 14px 16px;
+  padding: 12px 16px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
   max-width: 60ch;
   overflow-y: auto;
   min-height: 0;
