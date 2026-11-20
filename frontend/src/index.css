@@ -4983,8 +4983,12 @@ textarea.t-input {
 
 .wiki-hovercard {
   position: fixed;
-  z-index: 1200;
-  width: min(376px, calc(100vw - 32px));
+  z-index: 9999;
+  isolation: isolate;
+  width: min(368px, calc(100vw - 32px));
+  max-height: calc(100dvh - 24px);
+  display: flex;
+  flex-direction: column;
   background: var(--bg-surface);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-lg);
@@ -5042,11 +5046,13 @@ textarea.t-input {
   color: var(--text-primary);
 }
 .wiki-hovercard__body {
-  padding: 16px;
+  padding: 14px 16px;
   display: flex;
   flex-direction: column;
   gap: 8px;
   max-width: 60ch;
+  overflow-y: auto;
+  min-height: 0;
 }
 .wiki-hovercard__title {
   display: block;

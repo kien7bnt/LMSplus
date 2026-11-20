@@ -231,7 +231,7 @@ function cleanLineForExcerpt(line: string): string {
 
 export function extractWikiExcerpt(
   page: WikiPageItem,
-  maxChars = 280
+  maxChars = 190
 ): { lead: string; bodyLines: string[]; hasMore: boolean } {
   const lead = cleanLineForExcerpt(page.summary || '');
   const rawLines = String(page.content_markdown || '')
@@ -240,7 +240,7 @@ export function extractWikiExcerpt(
     .filter(Boolean);
 
   const bodyLines: string[] = [];
-  let charBudget = Math.max(120, maxChars - lead.length);
+  const charBudget = Math.max(96, maxChars - Math.min(lead.length, 100));
   let consumed = 0;
   let truncated = false;
 
@@ -254,7 +254,7 @@ export function extractWikiExcerpt(
     if (lead && normVi(cleaned) === normVi(lead)) continue;
 
     if (consumed + cleaned.length > charBudget) {
-      const remaining = Math.max(48, charBudget - consumed);
+      const remaining = Math.max(44, charBudget - consumed);
       const cut = cleaned.slice(0, remaining).replace(/\s+\S*$/, '').trim();
       if (cut) bodyLines.push(`${cut}…`);
       truncated = true;
@@ -262,7 +262,7 @@ export function extractWikiExcerpt(
     }
     bodyLines.push(cleaned);
     consumed += cleaned.length;
-    if (bodyLines.length >= 3) {
+    if (bodyLines.length >= 2) {
       if (rawLines.length > bodyLines.length + 1) truncated = true;
       break;
     }
@@ -554,33 +554,59 @@ export const WikiTermTrigger: React.FC<{
     const el = triggerRef.current;
     if (!el) return;
     const rect = el.getBoundingClientRect();
-    const cardW = Math.min(376, window.innerWidth - 32);
-    const estimatedH = cardRef.current?.offsetHeight || 228;
+    const margin = 12;
     const gap = 10;
+    const cardW = Math.min(368, window.innerWidth - 32);
+    const measuredH = cardRef.current?.getBoundingClientRect().height || 240;
+    const cardH = Math.min(measuredH, window.innerHeight - margin * 2);
 
-    const spaceBelow = window.innerHeight - rect.bottom;
-    const spaceAbove = rect.top;
-    const placement: 'top' | 'bottom' =
-      spaceBelow < estimatedH + gap && spaceAbove > spaceBelow ? 'top' : 'bottom';
-
-    const rawTop =
-      placement === 'bottom'
-        ? rect.bottom + gap
-        : Math.max(12, rect.top - estimatedH - gap);
     const idealLeft = rect.left + rect.width / 2 - cardW / 2;
     const clampedLeft = Math.max(16, Math.min(window.innerWidth - cardW - 16, idealLeft));
 
-    setCoords({ top: rawTop, left: clampedLeft, placement });
+    const spaceBelow = window.innerHeight - rect.bottom - margin;
+    const spaceAbove = rect.top - margin;
+
+    // Avoid overlapping cross-origin video/PDF iframes below when flipping above fits cleanly
+    const bottomTop = rect.bottom + gap;
+    const bottomEnd = bottomTop + cardH;
+    let bottomHitsIframe = false;
+    const iframes = document.querySelectorAll('iframe');
+    for (let i = 0; i < iframes.length; i += 1) {
+      const r = iframes[i].getBoundingClientRect();
+      if (r.width <= 0 || r.height <= 0) continue;
+      const overlapX = clampedLeft < r.right && clampedLeft + cardW > r.left;
+      const overlapY = bottomTop < r.bottom && bottomEnd > r.top;
+      if (overlapX && overlapY) {
+        bottomHitsIframe = true;
+        break;
+      }
+    }
+
+    const preferTop =
+      (bottomHitsIframe && spaceAbove >= cardH + gap) ||
+      (spaceBelow < cardH + gap && spaceAbove >= spaceBelow);
+    const placement: 'top' | 'bottom' = preferTop ? 'top' : 'bottom';
+
+    const rawTop = placement === 'bottom' ? bottomTop : rect.top - cardH - gap;
+    const clampedTop = Math.max(margin, Math.min(window.innerHeight - cardH - margin, rawTop));
+
+    setCoords({ top: clampedTop, left: clampedLeft, placement });
   }, []);
 
   useLayoutEffect(() => {
     if (!open) return;
     updatePosition();
     const raf = window.requestAnimationFrame(updatePosition);
+    let ro: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== 'undefined' && cardRef.current) {
+      ro = new ResizeObserver(() => updatePosition());
+      ro.observe(cardRef.current);
+    }
     window.addEventListener('scroll', updatePosition, true);
     window.addEventListener('resize', updatePosition);
     return () => {
       window.cancelAnimationFrame(raf);
+      ro?.disconnect();
       window.removeEventListener('scroll', updatePosition, true);
       window.removeEventListener('resize', updatePosition);
     };
@@ -640,7 +666,7 @@ export const WikiTermTrigger: React.FC<{
     else onOpenWiki?.(page);
   };
 
-  const excerpt = useMemo(() => extractWikiExcerpt(page, 280), [page]);
+  const excerpt = useMemo(() => extractWikiExcerpt(page, 190), [page]);
 
   return (
     <>
