@@ -39,6 +39,7 @@ const OutlineEditor: React.FC<{ course: CourseDetail; onChanged: () => void; set
   const [newTopicCode, setNewTopicCode] = useState('');
   const [newLesson, setNewLesson] = useState<Record<string, string>>({});
   const [editing, setEditing] = useState<{ id: string; title: string } | null>(null);
+  const [editingLesson, setEditingLesson] = useState<{ id: string; title: string } | null>(null);
   const [editingTopic, setEditingTopic] = useState<{ id: string; code: string; title: string } | null>(null);
   const [drag, setDrag] = useState<{ type: 'chapter' | 'lesson'; id: string; from: string } | null>(null);
   const [over, setOver] = useState<string | null>(null);
@@ -458,18 +459,59 @@ const OutlineEditor: React.FC<{ course: CourseDetail; onChanged: () => void; set
                 </span>
               )}
               <div className="t-lesson-row__title">
-                <Link to={`/teaching/lessons/${l.id}`}>
-                  Bài {ci + 1}.{li + 1}. {l.title}
-                </Link>
-                <span className="t-sub tabular-nums">
-                  {l.duration_minutes} phút{l.completion_rule === 'REVIEW_CORRECT' ? ' · Hoàn thành khi trả lời đúng câu hỏi' : ''}
-                </span>
+                {editingLesson?.id === l.id ? (
+                  <form
+                    style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      if (!editingLesson.title.trim()) return;
+                      run(
+                        () => teachingApi.updateLesson(l.id, { title: editingLesson.title.trim() }),
+                        'Đã đổi tên bài học'
+                      ).then(() => setEditingLesson(null));
+                    }}
+                  >
+                    <input
+                      className="t-input"
+                      style={{ flex: '1 1 220px', minWidth: 0 }}
+                      value={editingLesson.title}
+                      maxLength={200}
+                      autoFocus
+                      onChange={(e) => setEditingLesson({ id: l.id, title: e.target.value })}
+                      aria-label="Tên bài học"
+                    />
+                    <div className="t-actions">
+                      <Btn type="submit" variant="primary" small disabled={!editingLesson.title.trim()}>
+                        Lưu
+                      </Btn>
+                      <Btn type="button" small variant="ghost" onClick={() => setEditingLesson(null)}>
+                        Hủy
+                      </Btn>
+                    </div>
+                  </form>
+                ) : (
+                  <>
+                    <Link to={`/teaching/lessons/${l.id}`}>
+                      Bài {ci + 1}.{li + 1}. {l.title}
+                    </Link>
+                    <span className="t-sub tabular-nums">
+                      {l.duration_minutes} phút{l.completion_rule === 'REVIEW_CORRECT' ? ' · Hoàn thành khi trả lời đúng câu hỏi' : ''}
+                    </span>
+                  </>
+                )}
               </div>
               <Badge kind="lesson" value={l.publish_status} />
               {l.has_unpublished_changes && l.publish_status !== 'ARCHIVED' && <Tone tone="warning">Có thay đổi chưa xuất bản</Tone>}
-              <Link className="t-btn t-btn--small" to={`/teaching/lessons/${l.id}`}>
-                {course.capabilities.can_edit_draft ? 'Soạn nội dung' : 'Xem'}
-              </Link>
+              {editingLesson?.id !== l.id && (
+                <Link className="t-btn t-btn--small" to={`/teaching/lessons/${l.id}`}>
+                  {course.capabilities.can_edit_draft ? 'Soạn nội dung' : 'Xem'}
+                </Link>
+              )}
+              {(canManage || course.capabilities.can_edit_draft) && l.publish_status !== 'ARCHIVED' && editingLesson?.id !== l.id && (
+                <Btn small variant="ghost" onClick={() => setEditingLesson({ id: l.id, title: l.title })}>
+                  Đổi tên
+                </Btn>
+              )}
               {canManage && (
                 <>
                   <button type="button" className="t-icon-btn" aria-label="Chuyển bài lên" disabled={li === 0} onClick={() => moveLesson(l.id, ch.id, li - 1)}>↑</button>
