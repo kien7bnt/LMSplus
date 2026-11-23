@@ -39,6 +39,7 @@ const OutlineEditor: React.FC<{ course: CourseDetail; onChanged: () => void; set
   const [newTopicCode, setNewTopicCode] = useState('');
   const [newLesson, setNewLesson] = useState<Record<string, string>>({});
   const [editing, setEditing] = useState<{ id: string; title: string } | null>(null);
+  const [editingTopic, setEditingTopic] = useState<{ id: string; code: string; title: string } | null>(null);
   const [drag, setDrag] = useState<{ type: 'chapter' | 'lesson'; id: string; from: string } | null>(null);
   const [over, setOver] = useState<string | null>(null);
   const [confirm, setConfirm] = useState<null | { title: string; message: string; label: string; danger?: boolean; run: () => Promise<unknown> }>(null);
@@ -96,6 +97,21 @@ const OutlineEditor: React.FC<{ course: CourseDetail; onChanged: () => void; set
     treeReq.reload();
   };
 
+  const saveTopic = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingTopic || editingTopic.title.trim().length < 2) return;
+    await run(
+      () =>
+        masterApi.updateTopic(editingTopic.id, {
+          code: editingTopic.code.trim() || undefined,
+          title: editingTopic.title.trim(),
+        }),
+      'Đã cập nhật chủ đề'
+    );
+    setEditingTopic(null);
+    treeReq.reload();
+  };
+
   const addChapter = async () => {
     if (!newChapter.trim()) return;
     await run(
@@ -149,46 +165,131 @@ const OutlineEditor: React.FC<{ course: CourseDetail; onChanged: () => void; set
           </Link>
         </div>
         {topics.length > 0 && (
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: canManage ? 10 : 0 }}>
-            {topics.map((tp) => (
-              <span
-                key={tp.id}
-                style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: 6,
-                  padding: '4px 10px',
-                  borderRadius: 'var(--radius-pill)',
-                  border: '1px solid var(--border-subtle)',
-                  backgroundColor: 'var(--bg-surface)',
-                  fontSize: 13,
-                }}
-              >
-                <strong className="tabular-nums">{tp.code}</strong>
-                <span>{tp.title}</span>
-                {canManage && (
-                  <button
-                    type="button"
-                    aria-label={`Xóa chủ đề ${tp.title}`}
-                    style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--status-danger)', fontWeight: 700, padding: '0 4px' }}
-                    onClick={() =>
-                      setConfirm({
-                        title: `Xóa chủ đề "${tp.title}"?`,
-                        message: 'Chủ đề sẽ bị xóa; các chương gắn với chủ đề này sẽ chuyển về chưa phân nhóm.',
-                        label: 'Xóa chủ đề',
-                        danger: true,
-                        run: async () => {
-                          await masterApi.deleteTopic(tp.id);
-                          treeReq.reload();
-                        },
-                      })
-                    }
-                  >
-                    ×
-                  </button>
-                )}
-              </span>
-            ))}
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: canManage ? 12 : 0 }}>
+            {topics.map((tp) =>
+              editingTopic?.id === tp.id ? (
+                <form
+                  key={tp.id}
+                  onSubmit={saveTopic}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 8,
+                    flexWrap: 'wrap',
+                    width: '100%',
+                    padding: 8,
+                    borderRadius: 'var(--radius-sm)',
+                    border: '1px solid var(--border-strong)',
+                    backgroundColor: 'var(--bg-surface)',
+                  }}
+                >
+                  <input
+                    className="t-input"
+                    style={{ width: 120 }}
+                    value={editingTopic.code}
+                    maxLength={40}
+                    onChange={(e) => setEditingTopic({ ...editingTopic, code: e.target.value })}
+                    placeholder="Mã chủ đề…"
+                    aria-label="Sửa mã chủ đề"
+                  />
+                  <input
+                    className="t-input"
+                    style={{ flex: '1 1 200px', minWidth: 0 }}
+                    value={editingTopic.title}
+                    maxLength={200}
+                    autoFocus
+                    onChange={(e) => setEditingTopic({ ...editingTopic, title: e.target.value })}
+                    placeholder="Tên chủ đề…"
+                    aria-label="Sửa tên chủ đề"
+                  />
+                  <div className="t-actions">
+                    <Btn type="submit" small variant="primary" disabled={editingTopic.title.trim().length < 2}>
+                      Lưu
+                    </Btn>
+                    <Btn type="button" small variant="ghost" onClick={() => setEditingTopic(null)}>
+                      Hủy
+                    </Btn>
+                  </div>
+                </form>
+              ) : (
+                <span
+                  key={tp.id}
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 4,
+                    minHeight: 44,
+                    padding: '4px 6px 4px 12px',
+                    borderRadius: 'var(--radius-pill)',
+                    border: '1px solid var(--border-subtle)',
+                    backgroundColor: 'var(--bg-surface)',
+                    fontSize: 13,
+                  }}
+                >
+                  <strong className="tabular-nums">{tp.code}</strong>
+                  <span style={{ marginRight: 4 }}>{tp.title}</span>
+                  {canManage && (
+                    <>
+                      <button
+                        type="button"
+                        aria-label={`Sửa chủ đề ${tp.title}`}
+                        title="Sửa tên chủ đề"
+                        style={{
+                          minWidth: 36,
+                          minHeight: 36,
+                          border: 'none',
+                          borderRadius: 'var(--radius-pill)',
+                          background: 'transparent',
+                          cursor: 'pointer',
+                          color: 'var(--text-secondary)',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                        }}
+                        onClick={() => setEditingTopic({ id: tp.id, code: tp.code, title: tp.title })}
+                      >
+                        <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.75} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                          <path d="M12 20h9" />
+                          <path d="M16.5 3.5a2.12 2.12 0 1 1 3 3L7 19l-4 1 1-4Z" />
+                        </svg>
+                      </button>
+                      <button
+                        type="button"
+                        aria-label={`Xóa chủ đề ${tp.title}`}
+                        title="Xóa chủ đề"
+                        style={{
+                          minWidth: 36,
+                          minHeight: 36,
+                          border: 'none',
+                          borderRadius: 'var(--radius-pill)',
+                          background: 'transparent',
+                          cursor: 'pointer',
+                          color: 'var(--status-danger)',
+                          fontWeight: 700,
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                        }}
+                        onClick={() =>
+                          setConfirm({
+                            title: `Xóa chủ đề "${tp.title}"?`,
+                            message: 'Chủ đề sẽ bị xóa; các chương gắn với chủ đề này sẽ chuyển về chưa phân nhóm.',
+                            label: 'Xóa chủ đề',
+                            danger: true,
+                            run: async () => {
+                              await masterApi.deleteTopic(tp.id);
+                              treeReq.reload();
+                            },
+                          })
+                        }
+                      >
+                        ×
+                      </button>
+                    </>
+                  )}
+                </span>
+              )
+            )}
           </div>
         )}
         {canManage && (

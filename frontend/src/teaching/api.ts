@@ -1902,7 +1902,7 @@ export const masterApi = {
   getCourseTree: (courseId: string) => get<{ course_id: string; topics: ContentTreeTopic[] }>(`/courses/${courseId}/tree`),
   createTopic: (courseId: string, body: { code?: string; title: string; description?: string; status?: LessonStatus }) =>
     send<ContentTreeTopic>('POST', `/courses/${courseId}/topics`, body),
-  updateTopic: (topicId: string, body: Partial<{ title: string; description: string; status: LessonStatus; sort_order: number }>) =>
+  updateTopic: (topicId: string, body: Partial<{ code: string; title: string; description: string; status: LessonStatus; sort_order: number }>) =>
     send<CourseTopicSummary>('PATCH', `/topics/${topicId}`, body),
   deleteTopic: (topicId: string) => send<{ deleted_id: string }>('DELETE', `/topics/${topicId}`),
   listCourseVersions: (courseId: string) =>
