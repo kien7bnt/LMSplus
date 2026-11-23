@@ -530,8 +530,8 @@ export function registerCurriculaAndCohortRoutes(route) {
     const linkedClassIds = linkedClasses.map((c) => c.id);
     const inCls = linkedClassIds.length ? linkedClassIds.map(() => '?').join(',') : "''";
 
-    // Tab Giảng viên
-    const instructors = linkedClassIds.length
+    // Tab Giảng viên (gom nhóm theo giảng viên & vai trò để tránh trùng dòng và trả đúng class_codes[])
+    const rawInstructors = linkedClassIds.length
       ? db
           .prepare(
             `SELECT u.id, u.code, u.full_name, u.email, t.staff_role, sc.id AS class_id, sc.code AS class_code, sc.title AS class_title
@@ -539,10 +539,32 @@ export function registerCurriculaAndCohortRoutes(route) {
              JOIN users u ON u.id = t.user_id
              JOIN subject_classes sc ON sc.id = t.subject_class_id
              WHERE t.subject_class_id IN (${inCls}) AND t.is_active = 1
-             ORDER BY u.full_name`
+             ORDER BY u.full_name, sc.code`
           )
           .all(...linkedClassIds)
       : [];
+    const instructorMap = new Map();
+    for (const row of rawInstructors) {
+      const key = `${row.id}:${row.staff_role}`;
+      let entry = instructorMap.get(key);
+      if (!entry) {
+        entry = {
+          id: row.id,
+          code: row.code,
+          full_name: row.full_name,
+          email: row.email,
+          staff_role: row.staff_role,
+          class_codes: [],
+          classes: [],
+        };
+        instructorMap.set(key, entry);
+      }
+      if (row.class_code && !entry.class_codes.includes(row.class_code)) {
+        entry.class_codes.push(row.class_code);
+        entry.classes.push({ id: row.class_id, code: row.class_code, title: row.class_title });
+      }
+    }
+    const instructors = Array.from(instructorMap.values());
 
     // Tab Lịch học
     const schedule = linkedClassIds.length

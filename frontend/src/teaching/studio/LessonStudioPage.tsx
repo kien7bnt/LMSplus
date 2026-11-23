@@ -17,6 +17,7 @@ import {
   StudioCourseData,
   VideoQuizMarker,
   WikiPageItem,
+  masterApi,
   saveBlob,
   teachingApi,
 } from '../api';
@@ -491,10 +492,32 @@ export const LessonStudioPage: React.FC<{ mode?: 'COURSE' | 'CLASS' }> = ({ mode
     [studioMode, courseShell, classShell]
   );
 
-  const wikiPages = useMemo<WikiPageItem[]>(
-    () => (studioMode === 'COURSE' ? courseShell?.wiki_pages || [] : classShell?.wiki_pages || []),
-    [studioMode, courseShell, classShell]
-  );
+  const [fallbackWikiPages, setFallbackWikiPages] = useState<WikiPageItem[]>([]);
+
+  useEffect(() => {
+    const shellPages = studioMode === 'COURSE' ? courseShell?.wiki_pages : classShell?.wiki_pages;
+    if (Array.isArray(shellPages) || !resolvedCourseId) {
+      setFallbackWikiPages([]);
+      return;
+    }
+    let alive = true;
+    masterApi
+      .listCourseWiki(resolvedCourseId)
+      .then((res) => {
+        if (alive) setFallbackWikiPages(res.items || []);
+      })
+      .catch(() => {
+        // ignore optional fallback errors
+      });
+    return () => {
+      alive = false;
+    };
+  }, [studioMode, courseShell?.wiki_pages, classShell?.wiki_pages, resolvedCourseId]);
+
+  const wikiPages = useMemo<WikiPageItem[]>(() => {
+    const shellPages = studioMode === 'COURSE' ? courseShell?.wiki_pages : classShell?.wiki_pages;
+    return Array.isArray(shellPages) ? shellPages : fallbackWikiPages;
+  }, [studioMode, courseShell?.wiki_pages, classShell?.wiki_pages, fallbackWikiPages]);
 
   const resourceMap = useMemo(() => {
     const m: Record<string, Resource & { available: boolean }> = {};

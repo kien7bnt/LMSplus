@@ -1,6 +1,6 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { LearnLesson, masterApi, saveBlob, teachingApi } from '../api';
+import { LearnLesson, WikiPageItem, masterApi, saveBlob, teachingApi } from '../api';
 import { BlockList } from '../BlockRenderer';
 import {
   Badge, Btn, Card, EmptyState, ErrorState, Loading, Modal, PageHeader, ProgressMeter, SmartImage, StatCard, Tabs, Tone,
@@ -873,6 +873,14 @@ export const StudentLessonPage: React.FC = () => {
   const [rightTab, setRightTab] = useState<'wiki' | 'forum' | 'hidden'>('wiki');
 
   const outlineReq = useAsync(() => teachingApi.learnClass(classId), [classId]);
+  const classWikiReq = useAsync(() => masterApi.listStudentClassWiki(classId), [classId]);
+
+  const effectiveWikiPages = useMemo<WikiPageItem[]>(() => {
+    const byId = new Map<string, WikiPageItem>();
+    (classWikiReq.data?.items || []).forEach((w) => byId.set(w.id, w));
+    (lesson?.wiki_pages || []).forEach((w) => byId.set(w.id, w));
+    return Array.from(byId.values());
+  }, [lesson?.wiki_pages, classWikiReq.data?.items]);
 
   const loadLesson = async () => {
     setLoading(true);
@@ -999,12 +1007,12 @@ export const StudentLessonPage: React.FC = () => {
 
         <div className="m-player-center">
           <Card>
-            <WikiReaderProvider wikiPages={lesson.wiki_pages || []}>
+            <WikiReaderProvider wikiPages={effectiveWikiPages}>
               {lesson.class_custom_note?.instructor_note && (
                 <div className="t-callout m-measure" style={{ marginBottom: 16 }}>
                   <strong>Dặn dò từ giảng viên lớp học</strong>
                   <span style={{ whiteSpace: 'pre-wrap' }}>
-                    <WikiAnnotatedText text={lesson.class_custom_note.instructor_note} wikiPages={lesson.wiki_pages || []} />
+                    <WikiAnnotatedText text={lesson.class_custom_note.instructor_note} wikiPages={effectiveWikiPages} />
                   </span>
                 </div>
               )}
@@ -1015,7 +1023,7 @@ export const StudentLessonPage: React.FC = () => {
                   <span style={{ whiteSpace: 'pre-wrap' }}>
                     <WikiAnnotatedText
                       text={[lesson.objectives, lesson.class_custom_note?.custom_objectives].filter(Boolean).join('\n\n')}
-                      wikiPages={lesson.wiki_pages || []}
+                      wikiPages={effectiveWikiPages}
                     />
                   </span>
                 </div>
@@ -1028,7 +1036,7 @@ export const StudentLessonPage: React.FC = () => {
                   blocks={lesson.blocks}
                   ctx={{
                     resources: lesson.resources,
-                    wikiPages: lesson.wiki_pages || [],
+                    wikiPages: effectiveWikiPages,
                     onDownload: handleDownload,
                 answers,
                 onAnswer: (blockId, optionId) => setAnswers((prev) => ({ ...prev, [blockId]: optionId })),

@@ -559,14 +559,21 @@ export const CohortDetailPage: React.FC = () => {
                   </tr>
                 </thead>
                 <tbody>
-                  {c.instructors.map((ins) => (
-                    <tr key={ins.id}>
-                      <td><strong>{ins.full_name}</strong></td>
-                      <td>{ins.email}</td>
-                      <td><Badge kind="staffRole" value={ins.staff_role} /></td>
-                      <td>{ins.class_codes.join(', ')}</td>
-                    </tr>
-                  ))}
+                  {(c.instructors || []).map((ins) => {
+                    const codes = Array.isArray(ins.class_codes)
+                      ? ins.class_codes
+                      : (ins as { class_code?: string }).class_code
+                        ? [(ins as { class_code?: string }).class_code!]
+                        : [];
+                    return (
+                      <tr key={`${ins.id}-${ins.staff_role}`}>
+                        <td><strong>{ins.full_name}</strong></td>
+                        <td>{ins.email}</td>
+                        <td><Badge kind="staffRole" value={ins.staff_role} /></td>
+                        <td>{codes.length > 0 ? codes.join(', ') : '—'}</td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>

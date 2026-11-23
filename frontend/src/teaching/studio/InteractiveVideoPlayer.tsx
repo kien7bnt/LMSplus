@@ -304,37 +304,61 @@ export const InteractiveVideoPlayer: React.FC<InteractiveVideoPlayerProps> = ({
   // Runtime completion map + session-handled set (tracks markers already paused in the current playback pass)
   const [runtimeMap, setRuntimeMap] = useState<Record<string, LocalMarkerRuntime>>({});
   const handledInSessionRef = useRef<Set<string>>(new Set());
+  const continueGraceUntilRef = useRef<number>(0);
+  const initialHandledSeededRef = useRef<boolean>(false);
   const prevCheckTimeRef = useRef<number>(startSeconds || 0);
 
+  // Reset session-handled set ONLY when switching video block or player mode (never on progress saves!)
   useEffect(() => {
-    const next: Record<string, LocalMarkerRuntime> = {};
-    const resumePos = mode === 'LEARNER' ? Number(initialProgress?.last_position_sec || 0) : 0;
     handledInSessionRef.current.clear();
-    unifiedMarkers.forEach((m) => {
-      if (mode === 'LEARNER' && m.learner_state) {
-        const done = Boolean(m.learner_state.completed);
-        next[m.id] = {
-          completed: done,
-          attemptsUsed: Number(m.learner_state.attempts_used || 0),
-          isCorrect: Boolean(m.learner_state.is_correct),
-          canRetry: Boolean(m.learner_state.can_retry),
-          lastFeedback: m.learner_state.last_feedback || '',
-        };
-        // Chỉ bỏ qua tự động khi khôi phục giữa chừng qua mốc đã hoàn thành; nếu phát lại từ đầu vẫn dừng tại mốc
-        if (done && resumePos >= 3 && resumePos > Number(m.timestamp_sec || 0) + 1.5) {
-          handledInSessionRef.current.add(m.id);
+    initialHandledSeededRef.current = false;
+    continueGraceUntilRef.current = 0;
+    prevCheckTimeRef.current = startSeconds || 0;
+  }, [blockId, videoId, mode, startSeconds]);
+
+  useEffect(() => {
+    setRuntimeMap((prevMap) => {
+      const next: Record<string, LocalMarkerRuntime> = {};
+      const resumePos = mode === 'LEARNER' ? Number(initialProgress?.last_position_sec || 0) : 0;
+      unifiedMarkers.forEach((m) => {
+        if (mode === 'LEARNER' && m.learner_state) {
+          const prevLocal = prevMap[m.id];
+          const serverDone = Boolean(m.learner_state.completed);
+          const serverAttempts = Number(m.learner_state.attempts_used || 0);
+          const useLocal = Boolean(prevLocal && prevLocal.attemptsUsed > serverAttempts);
+          next[m.id] = useLocal
+            ? prevLocal
+            : {
+                completed: serverDone || Boolean(prevLocal?.completed),
+                attemptsUsed: Math.max(serverAttempts, prevLocal?.attemptsUsed || 0),
+                isCorrect: Boolean(m.learner_state.is_correct) || Boolean(prevLocal?.isCorrect),
+                canRetry: serverDone ? Boolean(m.learner_state.can_retry) : Boolean(m.learner_state.can_retry),
+                lastFeedback: m.learner_state.last_feedback || prevLocal?.lastFeedback || '',
+                explanation: prevLocal?.explanation,
+              };
+          if (
+            !initialHandledSeededRef.current &&
+            serverDone &&
+            resumePos >= 3 &&
+            resumePos > Number(m.timestamp_sec || 0) + 0.5
+          ) {
+            handledInSessionRef.current.add(m.id);
+          }
+        } else {
+          next[m.id] = prevMap[m.id] || {
+            completed: false,
+            attemptsUsed: 0,
+            isCorrect: false,
+            canRetry: true,
+            lastFeedback: '',
+          };
         }
-      } else {
-        next[m.id] = {
-          completed: false,
-          attemptsUsed: 0,
-          isCorrect: false,
-          canRetry: true,
-          lastFeedback: '',
-        };
+      });
+      if (unifiedMarkers.length > 0) {
+        initialHandledSeededRef.current = true;
       }
+      return next;
     });
-    setRuntimeMap(next);
   }, [unifiedMarkers, mode, initialProgress?.last_position_sec]);
 
   // Active marker overlay & queue for closely spaced markers
@@ -655,11 +679,13 @@ export const InteractiveVideoPlayer: React.FC<InteractiveVideoPlayerProps> = ({
     const current = pb.currentTime;
     const prev = prevCheckTimeRef.current;
 
-    // Nếu người học tua ngược lại trước mốc, cho phép mốc đó tự động dừng lại khi phát tới
-    if (current < prev - 1.2) {
+    // Nếu người học chủ động tua ngược lại trước mốc (không tính nhiễu keyframe trong 2s sau khi bấm Tiếp tục),
+    // cho phép mốc chưa hoàn thành hoặc mốc ghi chú tự động dừng lại khi phát tới
+    if (current < prev - 1.5 && Date.now() >= continueGraceUntilRef.current) {
       unifiedMarkers.forEach((m) => {
         const mTime = getEffectiveMarkerTime(m.timestamp_sec);
-        if (mTime > current + 0.4) {
+        const rt = runtimeMap[m.id];
+        if (mTime > current + 0.5 && !rt?.completed) {
           handledInSessionRef.current.delete(m.id);
         }
       });
@@ -669,7 +695,7 @@ export const InteractiveVideoPlayer: React.FC<InteractiveVideoPlayerProps> = ({
     const blockingRequired = unifiedMarkers.find((m) => {
       const mTime = getEffectiveMarkerTime(m.timestamp_sec);
       const rt = runtimeMap[m.id];
-      const answeredDone = Boolean(rt?.completed && !rt?.canRetry) || handledInSessionRef.current.has(m.id);
+      const answeredDone = Boolean(rt?.completed) || handledInSessionRef.current.has(m.id);
       return (
         !answeredDone &&
         m.behavior === 'PAUSE_AND_ASK' &&
@@ -698,8 +724,8 @@ export const InteractiveVideoPlayer: React.FC<InteractiveVideoPlayerProps> = ({
     const dueMarkers = unifiedMarkers.filter((m) => {
       if (handledInSessionRef.current.has(m.id)) return false;
       const rt = runtimeMap[m.id];
-      const alreadyLocked = Boolean(rt?.completed && !rt?.canRetry && m.behavior !== 'INFO_ONLY');
-      if (alreadyLocked && m.allow_review === false) return false;
+      // Không tự động ngắt video lại với các câu hỏi học viên đã hoàn thành (học viên có thể bấm vào chấm mốc trên thanh tua để xem lại)
+      if (rt?.completed && m.behavior !== 'INFO_ONLY') return false;
       const mTime = getEffectiveMarkerTime(m.timestamp_sec);
       const crossed = prev <= mTime && current >= mTime - 0.15;
       const inWindow = current >= mTime - 0.15 && current <= mTime + 1.8;
@@ -737,9 +763,14 @@ export const InteractiveVideoPlayer: React.FC<InteractiveVideoPlayerProps> = ({
   const handleContinuePlayback = () => {
     if (activeMarker) {
       handledInSessionRef.current.add(activeMarker.id);
+      const mTime = getEffectiveMarkerTime(activeMarker.timestamp_sec);
+      prevCheckTimeRef.current = Math.max(prevCheckTimeRef.current, pbRef.current.currentTime, mTime + 0.2);
     }
+    continueGraceUntilRef.current = Date.now() + 2200;
     setSeekNotice(null);
     setReviewingOnly(false);
+    setSubmitResult(null);
+    setSubmitError(null);
 
     // Pop next queued marker if multiple markers share nearly the same timestamp
     const nextQueuedId = markerQueueRef.current.shift();
@@ -758,7 +789,13 @@ export const InteractiveVideoPlayer: React.FC<InteractiveVideoPlayerProps> = ({
   const handleSkipMarker = () => {
     if (!activeMarker) return;
     handledInSessionRef.current.add(activeMarker.id);
+    const mTime = getEffectiveMarkerTime(activeMarker.timestamp_sec);
+    prevCheckTimeRef.current = Math.max(prevCheckTimeRef.current, pbRef.current.currentTime, mTime + 0.2);
+    continueGraceUntilRef.current = Date.now() + 2200;
     setSeekNotice(null);
+    setReviewingOnly(false);
+    setSubmitResult(null);
+    setSubmitError(null);
     const nextQueuedId = markerQueueRef.current.shift();
     if (nextQueuedId) {
       openMarkerOverlay(nextQueuedId, false);
@@ -817,6 +854,9 @@ export const InteractiveVideoPlayer: React.FC<InteractiveVideoPlayerProps> = ({
         showExplanation: activeMarker.show_explanation !== false,
       });
       setSubmitResult(memRes);
+      if (memRes.can_continue) {
+        handledInSessionRef.current.add(activeMarker.id);
+      }
       setRuntimeMap((prev) => ({
         ...prev,
         [activeMarker.id]: {
@@ -839,6 +879,9 @@ export const InteractiveVideoPlayer: React.FC<InteractiveVideoPlayerProps> = ({
         response: responsePayload,
       });
       setSubmitResult(res);
+      if (res.can_continue) {
+        handledInSessionRef.current.add(activeMarker.id);
+      }
       setRuntimeMap((prev) => ({
         ...prev,
         [activeMarker.id]: {
@@ -894,7 +937,7 @@ export const InteractiveVideoPlayer: React.FC<InteractiveVideoPlayerProps> = ({
     if (targetSeconds < pb.currentTime - 0.5) {
       unifiedMarkers.forEach((m) => {
         const mTime = getEffectiveMarkerTime(m.timestamp_sec);
-        if (mTime >= targetSeconds - 0.2) {
+        if (mTime >= targetSeconds - 0.2 && !runtimeMap[m.id]?.completed) {
           handledInSessionRef.current.delete(m.id);
         }
       });

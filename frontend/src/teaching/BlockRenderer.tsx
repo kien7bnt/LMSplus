@@ -483,8 +483,12 @@ const StandaloneQuizBlockView: React.FC<{ block: LessonBlock; ctx: RenderCtx }> 
 const renderCoreBlock = (block: LessonBlock, ctx: RenderCtx): React.ReactNode => {
   const c = block.content || {};
   switch (block.block_type) {
-    case 'heading':
-      return c.level === 3 ? <h3>{c.text}</h3> : <h2>{c.text}</h2>;
+    case 'heading': {
+      const headingContent = (
+        <WikiAnnotatedText text={c.text} wikiPages={ctx.wikiPages} onOpenWiki={ctx.onOpenWikiPage} />
+      );
+      return c.level === 3 ? <h3>{headingContent}</h3> : <h2>{headingContent}</h2>;
+    }
     case 'paragraph':
       return (
         <p style={{ whiteSpace: 'pre-wrap' }}>
@@ -590,7 +594,11 @@ const renderCoreBlock = (block: LessonBlock, ctx: RenderCtx): React.ReactNode =>
               </div>
             }
           />
-          {c.caption && <figcaption>{c.caption}</figcaption>}
+          {c.caption && (
+            <figcaption>
+              <WikiAnnotatedText text={c.caption} wikiPages={ctx.wikiPages} onOpenWiki={ctx.onOpenWikiPage} />
+            </figcaption>
+          )}
         </figure>
       );
     case 'file': {

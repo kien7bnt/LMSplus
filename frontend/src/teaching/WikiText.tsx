@@ -32,7 +32,7 @@ function isWordChar(ch: string | undefined): boolean {
 }
 
 function normVi(str: string): string {
-  return str.trim().toLocaleLowerCase('vi');
+  return str.normalize('NFC').trim().toLocaleLowerCase('vi');
 }
 
 function buildWikiIndex(wikiPages: WikiPageItem[], excludePageId?: string): WikiMatchEntry[] {
@@ -43,7 +43,7 @@ function buildWikiIndex(wikiPages: WikiPageItem[], excludePageId?: string): Wiki
     if (!page || page.id === excludePageId || page.status === 'ARCHIVED') continue;
     const rawTags = Array.isArray(page.tags) ? page.tags : [];
     for (const rawTag of rawTags) {
-      const term = String(rawTag || '').trim();
+      const term = String(rawTag || '').normalize('NFC').trim().replace(/^#+/, '').trim();
       if (term.length < 2) continue;
       const norm = normVi(term);
       if (!seenKey.has(norm)) {
@@ -51,7 +51,7 @@ function buildWikiIndex(wikiPages: WikiPageItem[], excludePageId?: string): Wiki
         entries.push({ term, norm, page, source: 'TAG' });
       }
     }
-    const title = String(page.title || '').trim();
+    const title = String(page.title || '').normalize('NFC').trim();
     if (title.length >= 2) {
       const norm = normVi(title);
       if (!seenKey.has(norm)) {
@@ -78,11 +78,12 @@ function findPageForExplicitRef(refText: string, wikiPages: WikiPageItem[], excl
 }
 
 function tokenizePlainSegment(
-  plain: string,
+  plainRaw: string,
   entries: WikiMatchEntry[],
   matchedTermsInBlock: Set<string>
 ): TextSegment[] {
-  if (!plain || entries.length === 0) return [{ kind: 'text', text: plain }];
+  if (!plainRaw || entries.length === 0) return [{ kind: 'text', text: plainRaw }];
+  const plain = plainRaw.normalize('NFC');
   const lower = plain.toLocaleLowerCase('vi');
   const out: TextSegment[] = [];
   let cursor = 0;
@@ -233,7 +234,8 @@ export function extractWikiExcerpt(
   page: WikiPageItem,
   maxChars = 190
 ): { lead: string; bodyLines: string[]; hasMore: boolean } {
-  const lead = cleanLineForExcerpt(page.summary || '');
+  const rawLead = cleanLineForExcerpt(page.summary || '');
+  const lead = rawLead && normVi(rawLead) !== normVi(page.title || '') ? rawLead : '';
   const rawLines = String(page.content_markdown || '')
     .split(/\r?\n/)
     .map((l) => l.trim())
