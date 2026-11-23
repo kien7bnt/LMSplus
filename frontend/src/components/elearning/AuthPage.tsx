@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { UserRole } from '../../types/elearning';
 import { AuthenticatedUser, apiLogin, apiRegister } from '../../api/elearningClient';
+import { BrandLogo } from '../BrandLogo';
 import { Button } from '../ui/Primitives';
 
 export const ROLE_DISPLAY_LABELS: Record<UserRole, string> = {
@@ -148,26 +149,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onAuthSuccess }) => {
             gap: '32px',
           }}
         >
-          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-            <div
-              style={{
-                width: '44px',
-                height: '44px',
-                borderRadius: 'var(--radius-md)',
-                backgroundColor: 'var(--text-on-brand)',
-                color: 'var(--brand-primary)',
-                flexShrink: 0,
-                display: 'inline-flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                fontWeight: 800,
-                fontSize: '18px',
-              }}
-            >
-              L+
-            </div>
-            <strong style={{ fontSize: '20px' }}>LMSPLUS E-Learning</strong>
-          </div>
+          <BrandLogo size={48} tone="inverted" wordmarkSize={26} showTagline />
 
           <div>
             <h1 style={{ fontSize: 'clamp(24px, 4vw, 32px)', lineHeight: 1.2, margin: '0 0 16px 0', color: 'var(--text-on-brand)' }}>

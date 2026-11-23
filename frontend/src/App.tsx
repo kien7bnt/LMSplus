@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Link, Navigate, NavLink, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import { AuthenticatedUser, apiLogout, getSavedAuthUser } from './api/elearningClient';
+import { BrandLogo } from './components/BrandLogo';
 import { AuthPage, ROLE_DISPLAY_LABELS } from './components/elearning/AuthPage';
 import { ThemeSwitcher } from './components/ui/Primitives';
 import { masterApi, NotificationItem, teachingApi } from './teaching/api';
@@ -273,30 +274,11 @@ export const App: React.FC = () => {
         <div className="app-header__inner">
           <Link
             to={homePath}
-            aria-label="Về trang chủ LMSPLUS"
+            aria-label="Về trang chủ lms"
             className="app-header__brand"
-            style={{ textDecoration: 'none' }}
+            style={{ textDecoration: 'none', minHeight: '44px' }}
           >
-            <span
-              style={{
-                width: '40px',
-                height: '40px',
-                borderRadius: 'var(--radius-md)',
-                backgroundColor: 'var(--brand-primary)',
-                color: 'var(--text-on-brand)',
-                flexShrink: 0,
-                display: 'inline-flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                fontWeight: 800,
-                fontSize: '16px',
-              }}
-            >
-              L+
-            </span>
-            <strong style={{ fontSize: '18px', color: 'var(--text-primary)', letterSpacing: '-0.02em' }}>
-              LMSPLUS
-            </strong>
+            <BrandLogo size={40} wordmarkSize={22} />
           </Link>
 
           <nav
