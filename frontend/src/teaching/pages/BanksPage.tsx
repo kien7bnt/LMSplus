@@ -6,7 +6,10 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import {
+  AssignmentBankItem,
   AssignmentSubmissionType,
+  BankQuestionRow,
+  BankResourceItem,
   BankTreeCourse,
   QuestionType,
   masterApi,
@@ -74,9 +77,12 @@ export const BanksPage: React.FC = () => {
   const [page, setPage] = useState(1);
 
   const [createQuestionOpen, setCreateQuestionOpen] = useState(false);
+  const [editingQuestion, setEditingQuestion] = useState<BankQuestionRow | null>(null);
   const [importQuestionOpen, setImportQuestionOpen] = useState(false);
   const [createAssignmentOpen, setCreateAssignmentOpen] = useState(false);
+  const [editingAssignment, setEditingAssignment] = useState<AssignmentBankItem | null>(null);
   const [createResourceOpen, setCreateResourceOpen] = useState(false);
+  const [editingResource, setEditingResource] = useState<BankResourceItem | null>(null);
 
   // Tự động chọn node từ query param khi tải cây xong
   useEffect(() => {
@@ -371,6 +377,13 @@ export const BanksPage: React.FC = () => {
                                     <Btn
                                       small
                                       variant="ghost"
+                                      onClick={() => setEditingQuestion(item)}
+                                    >
+                                      Sửa
+                                    </Btn>
+                                    <Btn
+                                      small
+                                      variant="ghost"
                                       onClick={async () => {
                                         await masterApi.deleteQuestionBankItem(item.id);
                                         push('Đã xóa câu hỏi khỏi ngân hàng', '', 'info');
@@ -428,6 +441,13 @@ export const BanksPage: React.FC = () => {
                               <td className="actions">
                                 {editableCourseIds.has(a.course_id) && (
                                   <div className="t-actions">
+                                    <Btn
+                                      small
+                                      variant="ghost"
+                                      onClick={() => setEditingAssignment(a)}
+                                    >
+                                      Sửa
+                                    </Btn>
                                     <Btn
                                       small
                                       variant="ghost"
@@ -508,6 +528,13 @@ export const BanksPage: React.FC = () => {
                                     <Btn
                                       small
                                       variant="ghost"
+                                      onClick={() => setEditingResource(r)}
+                                    >
+                                      Sửa
+                                    </Btn>
+                                    <Btn
+                                      small
+                                      variant="ghost"
                                       onClick={async () => {
                                         await masterApi.deleteResourceBankItem(r.id);
                                         push('Đã xóa tài nguyên', '', 'info');
@@ -533,12 +560,19 @@ export const BanksPage: React.FC = () => {
         </div>
       </div>
 
-      {createQuestionOpen && canCreateAny && (
+      {(createQuestionOpen || editingQuestion) && canCreateAny && (
         <CreateBankQuestionModal
-          options={scopedLessonOptions}
-          defaultLessonId={defaultModalLessonId}
-          onClose={() => setCreateQuestionOpen(false)}
-          onCreated={() => { setCreateQuestionOpen(false); push('Đã thêm câu hỏi vào ngân hàng', '', 'success'); reloadAll(); }}
+          options={editingQuestion ? lessonOptions.filter((o) => o.courseId === editingQuestion.course_id) : scopedLessonOptions}
+          defaultLessonId={editingQuestion?.lesson_id || defaultModalLessonId}
+          existing={editingQuestion}
+          onClose={() => { setCreateQuestionOpen(false); setEditingQuestion(null); }}
+          onSaved={() => {
+            const wasEdit = Boolean(editingQuestion);
+            setCreateQuestionOpen(false);
+            setEditingQuestion(null);
+            push(wasEdit ? 'Đã cập nhật câu hỏi' : 'Đã thêm câu hỏi vào ngân hàng', '', 'success');
+            reloadAll();
+          }}
         />
       )}
 
@@ -551,21 +585,35 @@ export const BanksPage: React.FC = () => {
         />
       )}
 
-      {createAssignmentOpen && canCreateAny && (
+      {(createAssignmentOpen || editingAssignment) && canCreateAny && (
         <CreateBankAssignmentModal
-          options={scopedLessonOptions}
-          defaultLessonId={defaultModalLessonId}
-          onClose={() => setCreateAssignmentOpen(false)}
-          onCreated={() => { setCreateAssignmentOpen(false); push('Đã thêm bài tập vào ngân hàng', '', 'success'); reloadAll(); }}
+          options={editingAssignment ? lessonOptions.filter((o) => o.courseId === editingAssignment.course_id) : scopedLessonOptions}
+          defaultLessonId={editingAssignment?.lesson_id || defaultModalLessonId}
+          existing={editingAssignment}
+          onClose={() => { setCreateAssignmentOpen(false); setEditingAssignment(null); }}
+          onSaved={() => {
+            const wasEdit = Boolean(editingAssignment);
+            setCreateAssignmentOpen(false);
+            setEditingAssignment(null);
+            push(wasEdit ? 'Đã cập nhật bài tập mẫu' : 'Đã thêm bài tập vào ngân hàng', '', 'success');
+            reloadAll();
+          }}
         />
       )}
 
-      {createResourceOpen && canCreateAny && (
+      {(createResourceOpen || editingResource) && canCreateAny && (
         <CreateBankResourceModal
-          options={scopedLessonOptions}
-          defaultLessonId={defaultModalLessonId}
-          onClose={() => setCreateResourceOpen(false)}
-          onCreated={() => { setCreateResourceOpen(false); push('Đã lưu tài nguyên vào ngân hàng', '', 'success'); reloadAll(); }}
+          options={editingResource ? lessonOptions.filter((o) => o.courseId === editingResource.course_id) : scopedLessonOptions}
+          defaultLessonId={editingResource?.lesson_id || defaultModalLessonId}
+          existing={editingResource}
+          onClose={() => { setCreateResourceOpen(false); setEditingResource(null); }}
+          onSaved={() => {
+            const wasEdit = Boolean(editingResource);
+            setCreateResourceOpen(false);
+            setEditingResource(null);
+            push(wasEdit ? 'Đã cập nhật tài nguyên' : 'Đã lưu tài nguyên vào ngân hàng', '', 'success');
+            reloadAll();
+          }}
         />
       )}
     </div>
@@ -681,24 +729,40 @@ const LessonTargetSelect: React.FC<{
 const CreateBankQuestionModal: React.FC<{
   options: LeafLessonOption[];
   defaultLessonId: string;
+  existing?: BankQuestionRow | null;
   onClose: () => void;
-  onCreated: () => void;
-}> = ({ options, defaultLessonId, onClose, onCreated }) => {
-  const [lessonId, setLessonId] = useState(defaultLessonId || options[0]?.lessonId || '');
+  onSaved: () => void;
+}> = ({ options, defaultLessonId, existing, onClose, onSaved }) => {
+  const existingOpts = Array.isArray(existing?.options) ? existing!.options : [];
+  const existingCorrectIds = new Set<string>(
+    Array.isArray(existing?.answer_key?.correct_option_ids)
+      ? existing!.answer_key!.correct_option_ids.map(String)
+      : existingOpts.filter((o) => o.is_correct).map((o) => o.id)
+  );
+  const initialCorrectIndices = existingOpts
+    .map((o, idx) => (existingCorrectIds.has(o.id) ? idx : -1))
+    .filter((idx) => idx >= 0);
+
+  const [lessonId, setLessonId] = useState(existing?.lesson_id || defaultLessonId || options[0]?.lessonId || '');
   const picked = options.find((o) => o.lessonId === lessonId) || options[0];
-  const [questionType, setQuestionType] = useState<QuestionType>('SINGLE_CHOICE');
-  const [prompt, setPrompt] = useState('');
-  const [opt1, setOpt1] = useState('');
-  const [opt2, setOpt2] = useState('');
-  const [opt3, setOpt3] = useState('');
-  const [opt4, setOpt4] = useState('');
-  const [correctIdx, setCorrectIdx] = useState(0);
-  const [correctMulti, setCorrectMulti] = useState<number[]>([0]);
-  const [boolAnswer, setBoolAnswer] = useState(true);
-  const [acceptedTexts, setAcceptedTexts] = useState('');
-  const [difficulty, setDifficulty] = useState<'EASY' | 'MEDIUM' | 'HARD'>('MEDIUM');
-  const [points, setPoints] = useState(1);
-  const [explanation, setExplanation] = useState('');
+  const [questionType, setQuestionType] = useState<QuestionType>(existing?.question_type || 'SINGLE_CHOICE');
+  const [prompt, setPrompt] = useState(existing?.prompt || '');
+  const [opt1, setOpt1] = useState(existingOpts[0]?.text || '');
+  const [opt2, setOpt2] = useState(existingOpts[1]?.text || '');
+  const [opt3, setOpt3] = useState(existingOpts[2]?.text || '');
+  const [opt4, setOpt4] = useState(existingOpts[3]?.text || '');
+  const [correctIdx, setCorrectIdx] = useState(initialCorrectIndices[0] ?? 0);
+  const [correctMulti, setCorrectMulti] = useState<number[]>(initialCorrectIndices.length ? initialCorrectIndices : [0]);
+  const [boolAnswer, setBoolAnswer] = useState(
+    existing?.answer_key?.boolean_answer !== undefined ? Boolean(existing.answer_key.boolean_answer) : true
+  );
+  const [acceptedTexts, setAcceptedTexts] = useState(() => {
+    const arr = existing?.answer_key?.accepted_texts || existing?.answer_key?.keywords || [];
+    return Array.isArray(arr) ? arr.join(', ') : '';
+  });
+  const [difficulty, setDifficulty] = useState<'EASY' | 'MEDIUM' | 'HARD'>(existing?.difficulty || 'MEDIUM');
+  const [points, setPoints] = useState(Number(existing?.points ?? 1));
+  const [explanation, setExplanation] = useState(existing?.explanation || '');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -727,7 +791,7 @@ const CreateBankQuestionModal: React.FC<{
       if (questionType === 'SINGLE_CHOICE' || questionType === 'MULTIPLE_CHOICE') {
         const activeIndices = questionType === 'MULTIPLE_CHOICE' ? correctMulti : [correctIdx];
         const opts = [opt1, opt2, opt3, opt4]
-          .map((t, i) => ({ id: `opt_${i + 1}`, text: t.trim(), is_correct: activeIndices.includes(i) }))
+          .map((t, i) => ({ id: existingOpts[i]?.id || `opt_${i + 1}`, text: t.trim(), is_correct: activeIndices.includes(i) }))
           .filter((o) => o.text);
         const correctIds = opts.filter((o) => o.is_correct).map((o) => o.id);
         payload.options = opts;
@@ -739,8 +803,12 @@ const CreateBankQuestionModal: React.FC<{
       } else {
         payload.answer_key = { manual_review: true, keywords: acceptedTexts.split(',').map((s) => s.trim()).filter(Boolean) };
       }
-      await masterApi.createQuestionBankItem(payload);
-      onCreated();
+      if (existing) {
+        await masterApi.updateQuestionBankItem(existing.id, payload);
+      } else {
+        await masterApi.createQuestionBankItem(payload);
+      }
+      onSaved();
     } catch (ex) {
       setErr(errMsg(ex));
       setBusy(false);
@@ -749,13 +817,15 @@ const CreateBankQuestionModal: React.FC<{
 
   return (
     <Modal
-      title="Thêm câu hỏi vào ngân hàng"
+      title={existing ? 'Chỉnh sửa câu hỏi trong ngân hàng' : 'Thêm câu hỏi vào ngân hàng'}
       onClose={onClose}
       width={720}
       footer={
         <>
           <Btn variant="ghost" onClick={onClose} disabled={busy}>Hủy</Btn>
-          <Btn variant="primary" type="submit" form="qb-create-form" loading={busy}>Lưu câu hỏi</Btn>
+          <Btn variant="primary" type="submit" form="qb-create-form" loading={busy}>
+            {existing ? 'Cập nhật câu hỏi' : 'Lưu câu hỏi'}
+          </Btn>
         </>
       }
     >
@@ -940,19 +1010,29 @@ const ImportBankQuestionModal: React.FC<{
 const CreateBankAssignmentModal: React.FC<{
   options: LeafLessonOption[];
   defaultLessonId: string;
+  existing?: AssignmentBankItem | null;
   onClose: () => void;
-  onCreated: () => void;
-}> = ({ options, defaultLessonId, onClose, onCreated }) => {
-  const [lessonId, setLessonId] = useState(defaultLessonId || options[0]?.lessonId || '');
+  onSaved: () => void;
+}> = ({ options, defaultLessonId, existing, onClose, onSaved }) => {
+  const existingAttachments = useMemo<BankQuestionAttachment[]>(() => {
+    if (!Array.isArray(existing?.attachments)) return [];
+    return existing!.attachments
+      .filter((a): a is Record<string, unknown> => Boolean(a && typeof a === 'object' && 'prompt' in a))
+      .map((a) => a as unknown as BankQuestionAttachment);
+  }, [existing]);
+
+  const [lessonId, setLessonId] = useState(existing?.lesson_id || defaultLessonId || options[0]?.lessonId || '');
   const picked = options.find((o) => o.lessonId === lessonId) || options[0];
-  const [title, setTitle] = useState('');
-  const [instructions, setInstructions] = useState('');
-  const [submissionType, setSubmissionType] = useState<AssignmentSubmissionType>('MIXED');
-  const [maxScore, setMaxScore] = useState(10);
-  const [relativeDueDays, setRelativeDueDays] = useState(7);
-  const [isMandatory, setIsMandatory] = useState(true);
-  const [maxScoreTouched, setMaxScoreTouched] = useState(false);
-  const [selectedQuestions, setSelectedQuestions] = useState<BankQuestionAttachment[]>([]);
+  const [title, setTitle] = useState(existing?.title || '');
+  const [instructions, setInstructions] = useState(existing?.instructions || '');
+  const [submissionType, setSubmissionType] = useState<AssignmentSubmissionType>(existing?.submission_type || 'MIXED');
+  const [maxScore, setMaxScore] = useState(Number(existing?.max_score ?? 10));
+  const [relativeDueDays, setRelativeDueDays] = useState(
+    existing?.relative_due_days !== null && existing?.relative_due_days !== undefined ? Number(existing.relative_due_days) : 7
+  );
+  const [isMandatory, setIsMandatory] = useState(existing ? Boolean(existing.is_mandatory) : true);
+  const [maxScoreTouched, setMaxScoreTouched] = useState(Boolean(existing));
+  const [selectedQuestions, setSelectedQuestions] = useState<BankQuestionAttachment[]>(existingAttachments);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -980,7 +1060,9 @@ const CreateBankAssignmentModal: React.FC<{
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!picked) return;
-    const finalInstructions = mergeInstructionsWithQuestions(instructions, selectedQuestions);
+    const finalInstructions = existing
+      ? instructions.trim() || mergeInstructionsWithQuestions('', selectedQuestions)
+      : mergeInstructionsWithQuestions(instructions, selectedQuestions);
     if (!finalInstructions) {
       setErr('Vui lòng nhập hướng dẫn hoặc chọn ít nhất 1 câu hỏi từ ngân hàng.');
       return;
@@ -988,7 +1070,7 @@ const CreateBankAssignmentModal: React.FC<{
     setBusy(true);
     setErr(null);
     try {
-      await masterApi.createAssignmentBankItem({
+      const payload = {
         course_id: picked.courseId,
         lesson_id: picked.lessonId,
         node_level: 'LESSON',
@@ -999,8 +1081,13 @@ const CreateBankAssignmentModal: React.FC<{
         relative_due_days: Number(relativeDueDays) || null,
         is_mandatory: isMandatory,
         attachments: selectedQuestions as unknown as Array<Record<string, unknown>>,
-      });
-      onCreated();
+      };
+      if (existing) {
+        await masterApi.updateAssignmentBankItem(existing.id, payload);
+      } else {
+        await masterApi.createAssignmentBankItem(payload);
+      }
+      onSaved();
     } catch (ex) {
       setErr(errMsg(ex));
       setBusy(false);
@@ -1009,13 +1096,15 @@ const CreateBankAssignmentModal: React.FC<{
 
   return (
     <Modal
-      title="Thêm bài tập vào ngân hàng"
+      title={existing ? 'Chỉnh sửa bài tập mẫu' : 'Thêm bài tập vào ngân hàng'}
       onClose={onClose}
       width={760}
       footer={
         <>
           <Btn variant="ghost" onClick={onClose} disabled={busy}>Hủy</Btn>
-          <Btn variant="primary" type="submit" form="ab-create-form" loading={busy}>Lưu bài tập</Btn>
+          <Btn variant="primary" type="submit" form="ab-create-form" loading={busy}>
+            {existing ? 'Cập nhật bài tập' : 'Lưu bài tập'}
+          </Btn>
         </>
       }
     >
@@ -1102,19 +1191,24 @@ const readFileAsBase64 = (file: File): Promise<string> =>
 const CreateBankResourceModal: React.FC<{
   options: LeafLessonOption[];
   defaultLessonId: string;
+  existing?: BankResourceItem | null;
   onClose: () => void;
-  onCreated: () => void;
-}> = ({ options, defaultLessonId, onClose, onCreated }) => {
-  const [lessonId, setLessonId] = useState(defaultLessonId || options[0]?.lessonId || '');
+  onSaved: () => void;
+}> = ({ options, defaultLessonId, existing, onClose, onSaved }) => {
+  const isEditing = Boolean(existing);
+  const isExternalExisting = Boolean(existing?.url);
+  const [lessonId, setLessonId] = useState(existing?.lesson_id || defaultLessonId || options[0]?.lessonId || '');
   const picked = options.find((o) => o.lessonId === lessonId) || options[0];
-  const [mode, setMode] = useState<'UPLOAD' | 'LINK'>('UPLOAD');
-  const [title, setTitle] = useState('');
-  const [resourceType, setResourceType] = useState<'LINK' | 'VIDEO' | 'PDF' | 'FILE'>('PDF');
-  const [url, setUrl] = useState('');
+  const [mode, setMode] = useState<'UPLOAD' | 'LINK'>(isExternalExisting ? 'LINK' : 'UPLOAD');
+  const [title, setTitle] = useState(existing?.title || '');
+  const [resourceType, setResourceType] = useState<'LINK' | 'VIDEO' | 'PDF' | 'FILE'>(
+    (existing?.resource_type as 'LINK' | 'VIDEO' | 'PDF' | 'FILE') || 'PDF'
+  );
+  const [url, setUrl] = useState(existing?.url || '');
   const [file, setFile] = useState<File | null>(null);
-  const [usageType, setUsageType] = useState<'MANDATORY' | 'REFERENCE'>('MANDATORY');
-  const [tagInput, setTagInput] = useState('');
-  const [description, setDescription] = useState('');
+  const [usageType, setUsageType] = useState<'MANDATORY' | 'REFERENCE'>(existing?.usage_type || 'MANDATORY');
+  const [tagInput, setTagInput] = useState((existing?.tags || []).join(', '));
+  const [description, setDescription] = useState(existing?.description || '');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -1138,7 +1232,7 @@ const CreateBankResourceModal: React.FC<{
     e.preventDefault();
     if (!picked) return;
     setErr(null);
-    if (mode === 'UPLOAD') {
+    if (!isEditing && mode === 'UPLOAD') {
       if (!file) {
         setErr('Vui lòng chọn tệp tài liệu từ máy.');
         return;
@@ -1151,7 +1245,21 @@ const CreateBankResourceModal: React.FC<{
     setBusy(true);
     try {
       const parsedTags = tagInput.split(',').map((t) => t.trim()).filter(Boolean);
-      if (mode === 'UPLOAD' && file) {
+      if (existing) {
+        const patch: Record<string, unknown> = {
+          lesson_id: picked.lessonId,
+          node_level: 'LESSON',
+          title: title.trim(),
+          usage_type: usageType,
+          tags: parsedTags,
+          description: description.trim(),
+        };
+        if (isExternalExisting) {
+          patch.resource_type = resourceType;
+          patch.url = url.trim();
+        }
+        await masterApi.updateResourceBankItem(existing.id, patch);
+      } else if (mode === 'UPLOAD' && file) {
         const data_base64 = await readFileAsBase64(file);
         await masterApi.createResourceBankItem({
           course_id: picked.courseId,
@@ -1178,7 +1286,7 @@ const CreateBankResourceModal: React.FC<{
           description: description.trim(),
         });
       }
-      onCreated();
+      onSaved();
     } catch (ex) {
       setErr(errMsg(ex));
       setBusy(false);
@@ -1187,13 +1295,13 @@ const CreateBankResourceModal: React.FC<{
 
   return (
     <Modal
-      title="Đẩy / Thêm tài nguyên vào ngân hàng"
+      title={existing ? 'Chỉnh sửa tài nguyên' : 'Đẩy / Thêm tài nguyên vào ngân hàng'}
       onClose={onClose}
       footer={
         <>
           <Btn variant="ghost" onClick={onClose} disabled={busy}>Hủy</Btn>
           <Btn variant="primary" type="submit" form="rb-create-form" loading={busy}>
-            {mode === 'UPLOAD' ? 'Tải lên tài nguyên' : 'Lưu tài nguyên'}
+            {existing ? 'Cập nhật tài nguyên' : mode === 'UPLOAD' ? 'Tải lên tài nguyên' : 'Lưu tài nguyên'}
           </Btn>
         </>
       }
@@ -1201,29 +1309,31 @@ const CreateBankResourceModal: React.FC<{
       <form id="rb-create-form" className="t-form-grid" onSubmit={submit}>
         <LessonTargetSelect options={options} value={lessonId} onChange={setLessonId} />
 
-        <div className="t-field t-field--wide">
-          <span className="t-field__label">Nguồn tài nguyên</span>
-          <div className="bento-segmented" role="tablist" aria-label="Chọn nguồn tài nguyên">
-            <button
-              type="button"
-              role="tab"
-              aria-selected={mode === 'UPLOAD'}
-              className={`bento-seg-btn ${mode === 'UPLOAD' ? 'is-active' : ''}`}
-              onClick={() => { setMode('UPLOAD'); if (resourceType === 'LINK') setResourceType('PDF'); }}
-            >
-              Tải tệp từ máy
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={mode === 'LINK'}
-              className={`bento-seg-btn ${mode === 'LINK' ? 'is-active' : ''}`}
-              onClick={() => { setMode('LINK'); setResourceType('LINK'); }}
-            >
-              Gắn liên kết URL
-            </button>
+        {!isEditing && (
+          <div className="t-field t-field--wide">
+            <span className="t-field__label">Nguồn tài nguyên</span>
+            <div className="bento-segmented" role="tablist" aria-label="Chọn nguồn tài nguyên">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={mode === 'UPLOAD'}
+                className={`bento-seg-btn ${mode === 'UPLOAD' ? 'is-active' : ''}`}
+                onClick={() => { setMode('UPLOAD'); if (resourceType === 'LINK') setResourceType('PDF'); }}
+              >
+                Tải tệp từ máy
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={mode === 'LINK'}
+                className={`bento-seg-btn ${mode === 'LINK' ? 'is-active' : ''}`}
+                onClick={() => { setMode('LINK'); setResourceType('LINK'); }}
+              >
+                Gắn liên kết URL
+              </button>
+            </div>
           </div>
-        </div>
+        )}
 
         <Field label="Tên tài nguyên" required wide>
           <input className="t-input" value={title} onChange={(e) => setTitle(e.target.value)} required />
@@ -1238,7 +1348,36 @@ const CreateBankResourceModal: React.FC<{
           <input className="t-input" value={tagInput} onChange={(e) => setTagInput(e.target.value)} placeholder="VD: Slide, Đề cương, Đọc thêm" />
         </Field>
 
-        {mode === 'UPLOAD' ? (
+        {isEditing ? (
+          isExternalExisting ? (
+            <>
+              <Field label="Loại tài nguyên">
+                <select className="t-input" value={resourceType} onChange={(e) => setResourceType(e.target.value as 'LINK' | 'VIDEO' | 'PDF' | 'FILE')}>
+                  <option value="LINK">Liên kết web</option>
+                  <option value="PDF">Tài liệu PDF</option>
+                  <option value="VIDEO">Video</option>
+                  <option value="FILE">Tài liệu khác</option>
+                </select>
+              </Field>
+              <Field label="Đường dẫn URL (https://...)" required>
+                <input type="url" className="t-input" value={url} onChange={(e) => setUrl(e.target.value)} required />
+              </Field>
+            </>
+          ) : (
+            <Field label="Tệp đã tải lên" wide>
+              <input
+                className="t-input"
+                readOnly
+                disabled
+                value={
+                  existing?.file_name
+                    ? `${existing.file_name}${existing.file_size_bytes ? ` (${fmtBytes(existing.file_size_bytes)})` : ''}`
+                    : existing?.resource_type || 'Tệp đính kèm'
+                }
+              />
+            </Field>
+          )
+        ) : mode === 'UPLOAD' ? (
           <Field label="Chọn tệp tài liệu (PDF, Word, Excel, Slide, Ảnh, MP4 — tối đa 15 MB)" required wide>
             <input
               type="file"

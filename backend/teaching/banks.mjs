@@ -481,6 +481,13 @@ export function registerBankRoutes(route, { uploadsDir } = {}) {
     if ('max_score' in body) f.max_score = Number(body.max_score) || 10;
     if ('max_attempts' in body) f.max_attempts = intField(body, 'max_attempts', { min: 1, max: 20, required: true });
     if ('allow_resubmit' in body) f.allow_resubmit = body.allow_resubmit ? 1 : 0;
+    if ('relative_due_days' in body) {
+      f.relative_due_days = body.relative_due_days === undefined || body.relative_due_days === null || body.relative_due_days === ''
+        ? null
+        : Math.max(0, Math.min(90, Math.round(Number(body.relative_due_days))));
+    }
+    if ('is_mandatory' in body) f.is_mandatory = body.is_mandatory ? 1 : 0;
+    if (Array.isArray(body.attachments)) f.attachments_json = JSON.stringify(body.attachments.slice(0, 20));
     if (Array.isArray(body.tags)) f.tags_json = JSON.stringify(body.tags.slice(0, 12));
     const keys = Object.keys(f);
     db.prepare(`UPDATE assignment_bank_items SET ${keys.map((k) => `${k} = ?`).join(', ')}, updated_at = ? WHERE id = ?`)
@@ -654,6 +661,22 @@ export function registerBankRoutes(route, { uploadsDir } = {}) {
     if ('title' in body) f.title = text(body, 'title', { required: true, min: 2, max: 200, label: 'tên tài nguyên' });
     if ('description' in body) f.description = text(body, 'description', { max: 2000, label: 'mô tả' }) || '';
     if ('visibility' in body) f.visibility = oneOf(body, 'visibility', ['ENROLLED', 'INSTRUCTOR_ONLY'], { required: true });
+    if ('usage_type' in body) f.usage_type = oneOf(body, 'usage_type', ['MANDATORY', 'REFERENCE'], { required: true, label: 'phân loại tài liệu' });
+    if (Array.isArray(body.tags)) f.tags_json = JSON.stringify(body.tags.map((t) => String(t).trim()).filter(Boolean).slice(0, 12));
+    if ('resource_type' in body && row.storage_provider === 'EXTERNAL_URL') {
+      f.resource_type = oneOf(body, 'resource_type', ['LINK', 'VIDEO', 'PDF', 'FILE'], { required: true, label: 'loại tài nguyên' });
+    }
+    if ('url' in body && row.storage_provider === 'EXTERNAL_URL') {
+      const rawUrl = text(body, 'url', { required: true, max: 2048, label: 'đường dẫn tài nguyên' });
+      let u;
+      try {
+        u = new URL(rawUrl);
+      } catch {
+        fail(422, 'VALIDATION_ERROR', 'Đường dẫn tài nguyên không hợp lệ.');
+      }
+      if (!['http:', 'https:'].includes(u.protocol)) fail(422, 'VALIDATION_ERROR', 'Chỉ hỗ trợ đường dẫn http/https.');
+      f.storage_key = u.toString();
+    }
     const keys = Object.keys(f);
     db.prepare(`UPDATE learning_resources SET ${keys.map((k) => `${k} = ?`).join(', ')}, updated_at = ? WHERE id = ?`)
       .run(...keys.map((k) => f[k]), nowIso(), row.id);
