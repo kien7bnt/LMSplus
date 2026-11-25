@@ -537,13 +537,15 @@ export async function initSchemaAndSeed(forceReset = false) {
 
   await seedTeachingData(db, { seed, hashPassword });
   await seedMasterLmsStarterData(db);
-  _initPromise = Promise.resolve();
+  if (forceReset) {
+    _initPromise = Promise.resolve();
+  }
 }
 
 let _initPromise = null;
 export async function ensureInitialized() {
   if (!_initPromise) {
-    _initPromise = (await initSchemaAndSeed(false)).catch((err) => {
+    _initPromise = initSchemaAndSeed(false).catch((err) => {
       _initPromise = null;
       throw err;
     });

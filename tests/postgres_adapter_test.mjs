@@ -90,4 +90,20 @@ check('010_postgres18_live_schema.sql hợp lệ cú pháp PostgreSQL 18 cho đ�
   }
 });
 
+// Kiểm tra luồng cold-start giống hệt Vercel (/health trước khi gọi initSchemaAndSeed)
+const tmpRoot = path.join(ROOT_DIR, 'tests', '.tmp');
+fs.mkdirSync(tmpRoot, { recursive: true });
+const coldDir = fs.mkdtempSync(path.join(tmpRoot, 'lmsplus-cold-'));
+process.env.LMSPLUS_DB_PATH = path.join(coldDir, 'cold.sqlite');
+process.env.LMSPLUS_UPLOADS_DIR = path.join(coldDir, 'uploads');
+const { invokeApi, db: coldDb } = await import('../backend/server_fallback.mjs');
+const healthRes = await invokeApi('GET', '/health');
+assert.equal(healthRes.status, 200, `cold-start /health failed: ${JSON.stringify(healthRes.body)}`);
+assert.equal(healthRes.body.status, 'ok');
+assert.ok(Number(healthRes.body.users_in_db) > 0, 'cold-start should seed users');
+passed++;
+console.log('  [PASS] [COLD START] ensureInitialized() khởi tạo CSDL & trả /health 200 ở lần gọi đầu tiên');
+await coldDb.close();
+fs.rmSync(coldDir, { recursive: true, force: true });
+
 console.log(`TOTAL: ${passed} | PASSED: ${passed} | FAILED: 0`);
