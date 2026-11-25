@@ -203,7 +203,11 @@ function buildPgPoolConfig() {
   };
 
   if (connStr) {
-    return { ...base, connectionString: connStr, ...(ssl !== undefined ? { ssl } : {}) };
+    let normalizedConnStr = connStr;
+    if (/sslmode=(require|prefer|verify-ca)/i.test(normalizedConnStr) && !/uselibpqcompat=/i.test(normalizedConnStr)) {
+      normalizedConnStr += (normalizedConnStr.includes('?') ? '&' : '?') + 'uselibpqcompat=true';
+    }
+    return { ...base, connectionString: normalizedConnStr, ...(ssl !== undefined ? { ssl } : {}) };
   }
 
   return {

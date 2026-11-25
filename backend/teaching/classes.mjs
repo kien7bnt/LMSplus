@@ -73,8 +73,10 @@ async function classCounters(db, cls) {
   const agg = await db
     .prepare(
       `SELECT
-         SUM(ar.attendance_status = 'PRESENT') p, SUM(ar.attendance_status = 'LATE') l,
-         SUM(ar.attendance_status = 'EXCUSED_ABSENCE') e, SUM(ar.attendance_status = 'UNEXCUSED_ABSENCE') a
+         SUM(CASE WHEN ar.attendance_status = 'PRESENT' THEN 1 ELSE 0 END) p,
+         SUM(CASE WHEN ar.attendance_status = 'LATE' THEN 1 ELSE 0 END) l,
+         SUM(CASE WHEN ar.attendance_status = 'EXCUSED_ABSENCE' THEN 1 ELSE 0 END) e,
+         SUM(CASE WHEN ar.attendance_status = 'UNEXCUSED_ABSENCE' THEN 1 ELSE 0 END) a
        FROM attendance_records ar JOIN sessions s ON s.session_id = ar.class_session_id
        WHERE ar.subject_class_id = ? AND s.session_status <> 'CANCELLED'`
     )

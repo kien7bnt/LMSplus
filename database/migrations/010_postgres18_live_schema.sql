@@ -652,7 +652,7 @@ CREATE TABLE IF NOT EXISTS learning_resources (
       storage_key TEXT NOT NULL,
       file_name TEXT,
       mime_type TEXT,
-      file_size_bytes INTEGER,
+      file_size_bytes BIGINT,
       checksum_sha256 TEXT,
       duration_seconds DOUBLE PRECISION,
       thumbnail_url TEXT,
@@ -1006,8 +1006,8 @@ CREATE TABLE IF NOT EXISTS video_upload_sessions (
       title TEXT NOT NULL,
       file_name TEXT NOT NULL,
       mime_type TEXT NOT NULL,
-      total_size_bytes INTEGER NOT NULL CHECK (total_size_bytes > 0),
-      received_bytes INTEGER NOT NULL DEFAULT 0,
+      total_size_bytes BIGINT NOT NULL CHECK (total_size_bytes > 0),
+      received_bytes BIGINT NOT NULL DEFAULT 0,
       chunks_received INTEGER NOT NULL DEFAULT 0,
       temp_path TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'UPLOADING' CHECK (status IN ('UPLOADING','COMPLETED','CANCELLED','FAILED')),
@@ -1193,7 +1193,7 @@ CREATE TABLE IF NOT EXISTS virtual_webhook_events (
       event_type TEXT NOT NULL,
       external_meeting_id TEXT,
       session_id TEXT NULL,
-      event_timestamp_ms INTEGER NOT NULL DEFAULT 0,
+      event_timestamp_ms BIGINT NOT NULL DEFAULT 0,
       signature_verified INTEGER NOT NULL DEFAULT 0,
       processing_status TEXT NOT NULL DEFAULT 'PROCESSED',
       raw_payload_json TEXT NOT NULL,
@@ -1257,5 +1257,9 @@ CREATE INDEX IF NOT EXISTS idx_virtual_rooms_class ON virtual_meeting_rooms(subj
 CREATE INDEX IF NOT EXISTS idx_virtual_rooms_external ON virtual_meeting_rooms(provider, external_meeting_id);
 CREATE INDEX IF NOT EXISTS idx_virtual_rooms_session ON virtual_meeting_rooms(session_id);
 CREATE INDEX IF NOT EXISTS idx_virtual_webhooks_session ON virtual_webhook_events(session_id, received_at);
+
+ALTER TABLE learning_resources ALTER COLUMN file_size_bytes TYPE BIGINT;
+ALTER TABLE video_upload_sessions ALTER COLUMN total_size_bytes TYPE BIGINT, ALTER COLUMN received_bytes TYPE BIGINT;
+ALTER TABLE virtual_webhook_events ALTER COLUMN event_timestamp_ms TYPE BIGINT;
 
 COMMIT;

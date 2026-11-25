@@ -397,7 +397,7 @@ await t('ATTENDANCE', 'Sửa điểm danh sau 24 giờ bắt buộc nhập lý d
   expectStatus(await api('PUT', `/sessions/${old}/attendance`, GV, { records: [{ student_id: rec.student_id, status: next }], change_reason: 'Học sinh có giấy xác nhận' }), 200);
   const audit = await db.prepare(
     `SELECT l.change_reason FROM attendance_audit_logs l JOIN attendance_records r ON r.id = l.attendance_record_id
-     WHERE r.class_session_id = ? AND r.student_id = ? ORDER BY l.rowid DESC LIMIT 1`
+     WHERE r.class_session_id = ? AND r.student_id = ? ORDER BY l.changed_at DESC, l.id DESC LIMIT 1`
   ).get(old, rec.student_id);
   assert.equal(audit.change_reason, 'Học sinh có giấy xác nhận');
 });
