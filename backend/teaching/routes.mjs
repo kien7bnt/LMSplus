@@ -3,6 +3,7 @@
  */
 
 import { ApiError } from './http.mjs';
+import { isUniqueViolation, isForeignKeyViolation, isCheckViolation } from '../db/client.mjs';
 import { registerCourseRoutes } from './courses.mjs';
 import { registerClassRoutes } from './classes.mjs';
 import { registerAttendanceRoutes } from './attendance.mjs';
@@ -49,9 +50,9 @@ export function createTeachingRouter({
   registerTeachingHoursRoutes(route);
 
   /**
-   * @returns {undefined | Promise<void>} Promise khi handler bất đồng bộ (ví dụ kiểm tra YouTube).
+   * @returns {Promise<void>}
    */
-  return function handleTeaching({ req, method, pathname, url, body, bodyError, user, res, sendJson }) {
+  return async function handleTeaching({ req, method, pathname, url, body, bodyError, user, res, sendJson }) {
     let matched = null;
     let methodMismatch = false;
     for (const r of routes) {
@@ -68,11 +69,11 @@ export function createTeachingRouter({
       sendJson(res, methodMismatch ? 405 : 404, {
         detail: { code: methodMismatch ? 'METHOD_NOT_ALLOWED' : 'NOT_FOUND', message: 'Không tìm thấy chức năng yêu cầu.' },
       });
-      return undefined;
+      return;
     }
     if (bodyError && ['POST', 'PUT', 'PATCH'].includes(method)) {
       sendJson(res, 400, { detail: { code: 'INVALID_JSON', message: 'Dữ liệu gửi lên không đúng định dạng JSON.' } });
-      return undefined;
+      return;
     }
 
     let sent = false;
@@ -98,8 +99,16 @@ export function createTeachingRouter({
         sendJson(res, err.status, { detail: { code: err.code, message: err.message, ...err.extra } });
         return;
       }
-      if (String(err && err.message).includes('UNIQUE constraint failed')) {
+      if (isUniqueViolation(err)) {
         sendJson(res, 409, { detail: { code: 'DUPLICATE', message: 'Dữ liệu bị trùng lặp.' } });
+        return;
+      }
+      if (isForeignKeyViolation(err)) {
+        sendJson(res, 409, { detail: { code: 'REFERENTIAL_INTEGRITY_CONFLICT', message: 'Dữ liệu đang được liên kết bởi bản ghi khác.' } });
+        return;
+      }
+      if (isCheckViolation(err)) {
+        sendJson(res, 422, { detail: { code: 'VALIDATION_ERROR', message: 'Giá trị dữ liệu không hợp lệ.' } });
         return;
       }
       log('ERROR', `[teaching] ${method} ${pathname}: ${err && err.stack ? err.stack : err}`);
@@ -107,14 +116,10 @@ export function createTeachingRouter({
     };
 
     try {
-      const out = matched.r.handler({ req, db, user, body, url, query: url.searchParams, params: matched.params, res, raw, log });
-      if (out && typeof out.then === 'function') {
-        return out.then(finish, onError);
-      }
+      const out = await matched.r.handler({ req, db, user, body, url, query: url.searchParams, params: matched.params, res, raw, log });
       finish(out);
     } catch (err) {
       onError(err);
     }
-    return undefined;
   };
 }

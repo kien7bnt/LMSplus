@@ -17,27 +17,25 @@ import {
 
 export const MASTER_LMS_SEED_MARKER = 'master_lms_seed_v1';
 
-function columnNames(db, table) {
-  return db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
+async function columnNames(db, table) {
+  return await db.columnNames(table);
 }
 
-function addColumn(db, table, column, definition) {
-  const cols = columnNames(db, table);
-  if (cols.length > 0 && !cols.includes(column)) {
-    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
-  }
+async function addColumn(db, table, column, definition) {
+  await db.addColumn(table, column, definition);
 }
 
-function recreateVideoWatchProgressIfNeeded(db) {
-  const cols = columnNames(db, 'video_watch_progress');
+async function recreateVideoWatchProgressIfNeeded(db) {
+  if (db.isPg) return;
+  const cols = await columnNames(db, 'video_watch_progress');
   if (cols.length === 0) return;
   if (cols.includes('content_version_key') && cols.includes('watched_intervals_json')) return;
 
-  db.exec('PRAGMA foreign_keys = OFF');
+  db.sqlite.exec('PRAGMA foreign_keys = OFF');
   try {
-    db.exec('BEGIN');
-    db.exec('DROP TABLE IF EXISTS video_watch_progress__new');
-    db.exec(`
+    db.sqlite.exec('BEGIN');
+    db.sqlite.exec('DROP TABLE IF EXISTS video_watch_progress__new');
+    db.sqlite.exec(`
       CREATE TABLE video_watch_progress__new (
         id TEXT PRIMARY KEY,
         student_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -58,7 +56,7 @@ function recreateVideoWatchProgressIfNeeded(db) {
         CONSTRAINT uq_student_class_video_block_ver UNIQUE (student_id, subject_class_id, lesson_id, block_id, content_version_key)
       )
     `);
-    db.exec(`
+    db.sqlite.exec(`
       INSERT INTO video_watch_progress__new (
         id, student_id, subject_class_id, lesson_id, block_id,
         content_version_key, watched_intervals_json, unique_watched_sec, max_contiguous_watched_sec,
@@ -76,27 +74,28 @@ function recreateVideoWatchProgressIfNeeded(db) {
         last_position_sec, max_watched_sec, watched_seconds, duration_sec, watch_pct, is_completed, updated_at
       FROM video_watch_progress
     `);
-    db.exec('DROP TABLE video_watch_progress');
-    db.exec('ALTER TABLE video_watch_progress__new RENAME TO video_watch_progress');
-    db.exec('CREATE INDEX IF NOT EXISTS idx_video_watch_class_lesson ON video_watch_progress(subject_class_id, lesson_id)');
-    db.exec('COMMIT');
+    db.sqlite.exec('DROP TABLE video_watch_progress');
+    db.sqlite.exec('ALTER TABLE video_watch_progress__new RENAME TO video_watch_progress');
+    db.sqlite.exec('CREATE INDEX IF NOT EXISTS idx_video_watch_class_lesson ON video_watch_progress(subject_class_id, lesson_id)');
+    db.sqlite.exec('COMMIT');
   } catch (err) {
-    try { db.exec('ROLLBACK'); } catch { /* ignore */ }
+    try { db.sqlite.exec('ROLLBACK'); } catch { /* ignore */ }
     throw err;
   } finally {
-    db.exec('PRAGMA foreign_keys = ON');
+    db.sqlite.exec('PRAGMA foreign_keys = ON');
   }
 }
 
-function recreateLessonProgressIfNeeded(db) {
-  const cols = columnNames(db, 'lesson_progress');
+async function recreateLessonProgressIfNeeded(db) {
+  if (db.isPg) return;
+  const cols = await columnNames(db, 'lesson_progress');
   if (cols.length === 0 || cols.includes('content_version_key')) return;
 
-  db.exec('PRAGMA foreign_keys = OFF');
+  db.sqlite.exec('PRAGMA foreign_keys = OFF');
   try {
-    db.exec('BEGIN');
-    db.exec('DROP TABLE IF EXISTS lesson_progress__new');
-    db.exec(`
+    db.sqlite.exec('BEGIN');
+    db.sqlite.exec('DROP TABLE IF EXISTS lesson_progress__new');
+    db.sqlite.exec(`
       CREATE TABLE lesson_progress__new (
         id TEXT PRIMARY KEY,
         student_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -111,27 +110,28 @@ function recreateLessonProgressIfNeeded(db) {
         CONSTRAINT uq_lesson_progress_ver UNIQUE (student_id, subject_class_id, lesson_id, content_version_key)
       )
     `);
-    db.exec(`
+    db.sqlite.exec(`
       INSERT INTO lesson_progress__new (
         id, student_id, subject_class_id, chapter_id, lesson_id, content_version_key, status, started_at, last_accessed_at, completed_at
       )
       SELECT id, student_id, subject_class_id, chapter_id, lesson_id, 'v0', status, started_at, last_accessed_at, completed_at
       FROM lesson_progress
     `);
-    db.exec('DROP TABLE lesson_progress');
-    db.exec('ALTER TABLE lesson_progress__new RENAME TO lesson_progress');
-    db.exec('COMMIT');
+    db.sqlite.exec('DROP TABLE lesson_progress');
+    db.sqlite.exec('ALTER TABLE lesson_progress__new RENAME TO lesson_progress');
+    db.sqlite.exec('COMMIT');
   } catch (err) {
-    try { db.exec('ROLLBACK'); } catch { /* ignore */ }
+    try { db.sqlite.exec('ROLLBACK'); } catch { /* ignore */ }
     throw err;
   } finally {
-    db.exec('PRAGMA foreign_keys = ON');
+    db.sqlite.exec('PRAGMA foreign_keys = ON');
   }
 }
 
-export function ensureMasterLmsSchema(db) {
+export async function ensureMasterLmsSchema(db) {
+  if (db.isPg) return;
   // 1. Level 1 & Level 2: Khung chương trình & Lớp khóa học
-  db.exec(`
+  await db.exec(`
     CREATE TABLE IF NOT EXISTS curricula (
       id TEXT PRIMARY KEY,
       code TEXT NOT NULL UNIQUE,
@@ -564,44 +564,45 @@ export function ensureMasterLmsSchema(db) {
   `);
 
   // Mở rộng các bảng hiện hữu (idempotent)
-  addColumn(db, 'subject_classes', 'cohort_id', 'TEXT NULL');
-  addColumn(db, 'subject_classes', 'course_version_id', 'TEXT NULL');
-  addColumn(db, 'subject_classes', 'course_version_number', 'INTEGER NULL');
-  addColumn(db, 'chapters', 'topic_id', 'TEXT NULL');
-  addColumn(db, 'question_bank_items', 'topic_id', 'TEXT NULL');
-  addColumn(db, 'question_bank_items', 'chapter_id', 'TEXT NULL');
-  addColumn(db, 'question_bank_items', 'lesson_id', 'TEXT NULL');
-  addColumn(db, 'learning_resources', 'topic_id', 'TEXT NULL');
-  addColumn(db, 'learning_resources', 'chapter_id', 'TEXT NULL');
-  addColumn(db, 'learning_resources', 'lesson_id', 'TEXT NULL');
-  addColumn(db, 'lesson_quiz_submissions', 'content_version_key', "TEXT NOT NULL DEFAULT 'v0'");
+  await addColumn(db, 'subject_classes', 'cohort_id', 'TEXT NULL');
+  await addColumn(db, 'subject_classes', 'course_version_id', 'TEXT NULL');
+  await addColumn(db, 'subject_classes', 'course_version_number', 'INTEGER NULL');
+  await addColumn(db, 'chapters', 'topic_id', 'TEXT NULL');
+  await addColumn(db, 'question_bank_items', 'topic_id', 'TEXT NULL');
+  await addColumn(db, 'question_bank_items', 'chapter_id', 'TEXT NULL');
+  await addColumn(db, 'question_bank_items', 'lesson_id', 'TEXT NULL');
+  await addColumn(db, 'learning_resources', 'topic_id', 'TEXT NULL');
+  await addColumn(db, 'learning_resources', 'chapter_id', 'TEXT NULL');
+  await addColumn(db, 'learning_resources', 'lesson_id', 'TEXT NULL');
+  await addColumn(db, 'lesson_quiz_submissions', 'content_version_key', "TEXT NOT NULL DEFAULT 'v0'");
 
-  addColumn(db, 'leave_requests', 'class_session_id', 'TEXT NULL');
-  addColumn(db, 'leave_requests', 'student_id', 'TEXT NULL');
-  addColumn(db, 'leave_requests', 'reason_category', "TEXT NOT NULL DEFAULT 'OTHER'");
-  addColumn(db, 'leave_requests', 'evidence_url', 'TEXT NULL');
-  addColumn(db, 'leave_requests', 'evidence_name', 'TEXT NULL');
-  addColumn(db, 'leave_requests', 'reviewed_by', 'TEXT NULL');
-  addColumn(db, 'leave_requests', 'reviewed_by_name', 'TEXT NULL');
-  addColumn(db, 'leave_requests', 'reviewed_at', 'TEXT NULL');
-  addColumn(db, 'leave_requests', 'review_note', 'TEXT NULL');
-  addColumn(db, 'leave_requests', 'created_at', 'TEXT NULL');
-  addColumn(db, 'leave_requests', 'updated_at', 'TEXT NULL');
+  await addColumn(db, 'leave_requests', 'class_session_id', 'TEXT NULL');
+  await addColumn(db, 'leave_requests', 'student_id', 'TEXT NULL');
+  await addColumn(db, 'leave_requests', 'reason_category', "TEXT NOT NULL DEFAULT 'OTHER'");
+  await addColumn(db, 'leave_requests', 'evidence_url', 'TEXT NULL');
+  await addColumn(db, 'leave_requests', 'evidence_name', 'TEXT NULL');
+  await addColumn(db, 'leave_requests', 'reviewed_by', 'TEXT NULL');
+  await addColumn(db, 'leave_requests', 'reviewed_by_name', 'TEXT NULL');
+  await addColumn(db, 'leave_requests', 'reviewed_at', 'TEXT NULL');
+  await addColumn(db, 'leave_requests', 'review_note', 'TEXT NULL');
+  await addColumn(db, 'leave_requests', 'created_at', 'TEXT NULL');
+  await addColumn(db, 'leave_requests', 'updated_at', 'TEXT NULL');
 
-  recreateLeaveRequestsIfNeeded(db);
-  recreateVideoWatchProgressIfNeeded(db);
-  recreateLessonProgressIfNeeded(db);
-  ensureTrainingLifecycleSchema(db);
+  await recreateLeaveRequestsIfNeeded(db);
+  await recreateVideoWatchProgressIfNeeded(db);
+  await recreateLessonProgressIfNeeded(db);
+  await ensureTrainingLifecycleSchema(db);
 }
 
-function recreateLeaveRequestsIfNeeded(db) {
-  const row = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'leave_requests'").get();
+async function recreateLeaveRequestsIfNeeded(db) {
+  if (db.isPg) return;
+  const row = await db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'leave_requests'").get();
   if (!row || String(row.sql).includes("'CANCELLED'")) return;
-  db.exec('PRAGMA foreign_keys = OFF');
+  db.sqlite.exec('PRAGMA foreign_keys = OFF');
   try {
-    db.exec('BEGIN');
-    db.exec('DROP TABLE IF EXISTS leave_requests__new');
-    db.exec(`
+    db.sqlite.exec('BEGIN');
+    db.sqlite.exec('DROP TABLE IF EXISTS leave_requests__new');
+    db.sqlite.exec(`
       CREATE TABLE leave_requests__new (
         id TEXT PRIMARY KEY,
         subject_class_id TEXT NOT NULL,
@@ -623,7 +624,7 @@ function recreateLeaveRequestsIfNeeded(db) {
         updated_at TEXT NULL
       )
     `);
-    db.exec(`
+    db.sqlite.exec(`
       INSERT INTO leave_requests__new (
         id, subject_class_id, student_code, student_name, reason, makeup_class_requested, status,
         class_session_id, student_id, reason_category, evidence_url, evidence_name,
@@ -635,20 +636,20 @@ function recreateLeaveRequestsIfNeeded(db) {
         reviewed_by, reviewed_by_name, reviewed_at, review_note, created_at, updated_at
       FROM leave_requests
     `);
-    db.exec('DROP TABLE leave_requests');
-    db.exec('ALTER TABLE leave_requests__new RENAME TO leave_requests');
-    db.exec('COMMIT');
+    db.sqlite.exec('DROP TABLE leave_requests');
+    db.sqlite.exec('ALTER TABLE leave_requests__new RENAME TO leave_requests');
+    db.sqlite.exec('COMMIT');
   } catch (err) {
-    try { db.exec('ROLLBACK'); } catch { /* ignore */ }
+    try { db.sqlite.exec('ROLLBACK'); } catch { /* ignore */ }
     throw err;
   } finally {
-    db.exec('PRAGMA foreign_keys = ON');
+    db.sqlite.exec('PRAGMA foreign_keys = ON');
   }
 }
 
-export function clearMasterLmsData(db) {
-  clearTrainingLifecycleData(db);
-  db.exec(`
+export async function clearMasterLmsData(db) {
+  await clearTrainingLifecycleData(db);
+  await db.exec(`
     DELETE FROM teaching_notifications;
     DELETE FROM teaching_forum_mod_logs;
     DELETE FROM teaching_forum_reports;
@@ -681,32 +682,32 @@ export function clearMasterLmsData(db) {
 }
 
 /** Đảm bảo mỗi Môn học có ít nhất 1 Chủ đề và mọi Chương đều gắn topic_id hợp lệ. */
-export function ensureCourseTopicsBackfill(db, courseId = null) {
+export async function ensureCourseTopicsBackfill(db, courseId = null) {
   const targetCourses = courseId
-    ? db.prepare('SELECT id FROM courses WHERE id = ?').all(courseId)
-    : db.prepare('SELECT id FROM courses').all();
+    ? await db.prepare('SELECT id FROM courses WHERE id = ?').all(courseId)
+    : await db.prepare('SELECT id FROM courses').all();
   const now = new Date().toISOString();
 
   for (const crs of targetCourses) {
-    let defaultTopic = db
+    let defaultTopic = await db
       .prepare("SELECT * FROM course_topics WHERE course_id = ? AND status <> 'ARCHIVED' ORDER BY sort_order, id LIMIT 1")
       .get(crs.id);
     if (!defaultTopic) {
-      const chaptersNeedTopic = db
+      const chaptersNeedTopic = (await db
         .prepare('SELECT COUNT(*) n FROM chapters WHERE course_id = ? AND topic_id IS NULL')
-        .get(crs.id).n;
-      const allTopicsCount = db.prepare('SELECT COUNT(*) n FROM course_topics WHERE course_id = ?').get(crs.id).n;
+        .get(crs.id)).n;
+      const allTopicsCount = (await db.prepare('SELECT COUNT(*) n FROM course_topics WHERE course_id = ?').get(crs.id)).n;
       if (chaptersNeedTopic > 0 || allTopicsCount === 0) {
         const tid = `top_${crs.id.replace(/[^A-Za-z0-9]/g, '').slice(0, 10)}_${crypto.randomBytes(3).toString('hex')}`;
-        db.prepare(
+        await db.prepare(
           `INSERT INTO course_topics (id, course_id, code, title, description, sort_order, status, created_at, updated_at)
            VALUES (?, ?, 'CĐ-01', 'Chủ đề 1: Nội dung trọng tâm', 'Chủ đề nền tảng tổ chức các chương học của môn học.', 10, 'PUBLISHED', ?, ?)`
         ).run(tid, crs.id, now, now);
-        defaultTopic = db.prepare('SELECT * FROM course_topics WHERE id = ?').get(tid);
+        defaultTopic = await db.prepare('SELECT * FROM course_topics WHERE id = ?').get(tid);
       }
     }
     if (defaultTopic) {
-      db.prepare('UPDATE chapters SET topic_id = ? WHERE course_id = ? AND topic_id IS NULL').run(defaultTopic.id, crs.id);
+      await db.prepare('UPDATE chapters SET topic_id = ? WHERE course_id = ? AND topic_id IS NULL').run(defaultTopic.id, crs.id);
     }
   }
 }
@@ -715,26 +716,26 @@ export function getClassContentVersionKey(cls) {
   return cls && cls.course_version_id ? `cv:${cls.course_version_id}` : 'v0';
 }
 
-export function resolveLessonTreeIds(db, lessonId) {
-  const lesson = db.prepare('SELECT * FROM lessons WHERE id = ?').get(lessonId);
+export async function resolveLessonTreeIds(db, lessonId) {
+  const lesson = await db.prepare('SELECT * FROM lessons WHERE id = ?').get(lessonId);
   if (!lesson) return null;
-  const chapter = db.prepare('SELECT * FROM chapters WHERE id = ?').get(lesson.chapter_id);
+  const chapter = await db.prepare('SELECT * FROM chapters WHERE id = ?').get(lesson.chapter_id);
   if (!chapter || !chapter.course_id) return null;
-  ensureCourseTopicsBackfill(db, chapter.course_id);
-  const freshChapter = db.prepare('SELECT * FROM chapters WHERE id = ?').get(chapter.id);
-  const topic = freshChapter.topic_id ? db.prepare('SELECT * FROM course_topics WHERE id = ?').get(freshChapter.topic_id) : null;
-  const course = db.prepare('SELECT * FROM courses WHERE id = ?').get(freshChapter.course_id);
+  await ensureCourseTopicsBackfill(db, chapter.course_id);
+  const freshChapter = await db.prepare('SELECT * FROM chapters WHERE id = ?').get(chapter.id);
+  const topic = freshChapter.topic_id ? await db.prepare('SELECT * FROM course_topics WHERE id = ?').get(freshChapter.topic_id) : null;
+  const course = await db.prepare('SELECT * FROM courses WHERE id = ?').get(freshChapter.course_id);
   return { lesson, chapter: freshChapter, topic, course };
 }
 
-export function buildCourseSnapshotPayload(db, courseId) {
-  ensureCourseTopicsBackfill(db, courseId);
-  const course = db.prepare('SELECT * FROM courses WHERE id = ?').get(courseId);
+export async function buildCourseSnapshotPayload(db, courseId) {
+  await ensureCourseTopicsBackfill(db, courseId);
+  const course = await db.prepare('SELECT * FROM courses WHERE id = ?').get(courseId);
   if (!course) return null;
-  const topics = db
+  const topics = await db
     .prepare("SELECT * FROM course_topics WHERE course_id = ? AND status <> 'ARCHIVED' ORDER BY sort_order, code")
     .all(courseId);
-  const chapters = db
+  const chapters = await db
     .prepare("SELECT * FROM chapters WHERE course_id = ? AND status = 'PUBLISHED' ORDER BY sort_order, code")
     .all(courseId);
   const lessons = [];
@@ -743,12 +744,12 @@ export function buildCourseSnapshotPayload(db, courseId) {
   const resourcesByLesson = {};
 
   for (const ch of chapters) {
-    const ls = db
+    const ls = await db
       .prepare("SELECT * FROM lessons WHERE chapter_id = ? AND publish_status = 'PUBLISHED' ORDER BY sort_order, code")
       .all(ch.id);
     for (const l of ls) {
       lessons.push({ ...l, chapter_title: ch.title, topic_id: ch.topic_id });
-      const ver = db
+      const ver = await db
         .prepare('SELECT * FROM lesson_versions WHERE lesson_id = ? ORDER BY version_number DESC LIMIT 1')
         .get(l.id);
       if (ver) {
@@ -763,31 +764,31 @@ export function buildCourseSnapshotPayload(db, courseId) {
           markersByLesson[l.id] = [];
         }
       } else {
-        blocksByLesson[l.id] = db
+        blocksByLesson[l.id] = (await db
           .prepare('SELECT id, block_type, sort_order, content_json FROM lesson_blocks WHERE lesson_id = ? ORDER BY sort_order')
-          .all(l.id)
+          .all(l.id))
           .map((b) => ({ id: b.id, block_type: b.block_type, sort_order: b.sort_order, content: JSON.parse(b.content_json || '{}') }));
-        markersByLesson[l.id] = db
+        markersByLesson[l.id] = await db
           .prepare('SELECT * FROM video_quiz_markers WHERE lesson_id = ? AND class_id IS NULL ORDER BY timestamp_sec, sort_order')
           .all(l.id);
       }
-      resourcesByLesson[l.id] = db
+      resourcesByLesson[l.id] = await db
         .prepare('SELECT id, title, resource_type, storage_key, usage_type FROM learning_resources WHERE lesson_id = ? AND deleted_at IS NULL')
         .all(l.id);
     }
   }
 
-  const wikiPages = db
+  const wikiPages = await db
     .prepare("SELECT id, title, slug, topic_id, chapter_id, lesson_id, summary FROM course_wiki_pages WHERE course_id = ? AND deleted_at IS NULL AND status = 'PUBLISHED'")
     .all(courseId);
 
-  const assessmentComponents = db
+  const assessmentComponents = await db
     .prepare('SELECT id, code, title, weight_pct, source_type, source_config_json, is_mandatory, sort_order FROM course_assessment_components WHERE course_id = ? ORDER BY sort_order, id')
     .all(courseId);
-  const sessionPlan = db
+  const sessionPlan = await db
     .prepare("SELECT id, session_order, title, duration_minutes, periods_count, delivery_mode, required_room_type, lesson_ids_json, note FROM session_plan_items WHERE scope_type = 'COURSE' AND course_id = ? ORDER BY session_order")
     .all(courseId);
-  const assignmentTemplates = db
+  const assignmentTemplates = await db
     .prepare('SELECT id, lesson_id, title, description, instructions, submission_type, max_score, max_attempts, allow_resubmit, relative_due_days, is_mandatory, attachments_json FROM assignment_bank_items WHERE course_id = ? AND deleted_at IS NULL ORDER BY created_at')
     .all(courseId);
 
@@ -830,33 +831,32 @@ export function buildCourseSnapshotPayload(db, courseId) {
   };
 }
 
-export function seedMasterLmsStarterData(db) {
-  ensureCourseTopicsBackfill(db);
+export async function seedMasterLmsStarterData(db) {
+  await ensureCourseTopicsBackfill(db);
 
-  const marker = db.prepare('SELECT value FROM app_meta WHERE key = ?').get(MASTER_LMS_SEED_MARKER);
+  const marker = await db.prepare('SELECT value FROM app_meta WHERE key = ?').get(MASTER_LMS_SEED_MARKER);
   if (marker) {
-    seedTrainingLifecycleStarterData(db);
+    await seedTrainingLifecycleStarterData(db);
     return;
   }
 
-  const toanCourse = db.prepare("SELECT * FROM courses WHERE id = 'crs_toan5'").get()
-    || db.prepare("SELECT * FROM courses WHERE department_id = 'khoi_5' ORDER BY id LIMIT 1").get();
+  const toanCourse = await db.prepare("SELECT * FROM courses WHERE id = 'crs_toan5'").get()
+    || await db.prepare("SELECT * FROM courses WHERE department_id = 'khoi_5' ORDER BY id LIMIT 1").get();
   if (!toanCourse) return;
 
   const now = new Date().toISOString();
-  const gv2 = db.prepare("SELECT * FROM users WHERE id = 'gv_5002'").get();
-  const gv1 = db.prepare("SELECT * FROM users WHERE roles_json LIKE '%\"INSTRUCTOR\"%' AND id <> 'gv_5002' ORDER BY code LIMIT 1").get();
-  const staff = db.prepare("SELECT * FROM users WHERE roles_json LIKE '%\"ACADEMIC_STAFF\"%' LIMIT 1").get();
-  const admin = db.prepare("SELECT * FROM users WHERE roles_json LIKE '%\"ADMIN\"%' LIMIT 1").get();
-  const hs1 = db.prepare("SELECT * FROM users WHERE code = 'HS50101'").get();
-  const hs201 = db.prepare("SELECT * FROM users WHERE code = 'HS50201'").get();
+  const gv2 = await db.prepare("SELECT * FROM users WHERE id = 'gv_5002'").get();
+  const gv1 = await db.prepare("SELECT * FROM users WHERE roles_json LIKE '%\"INSTRUCTOR\"%' AND id <> 'gv_5002' ORDER BY code LIMIT 1").get();
+  const staff = await db.prepare("SELECT * FROM users WHERE roles_json LIKE '%\"ACADEMIC_STAFF\"%' LIMIT 1").get();
+  const admin = await db.prepare("SELECT * FROM users WHERE roles_json LIKE '%\"ADMIN\"%' LIMIT 1").get();
+  const hs1 = await db.prepare("SELECT * FROM users WHERE code = 'HS50101'").get();
+  const hs201 = await db.prepare("SELECT * FROM users WHERE code = 'HS50201'").get();
 
-  db.exec('BEGIN');
-  try {
+  await db.tx(async () => {
     // 1. Tạo môn học thứ 2 trong Khung Khối 5: Tiếng Việt 5 (giáo viên gv_5002 phụ trách → không ảnh hưởng dashboard của GV1)
     const tvInstructor = gv2 || gv1;
-    db.prepare(
-      `INSERT OR IGNORE INTO courses (id, code, title, instructor_id, instructor_name, department_id, department_name,
+    await db.prepare(
+      `INSERT INTO courses (id, code, title, instructor_id, instructor_name, department_id, department_name,
          chapters_count, lessons_count, progress_pct, enrollment_policy, enrollment_status, is_assigned_to_student,
          updated_at, description, thumbnail_url, subject, objectives, target_audience, prerequisites, intro,
          status, created_by, created_at)
@@ -865,17 +865,17 @@ export function seedMasterLmsStarterData(db) {
          'Rèn kỹ năng đọc hiểu văn bản nghệ thuật, luyện từ và câu, tập làm văn miêu tả và nghị luận ngắn.',
          NULL, 'Tiếng Việt', 'Đọc diễn cảm, nắm vững biện pháp tu từ và viết bài văn mạch lạc.',
          'Học sinh lớp 5', 'Hoàn thành Tiếng Việt lớp 4', 'Khóa học Tiếng Việt 5 thuộc Khung chương trình Tiểu học Khối 5.',
-         'PUBLISHED', ?, ?)`
+         'PUBLISHED', ?, ?) ON CONFLICT DO NOTHING`
     ).run(tvInstructor ? tvInstructor.id : 'gv_5002', tvInstructor ? tvInstructor.full_name : 'Thầy Đỗ Văn Khoa', now, staff ? staff.id : 'admin', now);
 
-    db.prepare(
-      `INSERT OR IGNORE INTO course_topics (id, course_id, code, title, description, sort_order, status, created_at, updated_at)
-       VALUES ('top_tv5_1', 'crs_tv5', 'CĐ-01', 'Chủ đề 1: Tiếng nói quê hương', 'Đọc hiểu văn bản và luyện viết cảm thụ.', 10, 'PUBLISHED', ?, ?)`
+    await db.prepare(
+      `INSERT INTO course_topics (id, course_id, code, title, description, sort_order, status, created_at, updated_at)
+       VALUES ('top_tv5_1', 'crs_tv5', 'CĐ-01', 'Chủ đề 1: Tiếng nói quê hương', 'Đọc hiểu văn bản và luyện viết cảm thụ.', 10, 'PUBLISHED', ?, ?) ON CONFLICT DO NOTHING`
     ).run(now, now);
 
-    db.prepare(
-      `INSERT OR IGNORE INTO chapters (id, subject_class_id, code, title, progress_pct, course_id, topic_id, description, sort_order, status, updated_at)
-       VALUES ('ch_tv5_1', '', 'Chương 1', 'Chương 1: Đọc hiểu & Luyện từ và câu', 0, 'crs_tv5', 'top_tv5_1', 'Phân tích từ đồng nghĩa, trái nghĩa và cấu trúc câu ghép.', 10, 'PUBLISHED', ?)`
+    await db.prepare(
+      `INSERT INTO chapters (id, subject_class_id, code, title, progress_pct, course_id, topic_id, description, sort_order, status, updated_at)
+       VALUES ('ch_tv5_1', '', 'Chương 1', 'Chương 1: Đọc hiểu & Luyện từ và câu', 0, 'crs_tv5', 'top_tv5_1', 'Phân tích từ đồng nghĩa, trái nghĩa và cấu trúc câu ghép.', 10, 'PUBLISHED', ?) ON CONFLICT DO NOTHING`
     ).run(now);
 
     const tvLessons = [
@@ -885,25 +885,25 @@ export function seedMasterLmsStarterData(db) {
         body: 'Câu ghép gồm nhiều vế câu nối với nhau bằng quan hệ từ hoặc trực tiếp bằng dấu phẩy, dấu chấm phẩy.' },
     ];
     for (const l of tvLessons) {
-      db.prepare(
-        `INSERT OR IGNORE INTO lessons (id, chapter_id, code, title, duration_minutes, status, unlock_condition_text,
+      await db.prepare(
+        `INSERT INTO lessons (id, chapter_id, code, title, duration_minutes, status, unlock_condition_text,
            required_video_pct, require_quick_check, last_video_position_sec, total_video_seconds, quick_check_passed,
            working_draft_revision, published_version, description, objectives, sort_order, publish_status, published_at, updated_at,
            completion_rule, min_video_watch_pct, require_video_quizzes)
-         VALUES (?, 'ch_tv5_1', ?, ?, ?, 'IN_PROGRESS', NULL, 85, 0, 0, ?, 0, 1, 1, ?, ?, ?, 'PUBLISHED', ?, ?, 'MANUAL', 0, 0)`
+         VALUES (?, 'ch_tv5_1', ?, ?, ?, 'IN_PROGRESS', NULL, 85, 0, 0, ?, 0, 1, 1, ?, ?, ?, 'PUBLISHED', ?, ?, 'MANUAL', 0, 0) ON CONFLICT DO NOTHING`
       ).run(l.id, l.code, l.title, l.dur, l.dur * 60, l.body, 'Nhận diện và vận dụng đúng kiến thức Tiếng Việt.', l.sort, now, now);
 
       const blkId = `blk_${l.id}_1`;
       const blkContent = { text: l.body, heading: l.title };
-      const existingBlks = db.prepare('SELECT COUNT(*) n FROM lesson_blocks WHERE lesson_id = ?').get(l.id).n;
+      const existingBlks = (await db.prepare('SELECT COUNT(*) n FROM lesson_blocks WHERE lesson_id = ?').get(l.id)).n;
       if (existingBlks === 0) {
-        db.prepare(
-          `INSERT OR IGNORE INTO lesson_blocks (id, lesson_id, schema_version, block_type, sort_order, status, content_json)
-           VALUES (?, ?, '1.2', 'paragraph', 10, 'ACTIVE', ?)`
+        await db.prepare(
+          `INSERT INTO lesson_blocks (id, lesson_id, schema_version, block_type, sort_order, status, content_json)
+           VALUES (?, ?, '1.2', 'paragraph', 10, 'ACTIVE', ?) ON CONFLICT DO NOTHING`
         ).run(blkId, l.id, JSON.stringify(blkContent));
-        db.prepare(
-          `INSERT OR IGNORE INTO lesson_versions (id, lesson_id, version_number, blocks_snapshot_json, markers_snapshot_json, change_note, published_by, published_at)
-           VALUES (?, ?, 1, ?, '[]', 'Xuất bản bản chuẩn v1', ?, ?)`
+        await db.prepare(
+          `INSERT INTO lesson_versions (id, lesson_id, version_number, blocks_snapshot_json, markers_snapshot_json, change_note, published_by, published_at)
+           VALUES (?, ?, 1, ?, '[]', 'Xuất bản bản chuẩn v1', ?, ?) ON CONFLICT DO NOTHING`
         ).run(
           crypto.randomUUID(),
           l.id,
@@ -915,10 +915,10 @@ export function seedMasterLmsStarterData(db) {
     }
 
     // 2. Phát hành Snapshot v1 cho Tiếng Việt 5 (crs_tv5)
-    const tvSnap = buildCourseSnapshotPayload(db, 'crs_tv5');
-    db.prepare(
-      `INSERT OR IGNORE INTO course_versions (id, course_id, version_number, version_label, status, snapshot_json, changelog_note, published_by, published_by_name, published_at)
-       VALUES ('cv_tv5_v1', 'crs_tv5', 1, 'v1.0', 'PUBLISHED', ?, 'Phát hành phiên bản chuẩn năm học 2026-2027', ?, ?, ?)`
+    const tvSnap = await buildCourseSnapshotPayload(db, 'crs_tv5');
+    await db.prepare(
+      `INSERT INTO course_versions (id, course_id, version_number, version_label, status, snapshot_json, changelog_note, published_by, published_by_name, published_at)
+       VALUES ('cv_tv5_v1', 'crs_tv5', 1, 'v1.0', 'PUBLISHED', ?, 'Phát hành phiên bản chuẩn năm học 2026-2027', ?, ?, ?) ON CONFLICT DO NOTHING`
     ).run(
       JSON.stringify(tvSnap),
       tvInstructor ? tvInstructor.id : 'gv_5002',
@@ -927,34 +927,34 @@ export function seedMasterLmsStarterData(db) {
     );
 
     // 3. Cấp 1: Khung chương trình chuẩn Khối 5
-    db.prepare(
-      `INSERT OR IGNORE INTO curricula (id, code, title, description, version, effective_date, department_id, status, created_by, created_at, updated_at)
+    await db.prepare(
+      `INSERT INTO curricula (id, code, title, description, version, effective_date, department_id, status, created_by, created_at, updated_at)
        VALUES ('curr_tieuhoc_k5', 'CT-TIEUHOC-K5', 'Khung chương trình Tiểu học Khối 5 (Chuẩn 2026–2027)',
          'Khung chương trình liên kết đầy đủ các môn trọng tâm Khối 5, phân bổ học kỳ và chuẩn đầu ra thống nhất.',
-         '1.0', '2026-09-05', 'khoi_5', 'ACTIVE', ?, ?, ?)`
+         '1.0', '2026-09-05', 'khoi_5', 'ACTIVE', ?, ?, ?) ON CONFLICT DO NOTHING`
     ).run(admin ? admin.id : 'admin', now, now);
 
-    db.prepare(
-      `INSERT OR IGNORE INTO curriculum_subjects (id, curriculum_id, course_id, semester_order, sort_order, planned_periods, planned_hours, is_mandatory, note, created_at)
-       VALUES ('cs_k5_toan', 'curr_tieuhoc_k5', ?, 1, 10, 70, 45, 1, 'Môn cốt lõi bắt buộc', ?)`
+    await db.prepare(
+      `INSERT INTO curriculum_subjects (id, curriculum_id, course_id, semester_order, sort_order, planned_periods, planned_hours, is_mandatory, note, created_at)
+       VALUES ('cs_k5_toan', 'curr_tieuhoc_k5', ?, 1, 10, 70, 45, 1, 'Môn cốt lõi bắt buộc', ?) ON CONFLICT DO NOTHING`
     ).run(toanCourse.id, now);
-    db.prepare(
-      `INSERT OR IGNORE INTO curriculum_subjects (id, curriculum_id, course_id, semester_order, sort_order, planned_periods, planned_hours, is_mandatory, note, created_at)
-       VALUES ('cs_k5_tv', 'curr_tieuhoc_k5', 'crs_tv5', 1, 20, 60, 40, 1, 'Môn cốt lõi bắt buộc', ?)`
+    await db.prepare(
+      `INSERT INTO curriculum_subjects (id, curriculum_id, course_id, semester_order, sort_order, planned_periods, planned_hours, is_mandatory, note, created_at)
+       VALUES ('cs_k5_tv', 'curr_tieuhoc_k5', 'crs_tv5', 1, 20, 60, 40, 1, 'Môn cốt lõi bắt buộc', ?) ON CONFLICT DO NOTHING`
     ).run(now);
 
-    db.prepare(
-      `INSERT OR IGNORE INTO curriculum_audit_logs (id, curriculum_id, action_type, payload_json, actor_id, actor_name, created_at)
-       VALUES ('curlog_init_k5', 'curr_tieuhoc_k5', 'CURRICULUM_INITIALIZED', '{"subjects_count":2}', ?, ?, ?)`
+    await db.prepare(
+      `INSERT INTO curriculum_audit_logs (id, curriculum_id, action_type, payload_json, actor_id, actor_name, created_at)
+       VALUES ('curlog_init_k5', 'curr_tieuhoc_k5', 'CURRICULUM_INITIALIZED', '{"subjects_count":2}', ?, ?, ?) ON CONFLICT DO NOTHING`
     ).run(admin ? admin.id : 'admin', admin ? admin.full_name : 'Quản trị hệ thống', now);
 
     // 4. Cấp 2: Lớp khóa học 5A1 (Niên khóa 2026-2027) -> đồng bộ 24 học viên 5A1
-    db.prepare(
-      `INSERT OR IGNORE INTO program_cohorts (id, curriculum_id, code, title, academic_year, semester, start_date, end_date,
+    await db.prepare(
+      `INSERT INTO program_cohorts (id, curriculum_id, code, title, academic_year, semester, start_date, end_date,
          delivery_mode, location_note, coordinator_id, coordinator_name, max_students, department_id, status, created_by, created_at, updated_at)
        VALUES ('coh_k5_5a1', 'curr_tieuhoc_k5', 'KHOAHOC-5A1-2026', 'Lớp Khóa học 5A1 – Niên khóa 2026–2027',
          '2026–2027', 'Học kỳ 1 & 2', '2026-09-05', '2027-05-25', 'HYBRID', 'Cơ sở 1 – Phòng 5A1 & Zoom',
-         ?, ?, 35, 'khoi_5', 'ACTIVE', ?, ?, ?)`
+         ?, ?, 35, 'khoi_5', 'ACTIVE', ?, ?, ?) ON CONFLICT DO NOTHING`
     ).run(
       staff ? staff.id : null,
       staff ? staff.full_name : 'Nguyễn Thu Trang (Giáo vụ)',
@@ -964,59 +964,59 @@ export function seedMasterLmsStarterData(db) {
     );
 
     // Đưa đúng 24 học viên đang học ở sc_toan5_5a1 vào Lớp khóa học coh_k5_5a1
-    const sc5a1Students = db
+    const sc5a1Students = await db
       .prepare("SELECT student_id, enrolled_at FROM class_enrollments WHERE subject_class_id = 'sc_toan5_5a1' AND status = 'ACTIVE'")
       .all();
     for (const s of sc5a1Students) {
-      db.prepare(
-        `INSERT OR IGNORE INTO cohort_enrollments (id, cohort_id, student_id, status, enrolled_at, note)
-         VALUES (?, 'coh_k5_5a1', ?, 'ACTIVE', ?, 'Học viên chính khóa từ khi mở lớp khóa học')`
+      await db.prepare(
+        `INSERT INTO cohort_enrollments (id, cohort_id, student_id, status, enrolled_at, note)
+         VALUES (?, 'coh_k5_5a1', ?, 'ACTIVE', ?, 'Học viên chính khóa từ khi mở lớp khóa học') ON CONFLICT DO NOTHING`
       ).run(crypto.randomUUID(), s.student_id, s.enrolled_at || now);
-      db.prepare(
+      await db.prepare(
         `UPDATE class_enrollments SET enrollment_source = 'COHORT_SYNCED'
          WHERE subject_class_id = 'sc_toan5_5a1' AND student_id = ? AND enrollment_source = 'ACADEMIC_ASSIGNED'`
       ).run(s.student_id);
     }
 
     // Gắn sc_toan5_5a1 vào coh_k5_5a1 (giữ nguyên sc_toan5_5a1.course_version_id = NULL để tương thích studio live tests)
-    db.prepare(`UPDATE subject_classes SET cohort_id = 'coh_k5_5a1' WHERE id = 'sc_toan5_5a1' AND cohort_id IS NULL`).run();
+    await db.prepare(`UPDATE subject_classes SET cohort_id = 'coh_k5_5a1' WHERE id = 'sc_toan5_5a1' AND cohort_id IS NULL`).run();
 
     // Tạo Lớp môn học thứ 2 trong Lớp khóa học 5A1: sc_tv5_5a1 (gắn gv_5002 & Snapshot v1)
-    db.prepare(
-      `INSERT OR IGNORE INTO subject_classes (id, course_id, cohort_id, course_version_id, course_version_number,
+    await db.prepare(
+      `INSERT INTO subject_classes (id, course_id, cohort_id, course_version_id, course_version_number,
          code, title, subject, description, instructor_name, ta_names_json, schedule_text, room, student_count,
          start_date, end_date, max_students, delivery_mode, status, department_id, created_at, updated_at)
        VALUES ('sc_tv5_5a1', 'crs_tv5', 'coh_k5_5a1', 'cv_tv5_v1', 1, '5A1-TV', 'Tiếng Việt lớp 5 – 5A1', 'Tiếng Việt',
          'Lớp môn học Tiếng Việt thuộc Lớp khóa học 5A1 (dùng phiên bản môn học v1.0).', ?, '[]',
          'Thứ Ba, Thứ Sáu • Tiết 2 (08:30 – 09:05)', 'Phòng 5A1 – Dãy B', ?,
-         '2026-09-05', '2027-05-25', 35, 'HYBRID', 'ACTIVE', 'khoi_5', ?, ?)`
+         '2026-09-05', '2027-05-25', 35, 'HYBRID', 'ACTIVE', 'khoi_5', ?, ?) ON CONFLICT DO NOTHING`
     ).run(tvInstructor ? tvInstructor.full_name : 'Thầy Đỗ Văn Khoa', sc5a1Students.length + (hs201 ? 1 : 0), now, now);
 
     if (tvInstructor) {
-      db.prepare(
-        `INSERT OR IGNORE INTO teaching_staff_assignments (id, subject_class_id, user_id, staff_role, permissions_json, is_active, assigned_by, created_at, updated_at)
-         VALUES (?, 'sc_tv5_5a1', ?, 'PRIMARY_INSTRUCTOR', '{"can_manage_materials":true,"can_take_attendance":true}', 1, ?, ?, ?)`
+      await db.prepare(
+        `INSERT INTO teaching_staff_assignments (id, subject_class_id, user_id, staff_role, permissions_json, is_active, assigned_by, created_at, updated_at)
+         VALUES (?, 'sc_tv5_5a1', ?, 'PRIMARY_INSTRUCTOR', '{"can_manage_materials":true,"can_take_attendance":true}', 1, ?, ?, ?) ON CONFLICT DO NOTHING`
       ).run(crypto.randomUUID(), tvInstructor.id, staff ? staff.id : null, now, now);
     }
 
     for (const s of sc5a1Students) {
-      db.prepare(
-        `INSERT OR IGNORE INTO class_enrollments (id, subject_class_id, student_id, enrollment_source, status, enrolled_at)
-         VALUES (?, 'sc_tv5_5a1', ?, 'COHORT_SYNCED', 'ACTIVE', ?)`
+      await db.prepare(
+        `INSERT INTO class_enrollments (id, subject_class_id, student_id, enrollment_source, status, enrolled_at)
+         VALUES (?, 'sc_tv5_5a1', ?, 'COHORT_SYNCED', 'ACTIVE', ?) ON CONFLICT DO NOTHING`
       ).run(crypto.randomUUID(), s.student_id, now);
     }
     // Học viên HS50201 (từ lớp 5A2) học bù riêng môn Tiếng Việt ở 5A1 → không thuộc coh_k5_5a1!
     if (hs201) {
-      db.prepare(
-        `INSERT OR IGNORE INTO class_enrollments (id, subject_class_id, student_id, enrollment_source, status, enrolled_at)
-         VALUES (?, 'sc_tv5_5a1', ?, 'MAKEUP', 'ACTIVE', ?)`
+      await db.prepare(
+        `INSERT INTO class_enrollments (id, subject_class_id, student_id, enrollment_source, status, enrolled_at)
+         VALUES (?, 'sc_tv5_5a1', ?, 'MAKEUP', 'ACTIVE', ?) ON CONFLICT DO NOTHING`
       ).run(crypto.randomUUID(), hs201.id, now);
     }
 
     // 1 buổi học tương lai cho sc_tv5_5a1
     const futDate = vnDate(new Date(Date.now() + 2 * 86400000));
-    if (!db.prepare("SELECT 1 FROM sessions WHERE session_id = 'ses_tv5_5a1_fut'").get()) {
-      insertClassSession(db, {
+    if (!await db.prepare("SELECT 1 FROM sessions WHERE session_id = 'ses_tv5_5a1_fut'").get()) {
+      await insertClassSession(db, {
         session_id: 'ses_tv5_5a1_fut',
         subject_class_id: 'sc_tv5_5a1',
         subject_class_code: '5A1-TV',
@@ -1033,7 +1033,7 @@ export function seedMasterLmsStarterData(db) {
     }
 
     // 5. Gắn bài học lá cho Question Bank & Learning Resources hiện có của crs_toan5
-    const firstToanLeaf = db
+    const firstToanLeaf = await db
       .prepare(
         `SELECT l.id AS lesson_id, ch.id AS chapter_id, ch.topic_id
          FROM lessons l JOIN chapters ch ON ch.id = l.chapter_id
@@ -1041,18 +1041,18 @@ export function seedMasterLmsStarterData(db) {
       )
       .get(toanCourse.id);
     if (firstToanLeaf) {
-      db.prepare(
+      await db.prepare(
         `UPDATE question_bank_items SET topic_id = ?, chapter_id = ?, lesson_id = ?
          WHERE course_id = ? AND lesson_id IS NULL`
       ).run(firstToanLeaf.topic_id, firstToanLeaf.chapter_id, firstToanLeaf.lesson_id, toanCourse.id);
-      db.prepare(
+      await db.prepare(
         `UPDATE learning_resources SET topic_id = ?, chapter_id = ?, lesson_id = ?
          WHERE course_id = ? AND lesson_id IS NULL`
       ).run(firstToanLeaf.topic_id, firstToanLeaf.chapter_id, firstToanLeaf.lesson_id, toanCourse.id);
 
       // Seed 1 câu hỏi Tiếng Việt & 1 Bài tập mẫu trong Assignment Bank cho Toán 5
-      db.prepare(
-        `INSERT OR IGNORE INTO question_bank_items (
+      await db.prepare(
+        `INSERT INTO question_bank_items (
            id, course_id, topic_id, chapter_id, lesson_id, subject, question_type, prompt, options_json, answer_key_json,
            points, explanation, difficulty, tags_json, created_by, created_at, updated_at
          ) VALUES (
@@ -1061,11 +1061,11 @@ export function seedMasterLmsStarterData(db) {
            '[{"id":"a","text":"quả - trái","is_correct":true,"feedback":"Chính xác!"},{"id":"b","text":"chạy - đi"},{"id":"c","text":"cao - thấp"},{"id":"d","text":"học - chơi"}]',
            '{"correct_option_ids":["a"]}', 1, 'Quả (miền Bắc) và trái (miền Nam) biểu thị cùng một sự vật.', 'EASY', '["từ đồng nghĩa"]',
            ?, ?, ?
-         )`
+         ) ON CONFLICT DO NOTHING`
       ).run(tvInstructor ? tvInstructor.id : 'gv_5002', now, now);
 
-      db.prepare(
-        `INSERT OR IGNORE INTO assignment_bank_items (
+      await db.prepare(
+        `INSERT INTO assignment_bank_items (
            id, course_id, topic_id, chapter_id, lesson_id, title, description, instructions,
            submission_type, max_score, max_attempts, allow_resubmit, tags_json, status, created_by, created_at, updated_at
          ) VALUES (
@@ -1074,7 +1074,7 @@ export function seedMasterLmsStarterData(db) {
            'Bài tập vận dụng chuyển đổi phân số thành số thập phân và giải toán có lời văn.',
            'Hoàn thành 5 bài tập tính nhanh trong phiếu hướng dẫn, chụp ảnh bài làm hoặc nhập lời giải chi tiết vào ô trả lời.',
            'MIXED', 10, 3, 1, '["phân số","thực hành"]', 'ACTIVE', ?, ?, ?
-         )`
+         ) ON CONFLICT DO NOTHING`
       ).run(
         toanCourse.id, firstToanLeaf.topic_id, firstToanLeaf.chapter_id, firstToanLeaf.lesson_id,
         gv1 ? gv1.id : 'admin', now, now
@@ -1082,17 +1082,23 @@ export function seedMasterLmsStarterData(db) {
     }
 
     // 6. Seed Wiki môn học (crs_toan5 & crs_tv5)
-    db.prepare(
-      `INSERT OR IGNORE INTO course_wiki_pages (
+    await db.prepare(
+      `INSERT INTO course_wiki_pages (
          id, course_id, topic_id, chapter_id, lesson_id, slug, title, summary, content_markdown, tags_json, related_page_ids_json,
          status, created_by, updated_by, created_at, updated_at
        ) VALUES (
          'wiki_toan5_khai_niem_ps', ?, ?, ?, ?, 'phan-so-thap-phan-co-ban',
          'Sổ tay Phân số thập phân & Quy đổi nhanh',
          'Tổng hợp quy tắc nhận biết phân số có mẫu là lũy thừa của 10 và cách viết thành số thập phân.',
-         '### 1. Định nghĩa\nPhân số thập phân là phân số có mẫu số là 10, 100, 1000...\n\n### 2. Bảng quy đổi hay dùng\n- $\\frac{1}{2} = \\frac{5}{10} = 0{,}5$\n- $\\frac{1}{4} = \\frac{25}{100} = 0{,}25$\n- $\\frac{3}{4} = \\frac{75}{100} = 0{,}75$',
+         '### 1. Định nghĩa
+Phân số thập phân là phân số có mẫu số là 10, 100, 1000...
+
+### 2. Bảng quy đổi hay dùng
+- $\frac{1}{2} = \frac{5}{10} = 0{,}5$
+- $\frac{1}{4} = \frac{25}{100} = 0{,}25$
+- $\frac{3}{4} = \frac{75}{100} = 0{,}75$',
          '["công thức","phân số"]', '[]', 'PUBLISHED', ?, ?, ?, ?
-       )`
+       ) ON CONFLICT DO NOTHING`
     ).run(
       toanCourse.id,
       firstToanLeaf?.topic_id || null,
@@ -1104,35 +1110,42 @@ export function seedMasterLmsStarterData(db) {
       now
     );
 
-    db.prepare(
-      `INSERT OR IGNORE INTO course_wiki_revisions (id, page_id, revision_number, title, content_markdown, change_note, edited_by, edited_by_name, created_at)
+    await db.prepare(
+      `INSERT INTO course_wiki_revisions (id, page_id, revision_number, title, content_markdown, change_note, edited_by, edited_by_name, created_at)
        VALUES ('wrev_toan5_1', 'wiki_toan5_khai_niem_ps', 1, 'Sổ tay Phân số thập phân & Quy đổi nhanh',
-         '### 1. Định nghĩa\nPhân số thập phân là phân số có mẫu số là 10, 100, 1000...', 'Khởi tạo trang Wiki chuẩn', ?, ?, ?)`
+         '### 1. Định nghĩa
+Phân số thập phân là phân số có mẫu số là 10, 100, 1000...', 'Khởi tạo trang Wiki chuẩn', ?, ?, ?) ON CONFLICT DO NOTHING`
     ).run(gv1 ? gv1.id : null, gv1 ? gv1.full_name : 'Giảng viên', now);
 
-    db.prepare(
-      `INSERT OR IGNORE INTO course_wiki_pages (
+    await db.prepare(
+      `INSERT INTO course_wiki_pages (
          id, course_id, topic_id, chapter_id, lesson_id, slug, title, summary, content_markdown, tags_json, related_page_ids_json,
          status, created_by, updated_by, created_at, updated_at
        ) VALUES (
          'wiki_tv5_tu_dong_nghia', 'crs_tv5', 'top_tv5_1', 'ch_tv5_1', 'les_tv5_1', 'tu-dong-nghia',
          'Từ đồng nghĩa & Cách phân loại',
          'Từ đồng nghĩa là những từ có nghĩa giống nhau hoặc gần giống nhau, giúp diễn đạt linh hoạt và tránh lặp từ.',
-         '### 1. Khái niệm\nTừ đồng nghĩa là những từ có nghĩa giống nhau hoặc gần giống nhau.\n\n### 2. Hai loại chính\n- **Từ đồng nghĩa hoàn toàn**: có thể thay thế cho nhau trong mọi ngữ cảnh (VD: quả – trái, hổ – cọp).\n- **Từ đồng nghĩa không hoàn toàn**: khác nhau về sắc thái nghĩa hoặc cách dùng (VD: ăn – xơi – chén, mang – vác – khiêng).',
+         '### 1. Khái niệm
+Từ đồng nghĩa là những từ có nghĩa giống nhau hoặc gần giống nhau.
+
+### 2. Hai loại chính
+- **Từ đồng nghĩa hoàn toàn**: có thể thay thế cho nhau trong mọi ngữ cảnh (VD: quả – trái, hổ – cọp).
+- **Từ đồng nghĩa không hoàn toàn**: khác nhau về sắc thái nghĩa hoặc cách dùng (VD: ăn – xơi – chén, mang – vác – khiêng).',
          '["từ đồng nghĩa","đồng nghĩa hoàn toàn","sắc thái nghĩa"]', '[]', 'PUBLISHED', ?, ?, ?, ?
-       )`
+       ) ON CONFLICT DO NOTHING`
     ).run(tvInstructor ? tvInstructor.id : null, tvInstructor ? tvInstructor.id : null, now, now);
 
-    db.prepare(
-      `INSERT OR IGNORE INTO course_wiki_revisions (id, page_id, revision_number, title, content_markdown, change_note, edited_by, edited_by_name, created_at)
+    await db.prepare(
+      `INSERT INTO course_wiki_revisions (id, page_id, revision_number, title, content_markdown, change_note, edited_by, edited_by_name, created_at)
        VALUES ('wrev_tv5_1', 'wiki_tv5_tu_dong_nghia', 1, 'Từ đồng nghĩa & Cách phân loại',
-         '### 1. Khái niệm\nTừ đồng nghĩa là những từ có nghĩa giống nhau hoặc gần giống nhau.', 'Khởi tạo trang Wiki chuẩn', ?, ?, ?)`
+         '### 1. Khái niệm
+Từ đồng nghĩa là những từ có nghĩa giống nhau hoặc gần giống nhau.', 'Khởi tạo trang Wiki chuẩn', ?, ?, ?) ON CONFLICT DO NOTHING`
     ).run(tvInstructor ? tvInstructor.id : null, tvInstructor ? tvInstructor.full_name : 'Giảng viên', now);
 
     // 7. Seed Đề kiểm tra & Bài tập tách biệt cho lớp sc_toan5_5a1 (để học viên có trải nghiệm thực tế ngay)
-    const toanQb = db.prepare('SELECT * FROM question_bank_items WHERE course_id = ? AND deleted_at IS NULL LIMIT 3').all(toanCourse.id);
-    if (toanQb.length > 0 && !db.prepare("SELECT 1 FROM class_exams WHERE id = 'ex_seed_5a1_1'").get()) {
-      db.prepare(
+    const toanQb = await db.prepare('SELECT * FROM question_bank_items WHERE course_id = ? AND deleted_at IS NULL LIMIT 3').all(toanCourse.id);
+    if (toanQb.length > 0 && !await db.prepare("SELECT 1 FROM class_exams WHERE id = 'ex_seed_5a1_1'").get()) {
+      await db.prepare(
         `INSERT INTO class_exams (id, subject_class_id, course_id, scope_type, topic_id, chapter_id, lesson_id,
            title, description, time_limit_minutes, max_attempts, shuffle_questions, scoring_policy, pass_score_pct, status, created_by, created_at, updated_at)
          VALUES ('ex_seed_5a1_1', 'sc_toan5_5a1', ?, 'CHAPTER', ?, ?, ?,
@@ -1141,8 +1154,8 @@ export function seedMasterLmsStarterData(db) {
       ).run(toanCourse.id, firstToanLeaf?.topic_id || null, firstToanLeaf?.chapter_id || null, firstToanLeaf?.lesson_id || null,
         gv1 ? gv1.id : null, now, now);
 
-      toanQb.forEach((q, idx) => {
-        db.prepare(
+      for (const [idx, q] of (toanQb).entries()) {
+        await db.prepare(
           `INSERT INTO class_exam_questions (id, exam_id, bank_question_id, question_snapshot_json, points, sort_order)
            VALUES (?, 'ex_seed_5a1_1', ?, ?, ?, ?)`
         ).run(
@@ -1162,11 +1175,11 @@ export function seedMasterLmsStarterData(db) {
           Number(q.points || 1),
           (idx + 1) * 10
         );
-      });
+      }
     }
 
-    if (!db.prepare("SELECT 1 FROM class_assignments WHERE id = 'ca_seed_5a1_1'").get()) {
-      db.prepare(
+    if (!await db.prepare("SELECT 1 FROM class_assignments WHERE id = 'ca_seed_5a1_1'").get()) {
+      await db.prepare(
         `INSERT INTO class_assignments (id, subject_class_id, course_id, assignment_bank_item_id, topic_id, chapter_id, lesson_id,
            title, instructions, submission_type, max_score, max_attempts, allow_resubmit, due_at, status, created_by, created_at, updated_at)
          VALUES ('ca_seed_5a1_1', 'sc_toan5_5a1', ?, 'ab_seed_toan5_1', ?, ?, ?,
@@ -1179,19 +1192,19 @@ export function seedMasterLmsStarterData(db) {
     }
 
     // 8. Seed Diễn đàn (Cấp Môn học & Riêng Lớp 5A1) + Đơn xin nghỉ ở buổi tương lai
-    db.prepare(
-      `INSERT OR IGNORE INTO teaching_forums (id, scope_type, course_id, subject_class_id, title, description, status, created_at, updated_at)
+    await db.prepare(
+      `INSERT INTO teaching_forums (id, scope_type, course_id, subject_class_id, title, description, status, created_at, updated_at)
        VALUES ('frm_crs_toan5', 'COURSE', ?, NULL, 'Diễn đàn chung Môn Toán lớp 5',
-         'Trao đổi kiến thức, phương pháp giải toán và giải đáp thắc mắc chung cho toàn môn học.', 'ACTIVE', ?, ?)`
+         'Trao đổi kiến thức, phương pháp giải toán và giải đáp thắc mắc chung cho toàn môn học.', 'ACTIVE', ?, ?) ON CONFLICT DO NOTHING`
     ).run(toanCourse.id, now, now);
-    db.prepare(
-      `INSERT OR IGNORE INTO teaching_forums (id, scope_type, course_id, subject_class_id, title, description, status, created_at, updated_at)
+    await db.prepare(
+      `INSERT INTO teaching_forums (id, scope_type, course_id, subject_class_id, title, description, status, created_at, updated_at)
        VALUES ('frm_cls_5a1', 'CLASS', ?, 'sc_toan5_5a1', 'Diễn đàn nội bộ Lớp 5A1 – Toán 5',
-         'Không gian trao đổi riêng của giảng viên và học viên lớp 5A1.', 'ACTIVE', ?, ?)`
+         'Không gian trao đổi riêng của giảng viên và học viên lớp 5A1.', 'ACTIVE', ?, ?) ON CONFLICT DO NOTHING`
     ).run(toanCourse.id, now, now);
 
-    if (!db.prepare("SELECT 1 FROM teaching_forum_threads WHERE id = 'fth_seed_5a1'").get() && gv1) {
-      db.prepare(
+    if (!await db.prepare("SELECT 1 FROM teaching_forum_threads WHERE id = 'fth_seed_5a1'").get() && gv1) {
+      await db.prepare(
         `INSERT INTO teaching_forum_threads (id, forum_id, lesson_id, author_id, author_name, author_role, category, title, body,
            is_pinned, is_locked, is_hidden, helpful_count, reply_count, last_activity_at, created_at, updated_at)
          VALUES ('fth_seed_5a1', 'frm_cls_5a1', ?, ?, ?, 'INSTRUCTOR', 'ANNOUNCEMENT',
@@ -1202,24 +1215,20 @@ export function seedMasterLmsStarterData(db) {
     }
 
     // Seed 1 đơn xin nghỉ mẫu cho buổi học tương lai của sc_tv5_5a1 (không ảnh hưởng todaySession của sc_toan5_5a1)
-    if (hs1 && !db.prepare("SELECT 1 FROM leave_requests WHERE id = 'lv_seed_fut_1'").get()) {
-      db.prepare(
+    if (hs1 && !await db.prepare("SELECT 1 FROM leave_requests WHERE id = 'lv_seed_fut_1'").get()) {
+      await db.prepare(
         `INSERT INTO leave_requests (id, subject_class_id, class_session_id, student_id, student_code, student_name,
            reason_category, reason, makeup_class_requested, status, created_at, updated_at)
          VALUES ('lv_seed_fut_1', 'sc_tv5_5a1', 'ses_tv5_5a1_fut', ?, ?, ?, 'FAMILY',
            'Gia đình có việc bận cần di chuyển về quê vào sáng thứ Bảy.', 'Có thể tham gia học bù lớp 5A2 nếu có lịch.', 'PENDING', ?, ?)`
       ).run(hs1.id, hs1.code, hs1.full_name, now, now);
-      db.prepare(
+      await db.prepare(
         `INSERT INTO leave_request_logs (id, leave_request_id, previous_status, new_status, action_note, actor_id, actor_name, created_at)
          VALUES ('lrl_seed_1', 'lv_seed_fut_1', NULL, 'PENDING', 'Học viên gửi đơn xin nghỉ phép mới.', ?, ?, ?)`
       ).run(hs1.id, hs1.full_name, now);
     }
 
-    db.prepare(`INSERT OR REPLACE INTO app_meta (key, value) VALUES ('${MASTER_LMS_SEED_MARKER}', '1')`).run();
-    db.exec('COMMIT');
-    seedTrainingLifecycleStarterData(db);
-  } catch (err) {
-    try { db.exec('ROLLBACK'); } catch { /* ignore */ }
-    throw err;
-  }
+    await db.prepare(`INSERT INTO app_meta (key, value) VALUES (?, '1') ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`).run(MASTER_LMS_SEED_MARKER);
+    await seedTrainingLifecycleStarterData(db);
+  });
 }

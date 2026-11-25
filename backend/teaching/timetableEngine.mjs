@@ -14,6 +14,7 @@
 import crypto from 'node:crypto';
 import {
   fail, nowIso, text, intField, oneOf, dateField, timeField, tx,
+  mapAsync,
 } from './http.mjs';
 import {
   isAdmin, isStaff, isInstructor, isStudent, classScopeSql, safeJson,
@@ -56,9 +57,9 @@ function overlaps(startA, endA, startB, endB) {
   return startA < endB && startB < endA;
 }
 
-export function findHolidayOnDate(db, dateStr, campusId = null) {
+export async function findHolidayOnDate(db, dateStr, campusId = null) {
   const mmdd = dateStr.slice(5);
-  const rows = db.prepare('SELECT * FROM academic_holidays WHERE campus_id IS NULL OR campus_id = ?').all(campusId || '');
+  const rows = await db.prepare('SELECT * FROM academic_holidays WHERE campus_id IS NULL OR campus_id = ?').all(campusId || '');
   for (const h of rows) {
     if (h.start_date <= dateStr && dateStr <= h.end_date) return h;
     if (h.is_recurring_yearly) {
@@ -74,14 +75,14 @@ export function findHolidayOnDate(db, dateStr, campusId = null) {
  * Kiểm tra đầy đủ 6 ràng buộc cứng cho 1 buổi học ứng viên.
  * Trả về mảng `conflicts: Array<{ code, message }>`. Rỗng = Hợp lệ.
  */
-export function evaluateCandidateConstraints(db, candidate, extraVirtualSessions = []) {
+export async function evaluateCandidateConstraints(db, candidate, extraVirtualSessions = []) {
   const conflicts = [];
-  const cls = db.prepare('SELECT * FROM subject_classes WHERE id = ?').get(candidate.subject_class_id);
+  const cls = await db.prepare('SELECT * FROM subject_classes WHERE id = ?').get(candidate.subject_class_id);
   if (!cls) {
     conflicts.push({ code: 'CLASS_NOT_FOUND', message: 'Không tìm thấy lớp môn học.' });
     return conflicts;
   }
-  const course = cls.course_id ? db.prepare('SELECT * FROM courses WHERE id = ?').get(cls.course_id) : null;
+  const course = cls.course_id ? await db.prepare('SELECT * FROM courses WHERE id = ?').get(cls.course_id) : null;
 
   const dateStr = candidate.date || extractDate(candidate.scheduled_start_at);
   const startTime = candidate.start_time || extractTime(candidate.scheduled_start_at);
@@ -95,12 +96,12 @@ export function evaluateCandidateConstraints(db, candidate, extraVirtualSessions
   }
 
   const campusId = candidate.campus_id || 'cp_cs1';
-  const campus = db.prepare('SELECT * FROM campuses WHERE id = ?').get(campusId);
-  const classroom = candidate.classroom_id ? db.prepare('SELECT * FROM classrooms WHERE id = ?').get(candidate.classroom_id) : null;
+  const campus = await db.prepare('SELECT * FROM campuses WHERE id = ?').get(campusId);
+  const classroom = candidate.classroom_id ? await db.prepare('SELECT * FROM classrooms WHERE id = ?').get(candidate.classroom_id) : null;
   const instructorId = candidate.instructor_id || null;
 
   // Ràng buộc 4a: Không xếp vào ngày nghỉ lễ
-  const holiday = findHolidayOnDate(db, dateStr, campus?.id || null);
+  const holiday = await findHolidayOnDate(db, dateStr, campus?.id || null);
   if (holiday) {
     conflicts.push({
       code: 'HOLIDAY_CONFLICT',
@@ -129,7 +130,7 @@ export function evaluateCandidateConstraints(db, candidate, extraVirtualSessions
         message: `Môn yêu cầu "${ROOM_TYPE_LABELS[requiredRoomType] || requiredRoomType}" nhưng phòng ${classroom.code} là "${ROOM_TYPE_LABELS[classroom.room_type] || classroom.room_type}".`,
       });
     }
-    const activeEnrolled = db.prepare("SELECT COUNT(*) n FROM class_enrollments WHERE subject_class_id = ? AND status = 'ACTIVE'").get(cls.id).n;
+    const activeEnrolled = (await db.prepare("SELECT COUNT(*) n FROM class_enrollments WHERE subject_class_id = ? AND status = 'ACTIVE'").get(cls.id)).n;
     const expectedSize = Math.max(activeEnrolled, Number(cls.student_count || 0), Number(cls.max_students || 0));
     if (classroom.room_type !== 'ONLINE' && expectedSize > 0 && Number(classroom.capacity) < expectedSize) {
       conflicts.push({
@@ -141,7 +142,7 @@ export function evaluateCandidateConstraints(db, candidate, extraVirtualSessions
 
   // Ràng buộc 6: Giảng viên chỉ dạy môn/lớp được phân công (trừ dạy thay hợp lệ)
   if (instructorId && !candidate.allow_substitute) {
-    const assigned = db
+    const assigned = await db
       .prepare('SELECT 1 FROM teaching_staff_assignments WHERE subject_class_id = ? AND user_id = ? AND is_active = 1')
       .get(cls.id, instructorId);
     const isCourseOwner = course && course.instructor_id === instructorId;
@@ -156,7 +157,7 @@ export function evaluateCandidateConstraints(db, candidate, extraVirtualSessions
   // Kiểm tra Lịch bận của Giảng viên (instructor_availabilities)
   if (instructorId) {
     const weekday = new Date(`${dateStr}T12:00:00+07:00`).getUTCDay();
-    const availRows = db
+    const availRows = await db
       .prepare(
         `SELECT * FROM instructor_availabilities
          WHERE instructor_id = ? AND status = 'BUSY'
@@ -175,7 +176,7 @@ export function evaluateCandidateConstraints(db, candidate, extraVirtualSessions
   }
 
   // Lấy tất cả các buổi học khác trong cùng ngày để đối chiếu Ràng buộc 1, 2, 3
-  const dbSessionsSameDay = db
+  const dbSessionsSameDay = await db
     .prepare(
       `SELECT s.*, sc.cohort_id, sc.student_count AS cls_student_count, sc.max_students AS cls_max_students
        FROM sessions s
@@ -243,7 +244,7 @@ export function evaluateCandidateConstraints(db, candidate, extraVirtualSessions
         });
       } else if (campus && other.campus_id && other.campus_id !== campus.id) {
         const buffers = safeJson(campus.travel_buffers_json, {});
-        const otherCampus = db.prepare('SELECT * FROM campuses WHERE id = ?').get(other.campus_id);
+        const otherCampus = await db.prepare('SELECT * FROM campuses WHERE id = ?').get(other.campus_id);
         const reverseBuffers = otherCampus ? safeJson(otherCampus.travel_buffers_json, {}) : {};
         const reqBuffer = Number(buffers[other.campus_id] ?? reverseBuffers[campus.id] ?? 30);
         const gapMinutes = startMin >= oEndMin ? startMin - oEndMin : oStartMin - endMin;
@@ -261,17 +262,17 @@ export function evaluateCandidateConstraints(db, candidate, extraVirtualSessions
 }
 
 /** Tổng hợp tiến độ đủ giờ / đủ tiết và xung đột của một tập lớp học. */
-function buildTimetableAuditReport(db, classIds) {
+async function buildTimetableAuditReport(db, classIds) {
   const classReports = [];
   let totalConflicts = 0;
 
   for (const cid of classIds) {
-    const cls = db.prepare('SELECT * FROM subject_classes WHERE id = ?').get(cid);
+    const cls = await db.prepare('SELECT * FROM subject_classes WHERE id = ?').get(cid);
     if (!cls) continue;
-    const course = cls.course_id ? db.prepare('SELECT * FROM courses WHERE id = ?').get(cls.course_id) : null;
+    const course = cls.course_id ? await db.prepare('SELECT * FROM courses WHERE id = ?').get(cls.course_id) : null;
     const targetPeriods = Number(cls.planned_periods || (course ? Number(course.theory_periods || 0) + Number(course.practice_periods || 0) : 30) || 30);
 
-    const sessions = db
+    const sessions = await db
       .prepare("SELECT * FROM sessions WHERE subject_class_id = ? AND session_status <> 'CANCELLED' ORDER BY scheduled_start_at")
       .all(cls.id);
 
@@ -281,7 +282,7 @@ function buildTimetableAuditReport(db, classIds) {
 
     const sessionConflicts = [];
     for (const s of scheduledSessions) {
-      const cList = evaluateCandidateConstraints(db, {
+      const cList = await evaluateCandidateConstraints(db, {
         exclude_session_id: s.session_id,
         subject_class_id: s.subject_class_id,
         scheduled_start_at: s.scheduled_start_at,
@@ -331,27 +332,27 @@ export function registerTimetableRoutes(route) {
   // 1. DANH MỤC CƠ SỞ, PHÒNG HỌC, CA HỌC, LỊCH NGHỈ & LỊCH RẢNH/BẬN GV
   // =========================================================================
 
-  route('GET', '/facilities/overview', ({ db, user }) => {
+  route('GET', '/facilities/overview', async ({ db, user }) => {
     if (isStudent(user) && !isAdmin(user) && !isStaff(user) && !isInstructor(user)) {
       fail(403, 'ACCESS_DENIED', 'Học viên không truy cập danh mục điều phối phòng học.');
     }
-    const campuses = db.prepare('SELECT * FROM campuses WHERE is_active = 1 ORDER BY code').all().map((c) => ({
+    const campuses = (await db.prepare('SELECT * FROM campuses WHERE is_active = 1 ORDER BY code').all()).map((c) => ({
       ...c,
       travel_buffers: safeJson(c.travel_buffers_json, {}),
     }));
-    const classrooms = db
+    const classrooms = await db
       .prepare(
         `SELECT r.*, cp.code AS campus_code, cp.name AS campus_name
          FROM classrooms r JOIN campuses cp ON cp.id = r.campus_id
          WHERE r.is_active = 1 ORDER BY cp.code, r.code`
       )
       .all();
-    const shifts = db.prepare('SELECT * FROM shift_presets ORDER BY sort_order, start_time').all();
-    const holidays = db.prepare('SELECT * FROM academic_holidays ORDER BY start_date DESC').all();
-    const instructors = db
+    const shifts = await db.prepare('SELECT * FROM shift_presets ORDER BY sort_order, start_time').all();
+    const holidays = await db.prepare('SELECT * FROM academic_holidays ORDER BY start_date DESC').all();
+    const instructors = await db
       .prepare("SELECT id, code, full_name, email, department_id FROM users WHERE roles_json LIKE '%\"INSTRUCTOR\"%' ORDER BY full_name")
       .all();
-    const availabilities = db
+    const availabilities = await db
       .prepare(
         `SELECT ia.*, u.full_name AS instructor_name, u.code AS instructor_code
          FROM instructor_availabilities ia JOIN users u ON u.id = ia.instructor_id
@@ -372,7 +373,7 @@ export function registerTimetableRoutes(route) {
     };
   });
 
-  route('POST', '/facilities/campuses', ({ db, user, body }) => {
+  route('POST', '/facilities/campuses', async ({ db, user, body }) => {
     requireSchedulerAccess(user);
     const code = text(body, 'code', { required: true, max: 32, label: 'mã cơ sở' }).toUpperCase();
     const name = text(body, 'name', { required: true, max: 200, label: 'tên cơ sở' });
@@ -381,31 +382,31 @@ export function registerTimetableRoutes(route) {
     const closeTime = timeField(body, 'close_time', { label: 'giờ đóng cửa' }) || '21:30';
     const buffers = body.travel_buffers && typeof body.travel_buffers === 'object' ? body.travel_buffers : {};
     const id = `cp_${crypto.randomBytes(4).toString('hex')}`;
-    db.prepare(
+    await db.prepare(
       `INSERT INTO campuses (id, code, name, address, open_time, close_time, travel_buffers_json, is_active, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)`
     ).run(id, code, name, address, openTime, closeTime, JSON.stringify(buffers), nowIso());
-    return [201, db.prepare('SELECT * FROM campuses WHERE id = ?').get(id)];
+    return [201, await db.prepare('SELECT * FROM campuses WHERE id = ?').get(id)];
   });
 
-  route('POST', '/facilities/classrooms', ({ db, user, body }) => {
+  route('POST', '/facilities/classrooms', async ({ db, user, body }) => {
     requireSchedulerAccess(user);
     const campusId = text(body, 'campus_id', { required: true, max: 64, label: 'cơ sở' });
-    if (!db.prepare('SELECT 1 FROM campuses WHERE id = ?').get(campusId)) fail(404, 'CAMPUS_NOT_FOUND', 'Không tìm thấy cơ sở.');
+    if (!await db.prepare('SELECT 1 FROM campuses WHERE id = ?').get(campusId)) fail(404, 'CAMPUS_NOT_FOUND', 'Không tìm thấy cơ sở.');
     const code = text(body, 'code', { required: true, max: 32, label: 'mã phòng' }).toUpperCase();
     const name = text(body, 'name', { required: true, max: 200, label: 'tên phòng' });
     const roomType = oneOf(body, 'room_type', ['THEORY_ROOM', 'COMPUTER_LAB', 'ONLINE'], { fallback: 'THEORY_ROOM', label: 'loại phòng' });
     const capacity = intField(body, 'capacity', { min: 1, max: 2000, label: 'sức chứa' }) || 40;
     const note = text(body, 'equipment_note', { max: 300, label: 'thiết bị' }) || '';
     const id = `rm_${crypto.randomBytes(4).toString('hex')}`;
-    db.prepare(
+    await db.prepare(
       `INSERT INTO classrooms (id, campus_id, code, name, room_type, capacity, equipment_note, is_active, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)`
     ).run(id, campusId, code, name, roomType, capacity, note, nowIso());
-    return [201, db.prepare('SELECT * FROM classrooms WHERE id = ?').get(id)];
+    return [201, await db.prepare('SELECT * FROM classrooms WHERE id = ?').get(id)];
   });
 
-  route('POST', '/facilities/holidays', ({ db, user, body }) => {
+  route('POST', '/facilities/holidays', async ({ db, user, body }) => {
     requireSchedulerAccess(user);
     const title = text(body, 'title', { required: true, max: 200, label: 'tên kỳ nghỉ' });
     const startDate = dateField(body, 'start_date', { required: true, label: 'ngày bắt đầu nghỉ' });
@@ -414,20 +415,20 @@ export function registerTimetableRoutes(route) {
     const campusId = body.campus_id || null;
     const recurring = body.is_recurring_yearly ? 1 : 0;
     const id = `hol_${crypto.randomBytes(4).toString('hex')}`;
-    db.prepare(
+    await db.prepare(
       `INSERT INTO academic_holidays (id, campus_id, title, start_date, end_date, is_recurring_yearly, note, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(id, campusId, title, startDate, endDate, recurring, text(body, 'note', { max: 300, label: 'ghi chú' }) || '', nowIso());
-    return [201, db.prepare('SELECT * FROM academic_holidays WHERE id = ?').get(id)];
+    return [201, await db.prepare('SELECT * FROM academic_holidays WHERE id = ?').get(id)];
   });
 
-  route('DELETE', '/facilities/holidays/:id', ({ db, user, params }) => {
+  route('DELETE', '/facilities/holidays/:id', async ({ db, user, params }) => {
     requireSchedulerAccess(user);
-    db.prepare('DELETE FROM academic_holidays WHERE id = ?').run(params.id);
+    await db.prepare('DELETE FROM academic_holidays WHERE id = ?').run(params.id);
     return { deleted_id: params.id };
   });
 
-  route('POST', '/facilities/instructor-availabilities', ({ db, user, body }) => {
+  route('POST', '/facilities/instructor-availabilities', async ({ db, user, body }) => {
     const targetInstrId = body.instructor_id || user.id;
     if (!isAdmin(user) && !isStaff(user) && targetInstrId !== user.id) {
       fail(403, 'FORBIDDEN', 'Bạn chỉ được cập nhật lịch rảnh/bận của chính mình.');
@@ -440,20 +441,20 @@ export function registerTimetableRoutes(route) {
     if (endTime <= startTime) fail(422, 'VALIDATION_ERROR', 'Giờ kết thúc phải sau giờ bắt đầu.');
     const status = oneOf(body, 'status', ['BUSY', 'AVAILABLE'], { fallback: 'BUSY', label: 'trạng thái' });
     const id = `iav_${crypto.randomBytes(4).toString('hex')}`;
-    db.prepare(
+    await db.prepare(
       `INSERT INTO instructor_availabilities (id, instructor_id, rule_type, weekday, specific_date, start_time, end_time, status, note, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(id, targetInstrId, ruleType, weekday, specificDate, startTime, endTime, status, text(body, 'note', { max: 300, label: 'lý do' }) || '', nowIso());
-    return [201, db.prepare('SELECT * FROM instructor_availabilities WHERE id = ?').get(id)];
+    return [201, await db.prepare('SELECT * FROM instructor_availabilities WHERE id = ?').get(id)];
   });
 
-  route('DELETE', '/facilities/instructor-availabilities/:id', ({ db, user, params }) => {
-    const row = db.prepare('SELECT * FROM instructor_availabilities WHERE id = ?').get(params.id);
+  route('DELETE', '/facilities/instructor-availabilities/:id', async ({ db, user, params }) => {
+    const row = await db.prepare('SELECT * FROM instructor_availabilities WHERE id = ?').get(params.id);
     if (!row) fail(404, 'NOT_FOUND', 'Không tìm thấy mục lịch bận/rảnh.');
     if (!isAdmin(user) && !isStaff(user) && row.instructor_id !== user.id) {
       fail(403, 'FORBIDDEN', 'Không có quyền xóa lịch của giảng viên khác.');
     }
-    db.prepare('DELETE FROM instructor_availabilities WHERE id = ?').run(row.id);
+    await db.prepare('DELETE FROM instructor_availabilities WHERE id = ?').run(row.id);
     return { deleted_id: row.id };
   });
 
@@ -461,7 +462,7 @@ export function registerTimetableRoutes(route) {
   // 2. XEM LỊCH ĐA CHIỀU (2.1.3) & KHAY BUỔI HỌC CHỜ XẾP
   // =========================================================================
 
-  route('GET', '/timetable/grid', ({ db, user, url }) => {
+  route('GET', '/timetable/grid', async ({ db, user, url }) => {
     const from = url.searchParams.get('from') || vnDate();
     const to = url.searchParams.get('to') || vnDate(new Date(Date.now() + 6 * 86400000));
     const cohortId = url.searchParams.get('cohort_id') || '';
@@ -495,7 +496,7 @@ export function registerTimetableRoutes(route) {
     if (shiftCode) { where.push('s.shift_code = ?'); params.push(shiftCode); }
     if (stateFilter) { where.push("COALESCE(s.schedule_state, 'PUBLISHED') = ?"); params.push(stateFilter); }
 
-    const scheduledRows = db
+    const scheduledRows = await db
       .prepare(
         `SELECT s.*, sc.code AS class_code, sc.title AS class_title, sc.cohort_id, sc.course_id,
                 sc.required_room_type, sc.student_count, sc.max_students,
@@ -521,7 +522,7 @@ export function registerTimetableRoutes(route) {
       if (cohortId) { uWhere.push('sc.cohort_id = ?'); uParams.push(cohortId); }
       if (classId) { uWhere.push('s.subject_class_id = ?'); uParams.push(classId); }
       if (courseId) { uWhere.push('sc.course_id = ?'); uParams.push(courseId); }
-      unscheduled = db
+      unscheduled = await db
         .prepare(
           `SELECT s.*, sc.code AS class_code, sc.title AS class_title, sc.required_room_type
            FROM sessions s JOIN subject_classes sc ON sc.id = s.subject_class_id
@@ -582,21 +583,21 @@ export function registerTimetableRoutes(route) {
   // 3. PHƯƠNG PHÁP 1: KÉO THẢ (GỢI Ý Ô HỢP LỆ XANH / Ô XUNG ĐỘT ĐỎ) & ÁP DỤNG
   // =========================================================================
 
-  route('POST', '/timetable/slot-hints', ({ db, user, body }) => {
+  route('POST', '/timetable/slot-hints', async ({ db, user, body }) => {
     requireSchedulerAccess(user);
-    const session = body.session_id ? db.prepare('SELECT * FROM sessions WHERE session_id = ?').get(body.session_id) : null;
+    const session = body.session_id ? await db.prepare('SELECT * FROM sessions WHERE session_id = ?').get(body.session_id) : null;
     const classId = session?.subject_class_id || text({ class_id: body.subject_class_id || body.class_id }, 'class_id', { required: true, max: 64, label: 'lớp môn học' });
-    const cls = db.prepare('SELECT * FROM subject_classes WHERE id = ?').get(classId);
+    const cls = await db.prepare('SELECT * FROM subject_classes WHERE id = ?').get(classId);
     if (!cls) fail(404, 'CLASS_NOT_FOUND', 'Không tìm thấy lớp môn học.');
 
     const dates = Array.isArray(body.dates) && body.dates.length
       ? body.dates.slice(0, 14)
       : Array.from({ length: 7 }, (_, i) => vnDate(new Date(Date.parse(`${body.week_start || vnDate()}T12:00:00+07:00`) + i * 86400000)));
-    const shifts = db.prepare('SELECT * FROM shift_presets ORDER BY sort_order, start_time').all();
+    const shifts = await db.prepare('SELECT * FROM shift_presets ORDER BY sort_order, start_time').all();
 
     const campusId = body.campus_id || session?.campus_id || 'cp_cs1';
     const classroomId = body.classroom_id !== undefined ? body.classroom_id : session?.classroom_id || null;
-    const primaryStaff = db
+    const primaryStaff = await db
       .prepare("SELECT user_id FROM teaching_staff_assignments WHERE subject_class_id = ? AND staff_role = 'PRIMARY_INSTRUCTOR' AND is_active = 1 LIMIT 1")
       .get(cls.id);
     const instructorId = body.instructor_id || session?.actual_instructor_id || session?.scheduled_instructor_id || primaryStaff?.user_id || null;
@@ -604,7 +605,7 @@ export function registerTimetableRoutes(route) {
     const hints = [];
     for (const d of dates) {
       for (const sh of shifts) {
-        const conflicts = evaluateCandidateConstraints(db, {
+        const conflicts = await evaluateCandidateConstraints(db, {
           exclude_session_id: session?.session_id || null,
           subject_class_id: cls.id,
           date: d,
@@ -630,23 +631,23 @@ export function registerTimetableRoutes(route) {
     return { slots: hints };
   });
 
-  route('POST', '/timetable/sessions/:id/move', ({ db, user, body, params }) => {
+  route('POST', '/timetable/sessions/:id/move', async ({ db, user, body, params }) => {
     requireSchedulerAccess(user);
-    const ses = db.prepare('SELECT * FROM sessions WHERE session_id = ?').get(params.id);
+    const ses = await db.prepare('SELECT * FROM sessions WHERE session_id = ?').get(params.id);
     if (!ses) fail(404, 'SESSION_NOT_FOUND', 'Không tìm thấy buổi học.');
     if (ses.timesheet_locked_id) {
       fail(409, 'SESSION_TIMESHEET_LOCKED', 'Buổi học đã chốt bảng giờ giảng chuyển Tài chính, không thể dời lịch.');
     }
 
     const date = dateField(body, 'date', { required: true, label: 'ngày học mới' });
-    const shift = body.shift_code ? db.prepare('SELECT * FROM shift_presets WHERE code = ?').get(body.shift_code) : null;
+    const shift = body.shift_code ? await db.prepare('SELECT * FROM shift_presets WHERE code = ?').get(body.shift_code) : null;
     const startTime = shift ? shift.start_time : timeField(body, 'start_time', { required: true, label: 'giờ bắt đầu' });
     const endTime = shift ? shift.end_time : timeField(body, 'end_time', { required: true, label: 'giờ kết thúc' });
     const campusId = body.campus_id || ses.campus_id || 'cp_cs1';
     const classroomId = body.classroom_id !== undefined ? body.classroom_id : ses.classroom_id;
     const instructorId = body.instructor_id || ses.actual_instructor_id || ses.scheduled_instructor_id;
 
-    const conflicts = evaluateCandidateConstraints(db, {
+    const conflicts = await evaluateCandidateConstraints(db, {
       exclude_session_id: ses.session_id,
       subject_class_id: ses.subject_class_id,
       date,
@@ -664,11 +665,11 @@ export function registerTimetableRoutes(route) {
       fail(422, 'SCHEDULE_CONFLICT', conflicts.map((c) => c.message).join(' | '), { conflicts });
     }
 
-    const room = classroomId ? db.prepare('SELECT * FROM classrooms WHERE id = ?').get(classroomId) : null;
-    const instr = instructorId ? db.prepare('SELECT id, full_name FROM users WHERE id = ?').get(instructorId) : null;
+    const room = classroomId ? await db.prepare('SELECT * FROM classrooms WHERE id = ?').get(classroomId) : null;
+    const instr = instructorId ? await db.prepare('SELECT id, full_name FROM users WHERE id = ?').get(instructorId) : null;
     const nextState = ses.schedule_state === 'UNSCHEDULED' ? 'DRAFT' : ses.schedule_state || 'DRAFT';
 
-    db.prepare(
+    await db.prepare(
       `UPDATE sessions SET
          scheduled_start_at = ?,
          scheduled_end_at = ?,
@@ -694,7 +695,7 @@ export function registerTimetableRoutes(route) {
     );
 
     if (nextState === 'PUBLISHED') {
-      resolveRelativeAssignmentDueDates(db, ses.subject_class_id);
+      await resolveRelativeAssignmentDueDates(db, ses.subject_class_id);
     }
 
     return { session_id: ses.session_id, date, start_time: startTime, end_time: endTime, schedule_state: nextState, conflicts };
@@ -704,39 +705,39 @@ export function registerTimetableRoutes(route) {
   // 4. PHƯƠNG PHÁP 2: TẠO MẪU LẶP (TỰ BỎ QUA NGÀY NGHỈ LỄ & RẢI ĐỦ SỐ TIẾT)
   // =========================================================================
 
-  route('POST', '/timetable/generate-recurrence', ({ db, user, body }) => {
+  route('POST', '/timetable/generate-recurrence', async ({ db, user, body }) => {
     requireSchedulerAccess(user);
     const classId = text({ class_id: body.subject_class_id || body.class_id }, 'class_id', { required: true, max: 64, label: 'lớp môn học' });
-    const cls = db.prepare('SELECT * FROM subject_classes WHERE id = ?').get(classId);
+    const cls = await db.prepare('SELECT * FROM subject_classes WHERE id = ?').get(classId);
     if (!cls) fail(404, 'CLASS_NOT_FOUND', 'Không tìm thấy lớp môn học.');
 
     const startDate = dateField(body, 'start_date', { required: true, label: 'ngày bắt đầu' });
     const weekdays = Array.isArray(body.weekdays) ? body.weekdays.map(Number).filter((d) => d >= 0 && d <= 6) : [];
     if (!weekdays.length) fail(422, 'VALIDATION_ERROR', 'Vui lòng chọn ít nhất một thứ trong tuần.');
 
-    const shift = body.shift_code ? db.prepare('SELECT * FROM shift_presets WHERE code = ?').get(body.shift_code) : null;
+    const shift = body.shift_code ? await db.prepare('SELECT * FROM shift_presets WHERE code = ?').get(body.shift_code) : null;
     const startTime = shift ? shift.start_time : timeField(body, 'start_time', { required: true, label: 'giờ bắt đầu' });
     const endTime = shift ? shift.end_time : timeField(body, 'end_time', { required: true, label: 'giờ kết thúc' });
     const periodsPerSession = Number(body.periods_per_session || shift?.periods_count || 2);
     const campusId = body.campus_id || 'cp_cs1';
     const classroomId = body.classroom_id || null;
-    const room = classroomId ? db.prepare('SELECT * FROM classrooms WHERE id = ?').get(classroomId) : null;
+    const room = classroomId ? await db.prepare('SELECT * FROM classrooms WHERE id = ?').get(classroomId) : null;
 
-    const primaryStaff = db
+    const primaryStaff = await db
       .prepare("SELECT u.id, u.full_name FROM teaching_staff_assignments t JOIN users u ON u.id = t.user_id WHERE t.subject_class_id = ? AND t.staff_role = 'PRIMARY_INSTRUCTOR' AND t.is_active = 1 LIMIT 1")
       .get(cls.id);
     const instr = body.instructor_id
-      ? db.prepare('SELECT id, full_name FROM users WHERE id = ?').get(body.instructor_id)
+      ? await db.prepare('SELECT id, full_name FROM users WHERE id = ?').get(body.instructor_id)
       : primaryStaff;
 
     // Ưu tiên xếp các buổi UNSCHEDULED sẵn có; nếu chưa có thì sinh từ session_plan của môn học
-    const unscheduledRows = db
-      .prepare("SELECT * FROM sessions WHERE subject_class_id = ? AND schedule_state = 'UNSCHEDULED' AND session_status <> 'CANCELLED' ORDER BY rowid")
+    const unscheduledRows = await db
+      .prepare("SELECT * FROM sessions WHERE subject_class_id = ? AND schedule_state = 'UNSCHEDULED' AND session_status <> 'CANCELLED' ORDER BY scheduled_start_at ASC, session_id ASC")
       .all(cls.id);
 
     const plans = unscheduledRows.length > 0
       ? unscheduledRows.map((u) => ({ existing_session_id: u.session_id, title: u.session_title, periods_count: Number(u.planned_periods || periodsPerSession), lesson_ids: [] }))
-      : (cls.course_id ? getEffectiveSessionPlan(db, cls.course_id) : []);
+      : (cls.course_id ? await getEffectiveSessionPlan(db, cls.course_id) : []);
 
     const totalSessionsNeeded = plans.length > 0
       ? plans.length
@@ -747,7 +748,7 @@ export function registerTimetableRoutes(route) {
     const skippedHolidays = [];
     const skippedConflicts = [];
 
-    tx(db, () => {
+    await tx(db, async () => {
       let placed = 0;
       let safety = 0;
       while (placed < totalSessionsNeeded && safety < 365) {
@@ -758,14 +759,14 @@ export function registerTimetableRoutes(route) {
         if (!weekdays.includes(wd)) continue;
 
         const dStr = vnDate(dObj);
-        const hol = findHolidayOnDate(db, dStr, campusId);
+        const hol = await findHolidayOnDate(db, dStr, campusId);
         if (hol) {
           skippedHolidays.push({ date: dStr, title: hol.title });
           continue;
         }
 
         const plan = plans[placed] || null;
-        const conflicts = evaluateCandidateConstraints(db, {
+        const conflicts = await evaluateCandidateConstraints(db, {
           exclude_session_id: plan?.existing_session_id || null,
           subject_class_id: cls.id,
           date: dStr,
@@ -784,7 +785,7 @@ export function registerTimetableRoutes(route) {
         }
 
         if (plan?.existing_session_id) {
-          db.prepare(
+          await db.prepare(
             `UPDATE sessions SET
                scheduled_start_at = ?, scheduled_end_at = ?, campus_id = ?, classroom_id = ?,
                room_or_link = COALESCE(?, room_or_link), shift_code = ?, schedule_state = 'DRAFT',
@@ -810,7 +811,7 @@ export function registerTimetableRoutes(route) {
           createdOrScheduled.push(plan.existing_session_id);
         } else {
           const sesId = `ses_${crypto.randomBytes(5).toString('hex')}`;
-          insertClassSession(db, {
+          await insertClassSession(db, {
             session_id: sesId,
             subject_class_id: cls.id,
             subject_class_code: cls.code,
@@ -825,7 +826,7 @@ export function registerTimetableRoutes(route) {
             teaching_content: null,
             created_by: user.id,
           });
-          db.prepare(
+          await db.prepare(
             `UPDATE sessions SET campus_id = ?, classroom_id = ?, shift_code = ?, schedule_state = 'DRAFT',
                planned_periods = ?, actual_instructor_id = ?, actual_instructor_name = ?, merged_group_code = ?
              WHERE session_id = ?`
@@ -839,9 +840,9 @@ export function registerTimetableRoutes(route) {
             body.merged_group_code || null,
             sesId
           );
-          (plan?.lesson_ids || []).forEach((lid, idx) => {
-            db.prepare('INSERT OR IGNORE INTO session_lessons (session_id, lesson_id, sort_order) VALUES (?, ?, ?)').run(sesId, lid, (idx + 1) * 10);
-          });
+          for (const [idx, lid] of ((plan?.lesson_ids || [])).entries()) {
+            await db.prepare("INSERT INTO session_lessons (session_id, lesson_id, sort_order) VALUES (?, ?, ?) ON CONFLICT DO NOTHING").run(sesId, lid, (idx + 1) * 10);
+          }
           createdOrScheduled.push(sesId);
         }
         placed++;
@@ -853,7 +854,7 @@ export function registerTimetableRoutes(route) {
       session_ids: createdOrScheduled,
       skipped_holidays: skippedHolidays,
       skipped_conflicts: skippedConflicts,
-      audit: buildTimetableAuditReport(db, [cls.id]),
+      audit: await buildTimetableAuditReport(db, [cls.id]),
     }];
   });
 
@@ -861,7 +862,7 @@ export function registerTimetableRoutes(route) {
   // 5. PHƯƠNG PHÁP 3: XẾP TỰ ĐỘNG SINH BẢN NHÁP (MOST-CONSTRAINED-FIRST)
   // =========================================================================
 
-  route('POST', '/timetable/auto-schedule', ({ db, user, body }) => {
+  route('POST', '/timetable/auto-schedule', async ({ db, user, body }) => {
     requireSchedulerAccess(user);
     const startDate = dateField({ start_date: body.start_date || body.from_date }, 'start_date', { required: true, label: 'từ ngày' });
     const endDate = dateField({ end_date: body.end_date || body.to_date }, 'end_date', { required: true, label: 'đến ngày' });
@@ -869,17 +870,16 @@ export function registerTimetableRoutes(route) {
 
     let classIds = Array.isArray(body.class_ids) ? body.class_ids.filter(Boolean) : [];
     if (!classIds.length && body.cohort_id) {
-      classIds = db.prepare("SELECT id FROM subject_classes WHERE cohort_id = ? AND status = 'ACTIVE'").all(body.cohort_id).map((r) => r.id);
+      classIds = (await db.prepare("SELECT id FROM subject_classes WHERE cohort_id = ? AND status = 'ACTIVE'").all(body.cohort_id)).map((r) => r.id);
     }
     if (!classIds.length) fail(422, 'VALIDATION_ERROR', 'Vui lòng chọn ít nhất một lớp học hoặc khóa học để xếp tự động.');
 
     const campusId = body.campus_id || 'cp_cs1';
-    const shifts = db.prepare('SELECT * FROM shift_presets ORDER BY sort_order, start_time').all();
-    const rooms = db.prepare('SELECT * FROM classrooms WHERE campus_id = ? AND is_active = 1 ORDER BY capacity ASC').all(campusId);
+    const shifts = await db.prepare('SELECT * FROM shift_presets ORDER BY sort_order, start_time').all();
+    const rooms = await db.prepare('SELECT * FROM classrooms WHERE campus_id = ? AND is_active = 1 ORDER BY capacity ASC').all(campusId);
 
     // Ưu tiên lớp yêu cầu phòng máy & sĩ số đông trước (Most-Constrained-First)
-    const classes = classIds
-      .map((id) => db.prepare('SELECT * FROM subject_classes WHERE id = ?').get(id))
+    const classes = (await mapAsync(classIds, async (id) => await db.prepare('SELECT * FROM subject_classes WHERE id = ?').get(id)))
       .filter(Boolean)
       .sort((a, b) => {
         const scoreA = (a.required_room_type === 'COMPUTER_LAB' ? 1000 : 0) + Number(a.student_count || a.max_students || 0);
@@ -890,22 +890,22 @@ export function registerTimetableRoutes(route) {
     const placedSessions = [];
     const unplacedItems = [];
 
-    tx(db, () => {
+    await tx(db, async () => {
       for (const cls of classes) {
-        const primaryStaff = db
+        const primaryStaff = await db
           .prepare("SELECT u.id, u.full_name FROM teaching_staff_assignments t JOIN users u ON u.id = t.user_id WHERE t.subject_class_id = ? AND t.staff_role = 'PRIMARY_INSTRUCTOR' AND t.is_active = 1 LIMIT 1")
           .get(cls.id);
 
-        const unsched = db
-          .prepare("SELECT * FROM sessions WHERE subject_class_id = ? AND schedule_state = 'UNSCHEDULED' AND session_status <> 'CANCELLED' ORDER BY rowid")
+        const unsched = await db
+          .prepare("SELECT * FROM sessions WHERE subject_class_id = ? AND schedule_state = 'UNSCHEDULED' AND session_status <> 'CANCELLED' ORDER BY scheduled_start_at ASC, session_id ASC")
           .all(cls.id);
 
         const tasks = unsched.length > 0
           ? unsched.map((s) => ({ existing_id: s.session_id, title: s.session_title, periods: Number(s.planned_periods || 2), lesson_ids: [] }))
-          : (() => {
-              const existingCount = db.prepare("SELECT COUNT(*) n FROM sessions WHERE subject_class_id = ? AND session_status <> 'CANCELLED'").get(cls.id).n;
+          : await (async () => {
+              const existingCount = (await db.prepare("SELECT COUNT(*) n FROM sessions WHERE subject_class_id = ? AND session_status <> 'CANCELLED'").get(cls.id)).n;
               if (existingCount > 0) return [];
-              const plans = cls.course_id ? getEffectiveSessionPlan(db, cls.course_id) : [];
+              const plans = cls.course_id ? await getEffectiveSessionPlan(db, cls.course_id) : [];
               return plans.map((p) => ({ existing_id: null, title: p.title, periods: Number(p.periods_count || 2), lesson_ids: p.lesson_ids || [] }));
             })();
 
@@ -919,10 +919,10 @@ export function registerTimetableRoutes(route) {
             const wd = dObj.getUTCDay();
             if (wd === 0) continue; // Mặc định tránh Chủ nhật khi xếp tự động
             const dStr = vnDate(dObj);
-            if (findHolidayOnDate(db, dStr, campusId)) continue;
+            if (await findHolidayOnDate(db, dStr, campusId)) continue;
 
             // Tối đa 1 buổi/ngày cho cùng 1 lớp môn để phân bổ đều trong tuần
-            const hasSameClassDay = db
+            const hasSameClassDay = await db
               .prepare("SELECT 1 FROM sessions WHERE subject_class_id = ? AND substr(scheduled_start_at, 1, 10) = ? AND session_status <> 'CANCELLED' AND schedule_state <> 'UNSCHEDULED'")
               .get(cls.id, dStr);
             if (hasSameClassDay) continue;
@@ -931,7 +931,7 @@ export function registerTimetableRoutes(route) {
               const candidateRooms = rooms.filter((r) => r.room_type === (cls.required_room_type || 'THEORY_ROOM'));
               const roomPool = candidateRooms.length ? candidateRooms : rooms;
               for (const rm of roomPool) {
-                const conflicts = evaluateCandidateConstraints(db, {
+                const conflicts = await evaluateCandidateConstraints(db, {
                   exclude_session_id: task.existing_id,
                   subject_class_id: cls.id,
                   date: dStr,
@@ -944,7 +944,7 @@ export function registerTimetableRoutes(route) {
                 });
                 if (conflicts.length === 0) {
                   if (task.existing_id) {
-                    db.prepare(
+                    await db.prepare(
                       `UPDATE sessions SET scheduled_start_at = ?, scheduled_end_at = ?, campus_id = ?, classroom_id = ?,
                          room_or_link = ?, shift_code = ?, schedule_state = 'DRAFT',
                          scheduled_instructor_id = COALESCE(?, scheduled_instructor_id),
@@ -968,7 +968,7 @@ export function registerTimetableRoutes(route) {
                     placedSessions.push({ session_id: task.existing_id, class_code: cls.code, date: dStr, shift: sh.code, room: rm.code });
                   } else {
                     const sesId = `ses_${crypto.randomBytes(5).toString('hex')}`;
-                    insertClassSession(db, {
+                    await insertClassSession(db, {
                       session_id: sesId,
                       subject_class_id: cls.id,
                       subject_class_code: cls.code,
@@ -983,14 +983,14 @@ export function registerTimetableRoutes(route) {
                       teaching_content: null,
                       created_by: user.id,
                     });
-                    db.prepare(
+                    await db.prepare(
                       `UPDATE sessions SET campus_id = ?, classroom_id = ?, shift_code = ?, schedule_state = 'DRAFT',
                          planned_periods = ?, actual_instructor_id = ?, actual_instructor_name = ?
                        WHERE session_id = ?`
                     ).run(campusId, rm.id, sh.code, task.periods, primaryStaff?.id || null, primaryStaff?.full_name || '', sesId);
-                    task.lesson_ids.forEach((lid, idx) => {
-                      db.prepare('INSERT OR IGNORE INTO session_lessons (session_id, lesson_id, sort_order) VALUES (?, ?, ?)').run(sesId, lid, (idx + 1) * 10);
-                    });
+                    for (const [idx, lid] of (task.lesson_ids).entries()) {
+                      await db.prepare("INSERT INTO session_lessons (session_id, lesson_id, sort_order) VALUES (?, ?, ?) ON CONFLICT DO NOTHING").run(sesId, lid, (idx + 1) * 10);
+                    }
                     placedSessions.push({ session_id: sesId, class_code: cls.code, date: dStr, shift: sh.code, room: rm.code });
                   }
                   cursorMs = t + 86400000;
@@ -1012,7 +1012,7 @@ export function registerTimetableRoutes(route) {
       draft_placed_count: placedSessions.length,
       placed_sessions: placedSessions,
       unplaced_items: unplacedItems,
-      audit: buildTimetableAuditReport(db, classes.map((c) => c.id)),
+      audit: await buildTimetableAuditReport(db, classes.map((c) => c.id)),
     };
   });
 
@@ -1020,19 +1020,19 @@ export function registerTimetableRoutes(route) {
   // 6. PHƯƠNG PHÁP 4: SAO CHÉP LỊCH TUẦN / SAO CHÉP TỪ LỚP KHÁC
   // =========================================================================
 
-  route('POST', '/timetable/copy', ({ db, user, body }) => {
+  route('POST', '/timetable/copy', async ({ db, user, body }) => {
     requireSchedulerAccess(user);
     const mode = oneOf(body, 'mode', ['COPY_WEEK', 'COPY_FROM_CLASS'], { required: true, label: 'chế độ sao chép' });
 
     if (mode === 'COPY_WEEK') {
       const classId = text({ class_id: body.subject_class_id || body.class_id }, 'class_id', { required: true, max: 64, label: 'lớp môn học' });
-      const cls = db.prepare('SELECT * FROM subject_classes WHERE id = ?').get(classId);
+      const cls = await db.prepare('SELECT * FROM subject_classes WHERE id = ?').get(classId);
       if (!cls) fail(404, 'CLASS_NOT_FOUND', 'Không tìm thấy lớp học.');
       const sourceWeekStart = dateField(body, 'source_week_start', { required: true, label: 'tuần nguồn' });
       const weeksForward = intField(body, 'weeks_count', { min: 1, max: 16, label: 'số tuần sao chép' }) || 1;
       const srcEnd = vnDate(new Date(Date.parse(`${sourceWeekStart}T12:00:00+07:00`) + 6 * 86400000));
 
-      const srcSessions = db
+      const srcSessions = await db
         .prepare(
           `SELECT * FROM sessions
            WHERE subject_class_id = ? AND session_status <> 'CANCELLED'
@@ -1044,13 +1044,13 @@ export function registerTimetableRoutes(route) {
 
       const copied = [];
       const skipped = [];
-      tx(db, () => {
+      await tx(db, async () => {
         for (let w = 1; w <= weeksForward; w++) {
           for (const s of srcSessions) {
             const targetDate = vnDate(new Date(Date.parse(`${extractDate(s.scheduled_start_at)}T12:00:00+07:00`) + w * 7 * 86400000));
             const sTime = extractTime(s.scheduled_start_at);
             const eTime = extractTime(s.scheduled_end_at);
-            const conflicts = evaluateCandidateConstraints(db, {
+            const conflicts = await evaluateCandidateConstraints(db, {
               subject_class_id: cls.id,
               date: targetDate,
               start_time: sTime,
@@ -1065,7 +1065,7 @@ export function registerTimetableRoutes(route) {
               continue;
             }
             const newId = `ses_${crypto.randomBytes(5).toString('hex')}`;
-            insertClassSession(db, {
+            await insertClassSession(db, {
               session_id: newId,
               subject_class_id: cls.id,
               subject_class_code: cls.code,
@@ -1080,7 +1080,7 @@ export function registerTimetableRoutes(route) {
               teaching_content: s.teaching_content || null,
               created_by: user.id,
             });
-            db.prepare(
+            await db.prepare(
               `UPDATE sessions SET campus_id = ?, classroom_id = ?, shift_code = ?, schedule_state = 'DRAFT',
                  planned_periods = ?, actual_instructor_id = ?, actual_instructor_name = ?
                WHERE session_id = ?`
@@ -1096,10 +1096,10 @@ export function registerTimetableRoutes(route) {
     const sourceClassId = text(body, 'source_class_id', { required: true, max: 64, label: 'lớp nguồn' });
     const targetClassId = text(body, 'target_class_id', { required: true, max: 64, label: 'lớp đích' });
     const targetStartDate = dateField(body, 'target_start_date', { required: true, label: 'ngày bắt đầu lớp đích' });
-    const dstCls = db.prepare('SELECT * FROM subject_classes WHERE id = ?').get(targetClassId);
+    const dstCls = await db.prepare('SELECT * FROM subject_classes WHERE id = ?').get(targetClassId);
     if (!dstCls) fail(404, 'CLASS_NOT_FOUND', 'Không tìm thấy lớp đích.');
 
-    const srcSessions = db
+    const srcSessions = await db
       .prepare("SELECT * FROM sessions WHERE subject_class_id = ? AND session_status <> 'CANCELLED' ORDER BY scheduled_start_at")
       .all(sourceClassId);
     if (!srcSessions.length) fail(422, 'SOURCE_CLASS_EMPTY', 'Lớp nguồn chưa có thời khóa biểu.');
@@ -1107,18 +1107,18 @@ export function registerTimetableRoutes(route) {
     const baseDateMs = Date.parse(`${extractDate(srcSessions[0].scheduled_start_at)}T12:00:00+07:00`);
     const dstStartMs = Date.parse(`${targetStartDate}T12:00:00+07:00`);
     const offsetDays = Math.round((dstStartMs - baseDateMs) / 86400000);
-    const primaryStaff = db
+    const primaryStaff = await db
       .prepare("SELECT u.id, u.full_name FROM teaching_staff_assignments t JOIN users u ON u.id = t.user_id WHERE t.subject_class_id = ? AND t.staff_role = 'PRIMARY_INSTRUCTOR' AND t.is_active = 1 LIMIT 1")
       .get(dstCls.id);
 
     const copied = [];
     const skipped = [];
-    tx(db, () => {
-      srcSessions.forEach((s, idx) => {
+    await tx(db, async () => {
+      for (const [idx, s] of (srcSessions).entries()) {
         const dStr = vnDate(new Date(Date.parse(`${extractDate(s.scheduled_start_at)}T12:00:00+07:00`) + offsetDays * 86400000));
         const sTime = extractTime(s.scheduled_start_at);
         const eTime = extractTime(s.scheduled_end_at);
-        const conflicts = evaluateCandidateConstraints(db, {
+        const conflicts = await evaluateCandidateConstraints(db, {
           subject_class_id: dstCls.id,
           date: dStr,
           start_time: sTime,
@@ -1130,10 +1130,10 @@ export function registerTimetableRoutes(route) {
         });
         if (conflicts.length > 0) {
           skipped.push({ date: dStr, conflicts });
-          return;
+          continue;
         }
         const newId = `ses_${crypto.randomBytes(5).toString('hex')}`;
-        insertClassSession(db, {
+        await insertClassSession(db, {
           session_id: newId,
           subject_class_id: dstCls.id,
           subject_class_code: dstCls.code,
@@ -1148,13 +1148,13 @@ export function registerTimetableRoutes(route) {
           teaching_content: s.teaching_content,
           created_by: user.id,
         });
-        db.prepare(
+        await db.prepare(
           `UPDATE sessions SET campus_id = ?, classroom_id = ?, shift_code = ?, schedule_state = 'DRAFT',
              planned_periods = ?, actual_instructor_id = ?, actual_instructor_name = ?
            WHERE session_id = ?`
         ).run(s.campus_id, body.classroom_id || s.classroom_id, s.shift_code, s.planned_periods || 2, primaryStaff?.id || null, primaryStaff?.full_name || '', newId);
         copied.push(newId);
-      });
+      }
     });
 
     return { copied_count: copied.length, skipped };
@@ -1164,26 +1164,26 @@ export function registerTimetableRoutes(route) {
   // 7. KIỂM TRA XUNG ĐỘT & ĐỦ GIỜ, CÔNG BỐ TKB & ĐIỀU CHỈNH TRONG QUÁ TRÌNH HỌC
   // =========================================================================
 
-  route('GET', '/timetable/audit', ({ db, user, url }) => {
+  route('GET', '/timetable/audit', async ({ db, user, url }) => {
     requireSchedulerAccess(user);
     const cohortId = url.searchParams.get('cohort_id');
     const classId = url.searchParams.get('class_id');
     let classIds = [];
     if (classId) classIds = [classId];
-    else if (cohortId) classIds = db.prepare("SELECT id FROM subject_classes WHERE cohort_id = ? AND status = 'ACTIVE'").all(cohortId).map((r) => r.id);
-    else classIds = db.prepare("SELECT id FROM subject_classes WHERE status = 'ACTIVE' ORDER BY updated_at DESC LIMIT 30").all().map((r) => r.id);
-    return buildTimetableAuditReport(db, classIds);
+    else if (cohortId) classIds = (await db.prepare("SELECT id FROM subject_classes WHERE cohort_id = ? AND status = 'ACTIVE'").all(cohortId)).map((r) => r.id);
+    else classIds = (await db.prepare("SELECT id FROM subject_classes WHERE status = 'ACTIVE' ORDER BY updated_at DESC LIMIT 30").all()).map((r) => r.id);
+    return await buildTimetableAuditReport(db, classIds);
   });
 
-  route('POST', '/timetable/publish', ({ db, user, body }) => {
+  route('POST', '/timetable/publish', async ({ db, user, body }) => {
     requireSchedulerAccess(user);
     let classIds = Array.isArray(body.class_ids) ? body.class_ids.filter(Boolean) : [];
     if (!classIds.length && body.cohort_id) {
-      classIds = db.prepare("SELECT id FROM subject_classes WHERE cohort_id = ? AND status = 'ACTIVE'").all(body.cohort_id).map((r) => r.id);
+      classIds = (await db.prepare("SELECT id FROM subject_classes WHERE cohort_id = ? AND status = 'ACTIVE'").all(body.cohort_id)).map((r) => r.id);
     }
     if (!classIds.length) fail(422, 'VALIDATION_ERROR', 'Vui lòng chọn lớp học hoặc khóa học cần công bố lịch.');
 
-    const audit = buildTimetableAuditReport(db, classIds);
+    const audit = await buildTimetableAuditReport(db, classIds);
     if (audit.total_conflicts > 0 && !body.allow_with_warnings) {
       fail(422, 'TIMETABLE_HAS_CONFLICTS', `Còn ${audit.total_conflicts} xung đột thời khóa biểu cần xử lý trước khi công bố.`, { audit });
     }
@@ -1193,27 +1193,27 @@ export function registerTimetableRoutes(route) {
     let resolvedAssignments = 0;
     let notificationsSent = 0;
 
-    tx(db, () => {
+    await tx(db, async () => {
       for (const cid of classIds) {
-        const cls = db.prepare('SELECT * FROM subject_classes WHERE id = ?').get(cid);
+        const cls = await db.prepare('SELECT * FROM subject_classes WHERE id = ?').get(cid);
         if (!cls) continue;
-        const r = db.prepare(
+        const r = await db.prepare(
           "UPDATE sessions SET schedule_state = 'PUBLISHED' WHERE subject_class_id = ? AND schedule_state = 'DRAFT' AND session_status <> 'CANCELLED'"
         ).run(cid);
         publishedSessions += Number(r.changes || 0);
 
         // Quy hạn nộp tương đối của bài tập ra ngày cụ thể khi thời khóa biểu được công bố (1.3.1.5)
-        resolvedAssignments += resolveRelativeAssignmentDueDates(db, cid);
+        resolvedAssignments += await resolveRelativeAssignmentDueDates(db, cid);
 
         // Gửi thông báo cho giảng viên và học viên của lớp (2.1.1.4)
         const recipients = new Set();
-        db.prepare('SELECT user_id FROM teaching_staff_assignments WHERE subject_class_id = ? AND is_active = 1')
-          .all(cid).forEach((x) => recipients.add(x.user_id));
-        db.prepare("SELECT student_id FROM class_enrollments WHERE subject_class_id = ? AND status = 'ACTIVE'")
-          .all(cid).forEach((x) => recipients.add(x.student_id));
+        (await db.prepare('SELECT user_id FROM teaching_staff_assignments WHERE subject_class_id = ? AND is_active = 1')
+          .all(cid)).forEach((x) => recipients.add(x.user_id));
+        (await db.prepare("SELECT student_id FROM class_enrollments WHERE subject_class_id = ? AND status = 'ACTIVE'")
+          .all(cid)).forEach((x) => recipients.add(x.student_id));
 
         for (const uid of recipients) {
-          db.prepare(
+          await db.prepare(
             `INSERT INTO teaching_notifications (id, user_id, notification_type, title, body, link_url, is_read, created_at)
              VALUES (?, ?, 'TIMETABLE_PUBLISHED', ?, ?, ?, 0, ?)`
           ).run(
@@ -1238,9 +1238,9 @@ export function registerTimetableRoutes(route) {
   });
 
   // 2.1.1.5 Điều chỉnh trong quá trình học: Dời buổi, Báo nghỉ, Dạy bù, Đổi GV dạy thay / Đổi phòng
-  route('POST', '/timetable/sessions/:id/adjust', ({ db, user, body, params }) => {
+  route('POST', '/timetable/sessions/:id/adjust', async ({ db, user, body, params }) => {
     requireSchedulerAccess(user);
-    const ses = db.prepare('SELECT * FROM sessions WHERE session_id = ?').get(params.id);
+    const ses = await db.prepare('SELECT * FROM sessions WHERE session_id = ?').get(params.id);
     if (!ses) fail(404, 'SESSION_NOT_FOUND', 'Không tìm thấy buổi học.');
     if (ses.timesheet_locked_id) {
       fail(409, 'SESSION_TIMESHEET_LOCKED', 'Buổi học đã chốt công chuyển Tài chính, không thể chỉnh sửa.');
@@ -1259,7 +1259,7 @@ export function registerTimetableRoutes(route) {
       const nextInstrId = body.substitute_instructor_id || ses.actual_instructor_id || ses.scheduled_instructor_id;
       const isSub = Boolean(body.substitute_instructor_id && body.substitute_instructor_id !== ses.scheduled_instructor_id);
 
-      const conflicts = evaluateCandidateConstraints(db, {
+      const conflicts = await evaluateCandidateConstraints(db, {
         exclude_session_id: ses.session_id,
         subject_class_id: ses.subject_class_id,
         scheduled_start_at: ses.scheduled_start_at,
@@ -1274,10 +1274,10 @@ export function registerTimetableRoutes(route) {
         fail(422, 'SCHEDULE_CONFLICT', conflicts.map((c) => c.message).join(' | '), { conflicts });
       }
 
-      const rm = nextRoomId ? db.prepare('SELECT * FROM classrooms WHERE id = ?').get(nextRoomId) : null;
-      const gv = nextInstrId ? db.prepare('SELECT id, full_name FROM users WHERE id = ?').get(nextInstrId) : null;
+      const rm = nextRoomId ? await db.prepare('SELECT * FROM classrooms WHERE id = ?').get(nextRoomId) : null;
+      const gv = nextInstrId ? await db.prepare('SELECT id, full_name FROM users WHERE id = ?').get(nextInstrId) : null;
 
-      db.prepare(
+      await db.prepare(
         `UPDATE sessions SET
            campus_id = ?,
            classroom_id = ?,
@@ -1299,7 +1299,7 @@ export function registerTimetableRoutes(route) {
       const nextRoomId = body.classroom_id || ses.classroom_id;
       const nextCampusId = body.campus_id || ses.campus_id || 'cp_cs1';
 
-      const conflicts = evaluateCandidateConstraints(db, {
+      const conflicts = await evaluateCandidateConstraints(db, {
         exclude_session_id: ses.session_id,
         subject_class_id: ses.subject_class_id,
         date: newDate,
@@ -1315,19 +1315,19 @@ export function registerTimetableRoutes(route) {
         fail(422, 'SCHEDULE_CONFLICT', conflicts.map((c) => c.message).join(' | '), { conflicts });
       }
 
-      const rm = nextRoomId ? db.prepare('SELECT * FROM classrooms WHERE id = ?').get(nextRoomId) : null;
-      db.prepare(
+      const rm = nextRoomId ? await db.prepare('SELECT * FROM classrooms WHERE id = ?').get(nextRoomId) : null;
+      await db.prepare(
         `UPDATE sessions SET scheduled_start_at = ?, scheduled_end_at = ?, campus_id = ?, classroom_id = ?, room_or_link = COALESCE(?, room_or_link)
          WHERE session_id = ?`
       ).run(vnDateTime(newDate, newStart), vnDateTime(newDate, newEnd), nextCampusId, nextRoomId, rm?.name || null, ses.session_id);
-      resolveRelativeAssignmentDueDates(db, ses.subject_class_id);
+      await resolveRelativeAssignmentDueDates(db, ses.subject_class_id);
       return { updated_session_id: ses.session_id, new_date: newDate };
     }
 
     // CANCEL_AND_MAKEUP: Đánh dấu buổi hiện tại nghỉ (CANCELLED) và tùy chọn tạo ngay buổi dạy bù (MAKEUP)
     let makeupId = null;
-    tx(db, () => {
-      db.prepare("UPDATE sessions SET session_status = 'CANCELLED', cancel_reason = ? WHERE session_id = ?")
+    await tx(db, async () => {
+      await db.prepare("UPDATE sessions SET session_status = 'CANCELLED', cancel_reason = ? WHERE session_id = ?")
         .run(reason, ses.session_id);
 
       if (body.makeup_date) {
@@ -1338,7 +1338,7 @@ export function registerTimetableRoutes(route) {
         const mRoomId = body.classroom_id || ses.classroom_id;
         const mInstrId = body.substitute_instructor_id || ses.actual_instructor_id || ses.scheduled_instructor_id;
 
-        const conflicts = evaluateCandidateConstraints(db, {
+        const conflicts = await evaluateCandidateConstraints(db, {
           subject_class_id: ses.subject_class_id,
           date: mDate,
           start_time: mStart,
@@ -1353,11 +1353,11 @@ export function registerTimetableRoutes(route) {
           fail(422, 'MAKEUP_SCHEDULE_CONFLICT', conflicts.map((c) => c.message).join(' | '), { conflicts });
         }
 
-        const rm = mRoomId ? db.prepare('SELECT * FROM classrooms WHERE id = ?').get(mRoomId) : null;
-        const gv = mInstrId ? db.prepare('SELECT id, full_name FROM users WHERE id = ?').get(mInstrId) : null;
+        const rm = mRoomId ? await db.prepare('SELECT * FROM classrooms WHERE id = ?').get(mRoomId) : null;
+        const gv = mInstrId ? await db.prepare('SELECT id, full_name FROM users WHERE id = ?').get(mInstrId) : null;
         makeupId = `ses_${crypto.randomBytes(5).toString('hex')}`;
 
-        insertClassSession(db, {
+        await insertClassSession(db, {
           session_id: makeupId,
           subject_class_id: ses.subject_class_id,
           subject_class_code: ses.subject_class_code,
@@ -1373,7 +1373,7 @@ export function registerTimetableRoutes(route) {
           created_by: user.id,
         });
 
-        db.prepare(
+        await db.prepare(
           `UPDATE sessions SET
              campus_id = ?, classroom_id = ?, schedule_state = ?, planned_periods = ?,
              session_kind = 'MAKEUP', rescheduled_from_session_id = ?,
@@ -1393,11 +1393,11 @@ export function registerTimetableRoutes(route) {
           makeupId
         );
 
-        const linkedLessons = db.prepare('SELECT * FROM session_lessons WHERE session_id = ?').all(ses.session_id);
+        const linkedLessons = await db.prepare('SELECT * FROM session_lessons WHERE session_id = ?').all(ses.session_id);
         for (const ll of linkedLessons) {
-          db.prepare('INSERT OR IGNORE INTO session_lessons (session_id, lesson_id, sort_order) VALUES (?, ?, ?)').run(makeupId, ll.lesson_id, ll.sort_order);
+          await db.prepare("INSERT INTO session_lessons (session_id, lesson_id, sort_order) VALUES (?, ?, ?) ON CONFLICT DO NOTHING").run(makeupId, ll.lesson_id, ll.sort_order);
         }
-        resolveRelativeAssignmentDueDates(db, ses.subject_class_id);
+        await resolveRelativeAssignmentDueDates(db, ses.subject_class_id);
       }
     });
 

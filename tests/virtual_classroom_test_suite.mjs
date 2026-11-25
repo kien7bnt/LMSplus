@@ -21,7 +21,7 @@ const { initSchemaAndSeed, invokeApi, invokeApiAsync, db } = await import('../ba
 const { getVirtualProviderAdapter, EXTERNAL_NO_SYNC_NOTICE } = await import('../backend/teaching/virtualProviders.mjs');
 const { mergeTimeIntervals } = await import('../backend/teaching/virtualClassroom.mjs');
 
-initSchemaAndSeed(true);
+await initSchemaAndSeed(true);
 
 let passed = 0;
 let failed = 0;
@@ -37,33 +37,33 @@ async function t(group, name, fn) {
   }
 }
 
-const login = (identifier) => {
-  const r = invokeApi('POST', '/api/v1/elearning/auth/login', {}, { identifier, password: '123456' });
+const login = async (identifier) => {
+  const r = await invokeApi('POST', '/api/v1/elearning/auth/login', {}, { identifier, password: '123456' });
   assert.equal(r.status, 200, `login ${identifier}`);
   return { authorization: `Bearer ${r.body.data.access_token}` };
 };
 
 const T = '/api/v1/teaching';
-const apiAsync = (method, url, headers, body) => invokeApiAsync(method, `${T}${url}`, headers, body);
+const apiAsync = async (method, url, headers, body) => await invokeApiAsync(method, `${T}${url}`, headers, body);
 const expectStatus = (r, status, code) => {
   assert.equal(r.status, status, `expected ${status}, got ${r.status}: ${JSON.stringify(r.body).slice(0, 400)}`);
   if (code) assert.equal(r.body.detail?.code, code);
   return r.body.data;
 };
 
-const GV = login('thuha.gv@lmsplus.edu.vn'); // Giảng viên lớp 5A1
-const GV2 = login('vankhoa.gv@lmsplus.edu.vn'); // Giảng viên lớp 5A2
-const ADMIN = login('admin@lmsplus.edu.vn');
-const HS1 = login('HS50101'); // Học sinh thuộc lớp 5A1 (Nguyễn Minh Anh)
-const HS2 = login('HS50102'); // Học sinh thuộc lớp 5A1
-const HS3 = login('HS50103'); // Học sinh thuộc lớp 5A1
-const HS4 = login('HS50104'); // Học sinh thuộc lớp 5A1
-const HS_OTHER_CLASS = login('HS50201'); // Học sinh lớp 5A2 (không thuộc lớp 5A1)
+const GV = await login('thuha.gv@lmsplus.edu.vn'); // Giảng viên lớp 5A1
+const GV2 = await login('vankhoa.gv@lmsplus.edu.vn'); // Giảng viên lớp 5A2
+const ADMIN = await login('admin@lmsplus.edu.vn');
+const HS1 = await login('HS50101'); // Học sinh thuộc lớp 5A1 (Nguyễn Minh Anh)
+const HS2 = await login('HS50102'); // Học sinh thuộc lớp 5A1
+const HS3 = await login('HS50103'); // Học sinh thuộc lớp 5A1
+const HS4 = await login('HS50104'); // Học sinh thuộc lớp 5A1
+const HS_OTHER_CLASS = await login('HS50201'); // Học sinh lớp 5A2 (không thuộc lớp 5A1)
 
-const hs1Row = db.prepare("SELECT * FROM users WHERE code = 'HS50101'").get();
-const hs2Row = db.prepare("SELECT * FROM users WHERE code = 'HS50102'").get();
-const hs3Row = db.prepare("SELECT * FROM users WHERE code = 'HS50103'").get();
-const hs4Row = db.prepare("SELECT * FROM users WHERE code = 'HS50104'").get();
+const hs1Row = await db.prepare("SELECT * FROM users WHERE code = 'HS50101'").get();
+const hs2Row = await db.prepare("SELECT * FROM users WHERE code = 'HS50102'").get();
+const hs3Row = await db.prepare("SELECT * FROM users WHERE code = 'HS50103'").get();
+const hs4Row = await db.prepare("SELECT * FROM users WHERE code = 'HS50104'").get();
 
 console.log('======================================================================');
 console.log(' LMSPLUS — VIRTUAL CLASSROOM & AUTO-ATTENDANCE TEST SUITE (15 CASES)');
@@ -184,8 +184,8 @@ await t('CASE-05', 'Học viên lớp khác hoặc giảng viên không phụ tr
 const zoomAdapter = getVirtualProviderAdapter(db, 'ZOOM');
 async function sendSignedZoomWebhook(payloadObj) {
   const rawBody = JSON.stringify(payloadObj);
-  const signedHeaders = zoomAdapter.signWebhookPayload(rawBody);
-  return invokeApiAsync('POST', `${T}/webhooks/zoom`, signedHeaders, payloadObj);
+  const signedHeaders = await zoomAdapter.signWebhookPayload(rawBody);
+  return await invokeApiAsync('POST', `${T}/webhooks/zoom`, signedHeaders, payloadObj);
 }
 
 // ---------------------------------------------------------------- Case 6: Nhận webhook meeting.started & xác thực chữ ký HMAC-SHA256

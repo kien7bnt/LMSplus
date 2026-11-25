@@ -6,7 +6,7 @@
   "outputDirectory": "frontend/dist",
   "functions": {
     "api/index.mjs": {
-      "includeFiles": "{backend/**,shared/**,database/lmsplus_elearning_seed.json}"
+      "includeFiles": "{backend/**,shared/**,database/lmsplus_elearning_seed.json,database/migrations/010_postgres18_live_schema.sql}"
     }
   },
   "rewrites": [

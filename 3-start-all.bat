@@ -53,7 +53,7 @@ if exist "%BASE_DIR%2-migrate-db.bat" call "%BASE_DIR%2-migrate-db.bat" >nul 2>&
 REM =====================================================
 REM  3. KHOI DONG BACKEND
 REM =====================================================
-echo [3/5] Khoi dong Backend (SQLite + JWT API)...
+echo [3/5] Khoi dong Backend (PostgreSQL 18 / SQLite Fallback + JWT API)...
 echo ================= BACKEND START %DATE% %TIME% ================= >> "%LOG_DIR%\backend.log"
 start "LMSPLUS Backend (Port 8000)" /D "%BASE_DIR%" cmd /k "chcp 65001 >nul && title LMSPLUS Backend (Port 8000) && node backend\server_fallback.mjs"
 

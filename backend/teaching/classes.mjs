@@ -11,6 +11,7 @@ import {
 import {
   fail, pageParams, nowIso, nowVn, text, intField, oneOf, dateField, timeField, tx, publicUser,
   compareVietnameseName,
+  mapAsync,
 } from './http.mjs';
 import { getClassContentVersionKey } from './masterSchema.mjs';
 import { syncCohortRosterToClasses } from './curriculaAndCohorts.mjs';
@@ -26,42 +27,42 @@ import {
 
 const CLASS_CODE_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$/;
 
-export function getClass(db, id) {
-  return db.prepare('SELECT * FROM subject_classes WHERE id = ?').get(id) || null;
+export async function getClass(db, id) {
+  return await db.prepare('SELECT * FROM subject_classes WHERE id = ?').get(id) || null;
 }
 
-export function requireClassAccess(db, user, id, capability = 'can_view') {
-  const cls = getClass(db, id);
+export async function requireClassAccess(db, user, id, capability = 'can_view') {
+  const cls = await getClass(db, id);
   if (!cls) fail(404, 'CLASS_NOT_FOUND', 'Không tìm thấy lớp học.');
-  const caps = classCapabilities(db, user, cls);
+  const caps = await classCapabilities(db, user, cls);
   if (!caps.can_view) fail(403, 'CLASS_ACCESS_DENIED', 'Bạn không có quyền truy cập lớp học này.');
   if (!caps[capability]) fail(403, 'CLASS_ACTION_FORBIDDEN', 'Bạn không có quyền thực hiện thao tác này trong lớp.');
   return { cls, caps };
 }
 
-export function requireSession(db, user, sessionId, capability = 'can_view') {
-  const session = db.prepare('SELECT * FROM sessions WHERE session_id = ?').get(sessionId);
+export async function requireSession(db, user, sessionId, capability = 'can_view') {
+  const session = await db.prepare('SELECT * FROM sessions WHERE session_id = ?').get(sessionId);
   if (!session) fail(404, 'SESSION_NOT_FOUND', 'Không tìm thấy buổi học.');
-  const { cls, caps } = requireClassAccess(db, user, session.subject_class_id, capability);
+  const { cls, caps } = await requireClassAccess(db, user, session.subject_class_id, capability);
   return { session, cls, caps };
 }
 
-function classStaff(db, classId) {
-  return db
+async function classStaff(db, classId) {
+  return (await db
     .prepare(
       `SELECT t.id AS assignment_id, t.staff_role, t.permissions_json, u.id, u.code, u.full_name, u.email
        FROM teaching_staff_assignments t JOIN users u ON u.id = t.user_id
        WHERE t.subject_class_id = ? AND t.is_active = 1
        ORDER BY CASE t.staff_role WHEN 'PRIMARY_INSTRUCTOR' THEN 0 WHEN 'CO_INSTRUCTOR' THEN 1 ELSE 2 END, u.full_name`
     )
-    .all(classId)
+    .all(classId))
     .map((r) => ({ ...publicUser(r), assignment_id: r.assignment_id, staff_role: r.staff_role, permissions: JSON.parse(r.permissions_json || '{}') }));
 }
 
-function classCounters(db, cls) {
+async function classCounters(db, cls) {
   const now = nowVn();
-  const students = db.prepare(`SELECT COUNT(*) n FROM class_enrollments WHERE subject_class_id = ? AND status = 'ACTIVE'`).get(cls.id).n;
-  const sess = db
+  const students = (await db.prepare(`SELECT COUNT(*) n FROM class_enrollments WHERE subject_class_id = ? AND status = 'ACTIVE'`).get(cls.id)).n;
+  const sess = await db
     .prepare(
       `SELECT COUNT(*) total,
          SUM(CASE WHEN scheduled_end_at < ? THEN 1 ELSE 0 END) done,
@@ -69,7 +70,7 @@ function classCounters(db, cls) {
        FROM sessions WHERE subject_class_id = ? AND session_status <> 'CANCELLED'`
     )
     .get(now, now, cls.id);
-  const agg = db
+  const agg = await db
     .prepare(
       `SELECT
          SUM(ar.attendance_status = 'PRESENT') p, SUM(ar.attendance_status = 'LATE') l,
@@ -78,7 +79,7 @@ function classCounters(db, cls) {
        WHERE ar.subject_class_id = ? AND s.session_status <> 'CANCELLED'`
     )
     .get(cls.id);
-  const next = db
+  const next = await db
     .prepare(
       `SELECT session_id, session_title, scheduled_start_at, scheduled_end_at, room_or_link,
               delivery_mode, virtual_room_id, live_status, attendance_sync_status
@@ -94,17 +95,17 @@ function classCounters(db, cls) {
     sessions_unmarked: sess.unmarked || 0,
     attendance_rate: rateFromCounts(
       { PRESENT: agg.p || 0, LATE: agg.l || 0, EXCUSED_ABSENCE: agg.e || 0, UNEXCUSED_ABSENCE: agg.a || 0 },
-      getAttendancePolicy(db)
+      await getAttendancePolicy(db)
     ),
-    next_session: next ? { ...next, virtual_room: virtualRoomSummaryDto(db, next) } : null,
+    next_session: next ? { ...next, virtual_room: await virtualRoomSummaryDto(db, next) } : null,
   };
 }
 
-export function classDto(db, cls, user = null) {
-  const course = cls.course_id ? db.prepare('SELECT id, code, title, status FROM courses WHERE id = ?').get(cls.course_id) : null;
-  const cohort = cls.cohort_id ? db.prepare('SELECT id, code, title, status FROM program_cohorts WHERE id = ?').get(cls.cohort_id) : null;
+export async function classDto(db, cls, user = null) {
+  const course = cls.course_id ? await db.prepare('SELECT id, code, title, status FROM courses WHERE id = ?').get(cls.course_id) : null;
+  const cohort = cls.cohort_id ? await db.prepare('SELECT id, code, title, status FROM program_cohorts WHERE id = ?').get(cls.cohort_id) : null;
   const courseVersion = cls.course_version_id
-    ? db.prepare('SELECT id, version_number, version_label, published_at FROM course_versions WHERE id = ?').get(cls.course_version_id)
+    ? await db.prepare('SELECT id, version_number, version_label, published_at FROM course_versions WHERE id = ?').get(cls.course_version_id)
     : null;
   return {
     id: cls.id,
@@ -126,14 +127,14 @@ export function classDto(db, cls, user = null) {
     room: cls.room || '',
     schedule_text: cls.schedule_text || '',
     department_id: cls.department_id,
-    staff: classStaff(db, cls.id),
+    staff: await classStaff(db, cls.id),
     updated_at: cls.updated_at,
-    ...(user ? { capabilities: classCapabilities(db, user, cls) } : {}),
-    ...classCounters(db, cls),
+    ...(user ? { capabilities: await classCapabilities(db, user, cls) } : {}),
+    ...await classCounters(db, cls),
   };
 }
 
-function readClassFields(db, user, body, { partial }) {
+async function readClassFields(db, user, body, { partial }) {
   const f = {};
   const req = !partial;
   if (!partial || 'code' in body) {
@@ -155,9 +156,9 @@ function readClassFields(db, user, body, { partial }) {
     if (!body.course_id) {
       f.course_id = null;
     } else {
-      const course = db.prepare('SELECT * FROM courses WHERE id = ?').get(body.course_id);
+      const course = await db.prepare('SELECT * FROM courses WHERE id = ?').get(body.course_id);
       if (!course) fail(422, 'VALIDATION_ERROR', 'Khóa học không tồn tại.', { field: 'course_id' });
-      if (!canViewCourse(db, user, course)) fail(403, 'COURSE_ACCESS_DENIED', 'Bạn không có quyền sử dụng khóa học này.');
+      if (!await canViewCourse(db, user, course)) fail(403, 'COURSE_ACCESS_DENIED', 'Bạn không có quyền sử dụng khóa học này.');
       if (course.status === 'ARCHIVED' || course.status === 'INACTIVE') {
         fail(422, 'VALIDATION_ERROR', 'Không thể liên kết với khóa học đã lưu trữ hoặc ngừng hoạt động.', { field: 'course_id' });
       }
@@ -171,10 +172,10 @@ function assertDates(start, end) {
   if (start && end && end < start) fail(422, 'VALIDATION_ERROR', 'Ngày kết thúc phải sau ngày bắt đầu.', { field: 'end_date' });
 }
 
-function sessionDto(db, s, rosterSize = null) {
-  const counts = db
+async function sessionDto(db, s, rosterSize = null) {
+  const counts = (await db
     .prepare(`SELECT attendance_status st, COUNT(*) n FROM attendance_records WHERE class_session_id = ? GROUP BY attendance_status`)
-    .all(s.session_id)
+    .all(s.session_id))
     .reduce((acc, r) => ({ ...acc, [r.st]: r.n }), {});
   const marked = Object.values(counts).reduce((a, b) => a + b, 0);
   const now = nowVn();
@@ -210,45 +211,45 @@ function sessionDto(db, s, rosterSize = null) {
     live_started_at: s.live_started_at || null,
     live_ended_at: s.live_ended_at || null,
     attendance_sync_status: s.attendance_sync_status || 'IDLE',
-    virtual_room: virtualRoomSummaryDto(db, s),
+    virtual_room: await virtualRoomSummaryDto(db, s),
   };
 }
 
-function findUsersByIdentifiers(db, identifiers) {
+async function findUsersByIdentifiers(db, identifiers) {
   const found = [];
   const notFound = [];
   for (const raw of identifiers) {
     const key = String(raw).trim();
     if (!key) continue;
-    const u = db.prepare('SELECT * FROM users WHERE id = ? OR UPPER(code) = UPPER(?) OR LOWER(email) = LOWER(?)').get(key, key, key);
+    const u = await db.prepare('SELECT * FROM users WHERE id = ? OR UPPER(code) = UPPER(?) OR LOWER(email) = LOWER(?)').get(key, key, key);
     if (!u || !JSON.parse(u.roles_json).includes('STUDENT')) notFound.push(key);
     else found.push(u);
   }
   return { found, notFound };
 }
 
-function enrollStudents(db, user, cls, identifiers, log, enrollmentSource = 'ACADEMIC_ASSIGNED') {
+async function enrollStudents(db, user, cls, identifiers, log, enrollmentSource = 'ACADEMIC_ASSIGNED') {
   if (identifiers.length === 0) fail(422, 'VALIDATION_ERROR', 'Danh sách học viên trống.');
   if (identifiers.length > 1000) fail(422, 'VALIDATION_ERROR', 'Tối đa 1000 học viên mỗi lần.');
-  const { found, notFound } = findUsersByIdentifiers(db, identifiers);
+  const { found, notFound } = await findUsersByIdentifiers(db, identifiers);
   const result = { added: [], reactivated: [], already_enrolled: [], not_found: notFound };
-  tx(db, () => {
+  await tx(db, async () => {
     for (const u of found) {
-      const e = db.prepare('SELECT * FROM class_enrollments WHERE subject_class_id = ? AND student_id = ?').get(cls.id, u.id);
+      const e = await db.prepare('SELECT * FROM class_enrollments WHERE subject_class_id = ? AND student_id = ?').get(cls.id, u.id);
       if (e && e.status === 'ACTIVE') {
         result.already_enrolled.push(u.code);
         continue;
       }
       if (cls.max_students) {
-        const n = db.prepare(`SELECT COUNT(*) n FROM class_enrollments WHERE subject_class_id = ? AND status = 'ACTIVE'`).get(cls.id).n;
+        const n = (await db.prepare(`SELECT COUNT(*) n FROM class_enrollments WHERE subject_class_id = ? AND status = 'ACTIVE'`).get(cls.id)).n;
         if (n >= cls.max_students) fail(422, 'CLASS_FULL', `Lớp đã đủ sĩ số tối đa (${cls.max_students}).`);
       }
       if (e) {
-        db.prepare(`UPDATE class_enrollments SET status = 'ACTIVE', enrollment_source = ?, dropped_at = NULL, enrolled_at = ?, updated_by = ? WHERE id = ?`)
+        await db.prepare(`UPDATE class_enrollments SET status = 'ACTIVE', enrollment_source = ?, dropped_at = NULL, enrolled_at = ?, updated_by = ? WHERE id = ?`)
           .run(enrollmentSource, nowIso(), user.id, e.id);
         result.reactivated.push(u.code);
       } else {
-        db.prepare(
+        await db.prepare(
           `INSERT INTO class_enrollments (id, subject_class_id, student_id, enrollment_source, status, enrolled_at, updated_by)
            VALUES (?, ?, ?, ?, 'ACTIVE', ?, ?)`
         ).run(crypto.randomUUID(), cls.id, u.id, enrollmentSource, nowIso(), user.id);
@@ -262,45 +263,45 @@ function enrollStudents(db, user, cls, identifiers, log, enrollmentSource = 'ACA
 
 export function registerClassRoutes(route) {
   // ---------- Năng lực của người dùng hiện tại
-  route('GET', '/me', ({ db, user }) => ({
+  route('GET', '/me', async ({ db, user }) => ({
     user: { id: user.id, full_name: user.full_name, email: user.email, roles: user.roles, department_id: user.department_id },
     can_create_course: canCreateClass(user),
     can_create_class: canCreateClass(user),
     can_pick_instructor: isAdmin(user) || isStaff(user),
     instructor_can_manage_roster: INSTRUCTOR_CAN_MANAGE_ROSTER,
-    attendance_policy: getAttendancePolicy(db),
+    attendance_policy: await getAttendancePolicy(db),
   }));
 
   // ---------- Tra cứu người dùng (phục vụ chọn giảng viên / thêm học viên)
-  route('GET', '/users', ({ db, user, url }) => {
+  route('GET', '/users', async ({ db, user, url }) => {
     const role = url.searchParams.get('role');
     if (!['STUDENT', 'INSTRUCTOR', 'TEACHING_ASSISTANT'].includes(role)) fail(422, 'VALIDATION_ERROR', 'Vai trò tra cứu không hợp lệ.');
     const allowed = isAdmin(user) || isStaff(user) || (role === 'STUDENT' && isInstructor(user) && INSTRUCTOR_CAN_MANAGE_ROSTER);
     if (!allowed) fail(403, 'USER_LOOKUP_FORBIDDEN', 'Bạn không có quyền tra cứu danh sách người dùng.');
     const q = (url.searchParams.get('q') || '').trim();
     const params = [`%"${role}"%`];
-    let where = 'roles_json LIKE ?';
+    let where = "LOWER(roles_json) LIKE LOWER(?)";
     if (!isAdmin(user) && user.department_id) {
       where += ' AND department_id = ?';
       params.push(user.department_id);
     }
     if (q) {
-      where += ' AND (full_name LIKE ? OR code LIKE ? OR email LIKE ?)';
+      where += " AND (LOWER(full_name) LIKE LOWER(?) OR LOWER(code) LIKE LOWER(?) OR LOWER(email) LIKE LOWER(?))";
       params.push(`%${q}%`, `%${q}%`, `%${q}%`);
     }
-    const rows = db.prepare(`SELECT id, code, full_name, email FROM users WHERE ${where} ORDER BY full_name LIMIT 50`).all(...params);
+    const rows = await db.prepare(`SELECT id, code, full_name, email FROM users WHERE ${where} ORDER BY full_name LIMIT 50`).all(...params);
     return { items: rows.map(publicUser) };
   });
 
   // ---------- Danh sách lớp
-  route('GET', '/classes', ({ db, user, url }) => {
+  route('GET', '/classes', async ({ db, user, url }) => {
     const { page, size, offset } = pageParams(url, 12, 100);
     const scope = classScopeSql(user);
     const where = [scope.sql];
     const params = [...scope.params];
     const q = (url.searchParams.get('q') || '').trim();
     if (q) {
-      where.push('(sc.code LIKE ? OR sc.title LIKE ?)');
+      where.push("(LOWER(sc.code) LIKE LOWER(?) OR LOWER(sc.title) LIKE LOWER(?))");
       params.push(`%${q}%`, `%${q}%`);
     }
     const status = url.searchParams.get('status');
@@ -316,35 +317,35 @@ export function registerClassRoutes(route) {
       params.push(courseId);
     }
     const whereSql = where.join(' AND ');
-    const total = db.prepare(`SELECT COUNT(*) n FROM subject_classes sc WHERE ${whereSql}`).get(...params).n;
-    const rows = db
+    const total = (await db.prepare(`SELECT COUNT(*) n FROM subject_classes sc WHERE ${whereSql}`).get(...params)).n;
+    const rows = await db
       .prepare(
         `SELECT sc.* FROM subject_classes sc WHERE ${whereSql}
          ORDER BY CASE sc.status WHEN 'ACTIVE' THEN 0 WHEN 'UPCOMING' THEN 1 WHEN 'DRAFT' THEN 2 ELSE 3 END, sc.code
          LIMIT ? OFFSET ?`
       )
       .all(...params, size, offset);
-    return { items: rows.map((r) => classDto(db, r, user)), page, page_size: size, total };
+    return { items: await mapAsync(rows, async (r) => await classDto(db, r, user)), page, page_size: size, total };
   });
 
   // ---------- Tạo lớp
-  route('POST', '/classes', ({ db, user, body, log }) => {
+  route('POST', '/classes', async ({ db, user, body, log }) => {
     if (!canCreateClass(user)) fail(403, 'CLASS_CREATE_FORBIDDEN', 'Bạn chưa được cấp quyền tạo lớp học.');
-    const f = readClassFields(db, user, body, { partial: false });
+    const f = await readClassFields(db, user, body, { partial: false });
     assertDates(f.start_date, f.end_date);
-    if (db.prepare('SELECT 1 FROM subject_classes WHERE UPPER(code) = ?').get(f.code)) {
+    if (await db.prepare('SELECT 1 FROM subject_classes WHERE UPPER(code) = ?').get(f.code)) {
       fail(409, 'CLASS_CODE_EXISTS', `Mã lớp "${f.code}" đã tồn tại.`, { field: 'code' });
     }
     // Giảng viên phụ trách
     let instructor;
     if ((isAdmin(user) || isStaff(user)) && body.instructor_id) {
-      instructor = db.prepare('SELECT * FROM users WHERE id = ?').get(body.instructor_id);
+      instructor = await db.prepare('SELECT * FROM users WHERE id = ?').get(body.instructor_id);
       if (!instructor || !JSON.parse(instructor.roles_json).includes('INSTRUCTOR')) {
         fail(422, 'VALIDATION_ERROR', 'Giảng viên phụ trách không hợp lệ.', { field: 'instructor_id' });
       }
       if (!isAdmin(user) && instructor.department_id !== user.department_id) fail(403, 'OUT_OF_SCOPE', 'Giảng viên không thuộc đơn vị bạn quản lý.');
     } else if (isInstructor(user)) {
-      instructor = db.prepare('SELECT * FROM users WHERE id = ?').get(user.id);
+      instructor = await db.prepare('SELECT * FROM users WHERE id = ?').get(user.id);
     } else {
       fail(422, 'VALIDATION_ERROR', 'Vui lòng chọn giảng viên phụ trách.', { field: 'instructor_id' });
     }
@@ -352,11 +353,11 @@ export function registerClassRoutes(route) {
     if (!['DRAFT', 'UPCOMING', 'ACTIVE'].includes(status)) fail(422, 'VALIDATION_ERROR', 'Lớp mới chỉ có thể ở trạng thái Nháp, Sắp diễn ra hoặc Đang học.');
     const id = `sc_${crypto.randomBytes(5).toString('hex')}`;
     const now = nowIso();
-    const course = f.course_id ? db.prepare('SELECT * FROM courses WHERE id = ?').get(f.course_id) : null;
+    const course = f.course_id ? await db.prepare('SELECT * FROM courses WHERE id = ?').get(f.course_id) : null;
 
     let cohortId = text(body, 'cohort_id', { max: 80, label: 'lớp khóa học' }) || null;
     if (cohortId) {
-      const cohort = db.prepare('SELECT * FROM program_cohorts WHERE id = ?').get(cohortId);
+      const cohort = await db.prepare('SELECT * FROM program_cohorts WHERE id = ?').get(cohortId);
       if (!cohort) fail(404, 'COHORT_NOT_FOUND', 'Không tìm thấy lớp khóa học liên kết.');
       if (!isAdmin(user) && cohort.department_id && user.department_id && cohort.department_id !== user.department_id) {
         fail(403, 'OUT_OF_SCOPE', 'Lớp khóa học không thuộc đơn vị của bạn.');
@@ -368,8 +369,8 @@ export function registerClassRoutes(route) {
     if (f.course_id) {
       const requestedVerId = text(body, 'course_version_id', { max: 80, label: 'phiên bản môn học' }) || null;
       const verRow = requestedVerId
-        ? db.prepare('SELECT id, version_number FROM course_versions WHERE id = ? AND course_id = ?').get(requestedVerId, f.course_id)
-        : db.prepare('SELECT id, version_number FROM course_versions WHERE course_id = ? ORDER BY version_number DESC LIMIT 1').get(f.course_id);
+        ? await db.prepare('SELECT id, version_number FROM course_versions WHERE id = ? AND course_id = ?').get(requestedVerId, f.course_id)
+        : await db.prepare('SELECT id, version_number FROM course_versions WHERE course_id = ? ORDER BY version_number DESC LIMIT 1').get(f.course_id);
       if (requestedVerId && !verRow) fail(404, 'COURSE_VERSION_NOT_FOUND', 'Không tìm thấy phiên bản môn học được chọn.');
       if (verRow) {
         courseVersionId = verRow.id;
@@ -377,8 +378,8 @@ export function registerClassRoutes(route) {
       }
     }
 
-    tx(db, () => {
-      db.prepare(
+    await tx(db, async () => {
+      await db.prepare(
         `INSERT INTO subject_classes (id, course_id, cohort_id, course_version_id, course_version_number, code, title, subject, description, instructor_name, ta_names_json,
            schedule_text, room, student_count, start_date, end_date, max_students, delivery_mode, status, department_id,
            created_by, created_at, updated_at)
@@ -386,64 +387,61 @@ export function registerClassRoutes(route) {
       ).run(id, f.course_id || null, cohortId, courseVersionId, courseVersionNumber, f.code, f.title, f.subject || (course ? course.subject : null), f.description,
         instructor.full_name, f.schedule_text, f.room, f.start_date, f.end_date, f.max_students, f.delivery_mode,
         status, instructor.department_id || user.department_id || (course ? course.department_id : null), user.id, now, now);
-      db.prepare(
+      await db.prepare(
         `INSERT INTO teaching_staff_assignments (id, subject_class_id, user_id, staff_role, permissions_json, is_active,
            assigned_by, created_at, updated_at) VALUES (?, ?, ?, 'PRIMARY_INSTRUCTOR', ?, 1, ?, ?, ?)`
       ).run(crypto.randomUUID(), id, instructor.id, '{"can_manage_materials":true,"can_take_attendance":true}', user.id, now, now);
       if (cohortId) {
-        syncCohortRosterToClasses(db, cohortId, user, [id]);
+        await syncCohortRosterToClasses(db, cohortId, user, [id]);
       }
     });
     log('INFO', `[teaching] class created ${f.code} by ${user.id}`);
-    return [201, classDto(db, getClass(db, id), user)];
+    return [201, await classDto(db, await getClass(db, id), user)];
   });
 
   // ---------- Chi tiết lớp + việc cần xử lý
-  route('GET', '/classes/:id', ({ db, user, params }) => {
-    const { cls, caps } = requireClassAccess(db, user, params.id);
+  route('GET', '/classes/:id', async ({ db, user, params }) => {
+    const { cls, caps } = await requireClassAccess(db, user, params.id);
     if (caps.role === 'STUDENT') fail(403, 'CLASS_ACCESS_DENIED', 'Học viên xem lớp tại mục "Lớp của tôi".');
     const now = nowVn();
-    const upcoming = db
+    const upcoming = await mapAsync(await db
       .prepare(`SELECT * FROM sessions WHERE subject_class_id = ? AND session_status <> 'CANCELLED' AND scheduled_end_at >= ? ORDER BY scheduled_start_at LIMIT 5`)
-      .all(cls.id, now)
-      .map((s) => sessionDto(db, s));
-    const unmarked = db
+      .all(cls.id, now), async (s) => await sessionDto(db, s));
+    const unmarked = await mapAsync(await db
       .prepare(`SELECT * FROM sessions WHERE subject_class_id = ? AND session_status <> 'CANCELLED' AND scheduled_start_at <= ? AND attendance_saved_at IS NULL ORDER BY scheduled_start_at DESC LIMIT 10`)
-      .all(cls.id, now)
-      .map((s) => sessionDto(db, s));
-    const unconfirmed = db
+      .all(cls.id, now), async (s) => await sessionDto(db, s));
+    const unconfirmed = await mapAsync(await db
       .prepare(`SELECT * FROM sessions WHERE subject_class_id = ? AND session_status <> 'CANCELLED' AND scheduled_end_at < ? AND confirmation_status IN ('AWAITING_CONFIRMATION','OVERDUE_UNCONFIRMED') ORDER BY scheduled_start_at DESC LIMIT 10`)
-      .all(cls.id, now)
-      .map((s) => sessionDto(db, s));
+      .all(cls.id, now), async (s) => await sessionDto(db, s));
     let progress = null;
     if (cls.course_id) {
-      const total = db
+      const total = (await db
         .prepare(`SELECT COUNT(*) n FROM lessons l JOIN chapters ch ON ch.id = l.chapter_id WHERE ch.course_id = ? AND ch.status = 'PUBLISHED' AND l.publish_status = 'PUBLISHED'`)
-        .get(cls.course_id).n;
-      const done = db
+        .get(cls.course_id)).n;
+      const done = (await db
         .prepare(
           `SELECT COUNT(*) n FROM lesson_progress p JOIN class_enrollments e ON e.subject_class_id = p.subject_class_id AND e.student_id = p.student_id AND e.status = 'ACTIVE'
            JOIN lessons l ON l.id = p.lesson_id AND l.publish_status = 'PUBLISHED'
            WHERE p.subject_class_id = ? AND p.status = 'COMPLETED'`
         )
-        .get(cls.id).n;
-      const students = db.prepare(`SELECT COUNT(*) n FROM class_enrollments WHERE subject_class_id = ? AND status = 'ACTIVE'`).get(cls.id).n;
+        .get(cls.id)).n;
+      const students = (await db.prepare(`SELECT COUNT(*) n FROM class_enrollments WHERE subject_class_id = ? AND status = 'ACTIVE'`).get(cls.id)).n;
       progress = { published_lessons: total, avg_completion_pct: total && students ? Math.round((done / (total * students)) * 1000) / 10 : 0 };
     }
-    return { ...classDto(db, cls), capabilities: caps, upcoming_sessions: upcoming, sessions_need_attendance: unmarked, logs_unconfirmed: unconfirmed, progress };
+    return { ...await classDto(db, cls), capabilities: caps, upcoming_sessions: upcoming, sessions_need_attendance: unmarked, logs_unconfirmed: unconfirmed, progress };
   });
 
-  route('PATCH', '/classes/:id', ({ db, user, body, params, log }) => {
-    const { cls } = requireClassAccess(db, user, params.id, 'can_manage_class');
-    const f = readClassFields(db, user, body, { partial: true });
-    if (f.code && f.code !== cls.code && db.prepare('SELECT 1 FROM subject_classes WHERE UPPER(code) = ? AND id <> ?').get(f.code, cls.id)) {
+  route('PATCH', '/classes/:id', async ({ db, user, body, params, log }) => {
+    const { cls } = await requireClassAccess(db, user, params.id, 'can_manage_class');
+    const f = await readClassFields(db, user, body, { partial: true });
+    if (f.code && f.code !== cls.code && await db.prepare('SELECT 1 FROM subject_classes WHERE UPPER(code) = ? AND id <> ?').get(f.code, cls.id)) {
       fail(409, 'CLASS_CODE_EXISTS', `Mã lớp "${f.code}" đã tồn tại.`, { field: 'code' });
     }
     assertDates(f.start_date ?? cls.start_date, f.end_date ?? cls.end_date);
 
     let nextPrimary = null;
     if ((isAdmin(user) || isStaff(user)) && body && typeof body.instructor_id === 'string' && body.instructor_id.trim()) {
-      const cand = db.prepare('SELECT * FROM users WHERE id = ?').get(body.instructor_id.trim());
+      const cand = await db.prepare('SELECT * FROM users WHERE id = ?').get(body.instructor_id.trim());
       if (!cand || !JSON.parse(cand.roles_json || '[]').includes('INSTRUCTOR')) {
         fail(422, 'VALIDATION_ERROR', 'Giảng viên phụ trách không hợp lệ.', { field: 'instructor_id' });
       }
@@ -455,19 +453,19 @@ export function registerClassRoutes(route) {
     }
 
     const keys = Object.keys(f);
-    tx(db, () => {
+    await tx(db, async () => {
       if (keys.length) {
-        db.prepare(`UPDATE subject_classes SET ${keys.map((k) => `${k} = ?`).join(', ')}, updated_at = ? WHERE id = ?`)
+        await db.prepare(`UPDATE subject_classes SET ${keys.map((k) => `${k} = ?`).join(', ')}, updated_at = ? WHERE id = ?`)
           .run(...keys.map((k) => f[k]), nowIso(), cls.id);
       }
       if (nextPrimary) {
-        const curPrimary = db
+        const curPrimary = await db
           .prepare(`SELECT * FROM teaching_staff_assignments WHERE subject_class_id = ? AND staff_role = 'PRIMARY_INSTRUCTOR' AND is_active = 1`)
           .get(cls.id);
         if (!curPrimary || curPrimary.user_id !== nextPrimary.id) {
-          db.prepare(`UPDATE teaching_staff_assignments SET is_active = 0, updated_at = ? WHERE subject_class_id = ? AND staff_role = 'PRIMARY_INSTRUCTOR' AND is_active = 1`)
+          await db.prepare(`UPDATE teaching_staff_assignments SET is_active = 0, updated_at = ? WHERE subject_class_id = ? AND staff_role = 'PRIMARY_INSTRUCTOR' AND is_active = 1`)
             .run(nowIso(), cls.id);
-          db.prepare(
+          await db.prepare(
             `INSERT INTO teaching_staff_assignments (id, subject_class_id, user_id, staff_role, permissions_json, is_active, assigned_by, created_at, updated_at)
              VALUES (?, ?, ?, 'PRIMARY_INSTRUCTOR', '{"can_manage_materials":true,"can_take_attendance":true}', 1, ?, ?, ?)`
           ).run(crypto.randomUUID(), cls.id, nextPrimary.id, user.id, nowIso(), nowIso());
@@ -477,15 +475,15 @@ export function registerClassRoutes(route) {
     if (keys.length || nextPrimary) {
       log('INFO', `[teaching] class ${cls.code} updated (${keys.join(',')}) by ${user.id}`);
     }
-    return classDto(db, getClass(db, cls.id), user);
+    return await classDto(db, await getClass(db, cls.id), user);
   });
 
   // ---------- Học viên
-  route('GET', '/classes/:id/students', ({ db, user, params, url }) => {
-    const { cls, caps } = requireClassAccess(db, user, params.id, 'can_view_roster');
+  route('GET', '/classes/:id/students', async ({ db, user, params, url }) => {
+    const { cls, caps } = await requireClassAccess(db, user, params.id, 'can_view_roster');
     const status = url.searchParams.get('status') || 'ACTIVE';
     const q = (url.searchParams.get('q') || '').trim().toLowerCase();
-    let rows = db
+    let rows = await db
       .prepare(
         `SELECT e.student_id, e.enrollment_source, e.status, e.enrolled_at, e.dropped_at, u.code, u.full_name, u.email
          FROM class_enrollments e JOIN users u ON u.id = e.student_id WHERE e.subject_class_id = ?`
@@ -493,8 +491,8 @@ export function registerClassRoutes(route) {
       .all(cls.id);
     if (status !== 'ALL') rows = rows.filter((r) => r.status === status);
     if (q) rows = rows.filter((r) => `${r.code} ${r.full_name} ${r.email}`.toLowerCase().includes(q));
-    const policy = getAttendancePolicy(db);
-    const att = db
+    const policy = await getAttendancePolicy(db);
+    const att = await db
       .prepare(
         `SELECT ar.student_id, ar.attendance_status st, COUNT(*) n FROM attendance_records ar
          JOIN sessions s ON s.session_id = ar.class_session_id
@@ -507,22 +505,22 @@ export function registerClassRoutes(route) {
     const doneMap = {};
     const verKey = getClassContentVersionKey(cls);
     if (cls.course_version_id) {
-      const cv = db.prepare('SELECT snapshot_json FROM course_versions WHERE id = ?').get(cls.course_version_id);
+      const cv = await db.prepare('SELECT snapshot_json FROM course_versions WHERE id = ?').get(cls.course_version_id);
       const snap = safeJson(cv?.snapshot_json, null);
       if (snap && Array.isArray(snap.lessons)) {
         totalLessons = snap.lessons.length;
         const allowedIds = new Set(snap.lessons.map((l) => l.id));
-        for (const r of db
+        for (const r of await db
           .prepare(`SELECT student_id, lesson_id FROM lesson_progress WHERE subject_class_id = ? AND content_version_key = ? AND status = 'COMPLETED'`)
           .all(cls.id, verKey)) {
           if (allowedIds.has(r.lesson_id)) doneMap[r.student_id] = (doneMap[r.student_id] || 0) + 1;
         }
       }
     } else if (cls.course_id) {
-      totalLessons = db
+      totalLessons = (await db
         .prepare(`SELECT COUNT(*) n FROM lessons l JOIN chapters ch ON ch.id = l.chapter_id WHERE ch.course_id = ? AND ch.status = 'PUBLISHED' AND l.publish_status = 'PUBLISHED'`)
-        .get(cls.course_id).n;
-      for (const r of db
+        .get(cls.course_id)).n;
+      for (const r of await db
         .prepare(`SELECT p.student_id, COUNT(*) n FROM lesson_progress p JOIN lessons l ON l.id = p.lesson_id AND l.publish_status = 'PUBLISHED' WHERE p.subject_class_id = ? AND p.content_version_key = ? AND p.status = 'COMPLETED' GROUP BY p.student_id`)
         .all(cls.id, verKey)) doneMap[r.student_id] = r.n;
     }
@@ -553,18 +551,18 @@ export function registerClassRoutes(route) {
     };
   });
 
-  route('POST', '/classes/:id/students', ({ db, user, body, params, log }) => {
-    const { cls } = requireClassAccess(db, user, params.id, 'can_manage_roster');
+  route('POST', '/classes/:id/students', async ({ db, user, body, params, log }) => {
+    const { cls } = await requireClassAccess(db, user, params.id, 'can_manage_roster');
     const ids = Array.isArray(body.students) ? body.students : [];
     const src = oneOf(body, 'enrollment_source', ['ACADEMIC_ASSIGNED', 'COHORT_SYNCED', 'MAKEUP', 'RETAKE', 'SUPPLEMENTAL'], {
       fallback: 'ACADEMIC_ASSIGNED',
       label: 'nguồn ghi danh',
     });
-    return enrollStudents(db, user, cls, ids, log, src);
+    return await enrollStudents(db, user, cls, ids, log, src);
   });
 
-  route('POST', '/classes/:id/students/import', ({ db, user, body, params, log }) => {
-    const { cls } = requireClassAccess(db, user, params.id, 'can_manage_roster');
+  route('POST', '/classes/:id/students/import', async ({ db, user, body, params, log }) => {
+    const { cls } = await requireClassAccess(db, user, params.id, 'can_manage_roster');
     const raw = typeof body.text === 'string' ? body.text : '';
     if (raw.length > 200_000) fail(413, 'PAYLOAD_TOO_LARGE', 'Danh sách quá lớn.');
     const identifiers = raw
@@ -575,28 +573,28 @@ export function registerClassRoutes(route) {
       fallback: 'ACADEMIC_ASSIGNED',
       label: 'nguồn ghi danh',
     });
-    return enrollStudents(db, user, cls, [...new Set(identifiers)], log, src);
+    return await enrollStudents(db, user, cls, [...new Set(identifiers)], log, src);
   });
 
-  route('DELETE', '/classes/:id/students/:studentId', ({ db, user, params, log }) => {
-    const { cls } = requireClassAccess(db, user, params.id, 'can_manage_roster');
-    const e = db.prepare(`SELECT * FROM class_enrollments WHERE subject_class_id = ? AND student_id = ? AND status = 'ACTIVE'`).get(cls.id, params.studentId);
+  route('DELETE', '/classes/:id/students/:studentId', async ({ db, user, params, log }) => {
+    const { cls } = await requireClassAccess(db, user, params.id, 'can_manage_roster');
+    const e = await db.prepare(`SELECT * FROM class_enrollments WHERE subject_class_id = ? AND student_id = ? AND status = 'ACTIVE'`).get(cls.id, params.studentId);
     if (!e) fail(404, 'ENROLLMENT_NOT_FOUND', 'Học viên không có trong lớp.');
-    db.prepare(`UPDATE class_enrollments SET status = 'DROPPED', dropped_at = ?, updated_by = ? WHERE id = ?`).run(nowIso(), user.id, e.id);
+    await db.prepare(`UPDATE class_enrollments SET status = 'DROPPED', dropped_at = ?, updated_by = ? WHERE id = ?`).run(nowIso(), user.id, e.id);
     log('INFO', `[teaching] roster ${cls.code}: dropped ${params.studentId} by ${user.id}`);
     return { student_id: params.studentId, status: 'DROPPED' };
   });
 
   // ---------- Phân công giảng dạy
-  route('GET', '/classes/:id/staff', ({ db, user, params }) => {
-    const { cls } = requireClassAccess(db, user, params.id, 'can_view_roster');
-    return { items: classStaff(db, cls.id) };
+  route('GET', '/classes/:id/staff', async ({ db, user, params }) => {
+    const { cls } = await requireClassAccess(db, user, params.id, 'can_view_roster');
+    return { items: await classStaff(db, cls.id) };
   });
 
-  route('POST', '/classes/:id/staff', ({ db, user, body, params, log }) => {
-    const { cls } = requireClassAccess(db, user, params.id, 'can_manage_staff');
+  route('POST', '/classes/:id/staff', async ({ db, user, body, params, log }) => {
+    const { cls } = await requireClassAccess(db, user, params.id, 'can_manage_staff');
     const role = oneOf(body, 'staff_role', ['PRIMARY_INSTRUCTOR', 'CO_INSTRUCTOR', 'TEACHING_ASSISTANT'], { required: true, label: 'vai trò' });
-    const u = db.prepare('SELECT * FROM users WHERE id = ?').get(body.user_id);
+    const u = await db.prepare('SELECT * FROM users WHERE id = ?').get(body.user_id);
     const needRole = role === 'TEACHING_ASSISTANT' ? 'TEACHING_ASSISTANT' : 'INSTRUCTOR';
     if (!u || !JSON.parse(u.roles_json).includes(needRole)) fail(422, 'VALIDATION_ERROR', 'Người được phân công không phù hợp với vai trò.', { field: 'user_id' });
     const perms = {
@@ -604,35 +602,35 @@ export function registerClassRoutes(route) {
       can_take_attendance: Boolean(body.permissions?.can_take_attendance ?? true),
     };
     const now = nowIso();
-    const existing = db.prepare('SELECT id FROM teaching_staff_assignments WHERE subject_class_id = ? AND user_id = ? AND staff_role = ?').get(cls.id, u.id, role);
+    const existing = await db.prepare('SELECT id FROM teaching_staff_assignments WHERE subject_class_id = ? AND user_id = ? AND staff_role = ?').get(cls.id, u.id, role);
     if (existing) {
-      db.prepare('UPDATE teaching_staff_assignments SET is_active = 1, permissions_json = ?, assigned_by = ?, updated_at = ? WHERE id = ?')
+      await db.prepare('UPDATE teaching_staff_assignments SET is_active = 1, permissions_json = ?, assigned_by = ?, updated_at = ? WHERE id = ?')
         .run(JSON.stringify(perms), user.id, now, existing.id);
     } else {
-      db.prepare(
+      await db.prepare(
         `INSERT INTO teaching_staff_assignments (id, subject_class_id, user_id, staff_role, permissions_json, is_active, assigned_by, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?)`
       ).run(crypto.randomUUID(), cls.id, u.id, role, JSON.stringify(perms), user.id, now, now);
     }
     log('INFO', `[teaching] staff ${role} ${u.id} assigned to ${cls.code} by ${user.id}`);
-    return [201, { items: classStaff(db, cls.id) }];
+    return [201, { items: await classStaff(db, cls.id) }];
   });
 
-  route('DELETE', '/classes/:id/staff/:assignmentId', ({ db, user, params }) => {
-    const { cls } = requireClassAccess(db, user, params.id, 'can_manage_staff');
-    const a = db.prepare('SELECT * FROM teaching_staff_assignments WHERE id = ? AND subject_class_id = ? AND is_active = 1').get(params.assignmentId, cls.id);
+  route('DELETE', '/classes/:id/staff/:assignmentId', async ({ db, user, params }) => {
+    const { cls } = await requireClassAccess(db, user, params.id, 'can_manage_staff');
+    const a = await db.prepare('SELECT * FROM teaching_staff_assignments WHERE id = ? AND subject_class_id = ? AND is_active = 1').get(params.assignmentId, cls.id);
     if (!a) fail(404, 'ASSIGNMENT_NOT_FOUND', 'Không tìm thấy phân công.');
     if (a.staff_role === 'PRIMARY_INSTRUCTOR') {
-      const others = db.prepare(`SELECT COUNT(*) n FROM teaching_staff_assignments WHERE subject_class_id = ? AND staff_role = 'PRIMARY_INSTRUCTOR' AND is_active = 1`).get(cls.id).n;
+      const others = (await db.prepare(`SELECT COUNT(*) n FROM teaching_staff_assignments WHERE subject_class_id = ? AND staff_role = 'PRIMARY_INSTRUCTOR' AND is_active = 1`).get(cls.id)).n;
       if (others <= 1) fail(422, 'LAST_PRIMARY_INSTRUCTOR', 'Lớp cần ít nhất một giảng viên phụ trách chính.');
     }
-    db.prepare('UPDATE teaching_staff_assignments SET is_active = 0, updated_at = ? WHERE id = ?').run(nowIso(), a.id);
-    return { items: classStaff(db, cls.id) };
+    await db.prepare('UPDATE teaching_staff_assignments SET is_active = 0, updated_at = ? WHERE id = ?').run(nowIso(), a.id);
+    return { items: await classStaff(db, cls.id) };
   });
 
   // ---------- Buổi học
-  route('GET', '/classes/:id/sessions', ({ db, user, params, url }) => {
-    const { cls, caps } = requireClassAccess(db, user, params.id, 'can_view_roster');
+  route('GET', '/classes/:id/sessions', async ({ db, user, params, url }) => {
+    const { cls, caps } = await requireClassAccess(db, user, params.id, 'can_view_roster');
     const from = url.searchParams.get('from');
     const to = url.searchParams.get('to');
     const where = ['subject_class_id = ?'];
@@ -645,13 +643,13 @@ export function registerClassRoutes(route) {
       where.push('scheduled_start_at <= ?');
       p.push(`${to}T23:59:59+07:00`);
     }
-    const rosterSize = db.prepare(`SELECT COUNT(*) n FROM class_enrollments WHERE subject_class_id = ? AND status = 'ACTIVE'`).get(cls.id).n;
-    const rows = db.prepare(`SELECT * FROM sessions WHERE ${where.join(' AND ')} ORDER BY scheduled_start_at`).all(...p);
-    return { items: rows.map((s) => sessionDto(db, s, rosterSize)), capabilities: caps };
+    const rosterSize = (await db.prepare(`SELECT COUNT(*) n FROM class_enrollments WHERE subject_class_id = ? AND status = 'ACTIVE'`).get(cls.id)).n;
+    const rows = await db.prepare(`SELECT * FROM sessions WHERE ${where.join(' AND ')} ORDER BY scheduled_start_at`).all(...p);
+    return { items: await mapAsync(rows, async (s) => await sessionDto(db, s, rosterSize)), capabilities: caps };
   });
 
-  route('POST', '/classes/:id/sessions', ({ db, user, body, params, log }) => {
-    const { cls } = requireClassAccess(db, user, params.id, 'can_manage_sessions');
+  route('POST', '/classes/:id/sessions', async ({ db, user, body, params, log }) => {
+    const { cls } = await requireClassAccess(db, user, params.id, 'can_manage_sessions');
     const startTime = timeField(body, 'start_time', { label: 'giờ bắt đầu' });
     const endTime = timeField(body, 'end_time', { label: 'giờ kết thúc' });
     if (endTime <= startTime) fail(422, 'VALIDATION_ERROR', 'Giờ kết thúc phải sau giờ bắt đầu.', { field: 'end_time' });
@@ -677,18 +675,18 @@ export function registerClassRoutes(route) {
     } else {
       dates = [dateField(body, 'date', { required: true, label: 'ngày học' })];
     }
-    const instructor = classStaff(db, cls.id).find((s) => s.staff_role === 'PRIMARY_INSTRUCTOR');
+    const instructor = (await classStaff(db, cls.id)).find((s) => s.staff_role === 'PRIMARY_INSTRUCTOR');
     const created = [];
     const skipped = [];
-    tx(db, () => {
-      dates.forEach((d) => {
+    await tx(db, async () => {
+      for (const d of dates) {
         const startAt = vnDateTime(d, startTime);
-        if (db.prepare('SELECT 1 FROM sessions WHERE subject_class_id = ? AND scheduled_start_at = ?').get(cls.id, startAt)) {
+        if (await db.prepare('SELECT 1 FROM sessions WHERE subject_class_id = ? AND scheduled_start_at = ?').get(cls.id, startAt)) {
           skipped.push(d);
-          return;
+          continue;
         }
         const id = `ses_${crypto.randomBytes(5).toString('hex')}`;
-        insertClassSession(db, {
+        await insertClassSession(db, {
           session_id: id,
           subject_class_id: cls.id,
           subject_class_code: cls.code,
@@ -704,7 +702,7 @@ export function registerClassRoutes(route) {
           created_by: user.id,
         });
         created.push(id);
-      });
+      }
     });
 
     // Nếu không có cấu hình phòng trực tuyến đi kèm, trả về đồng bộ ngay lập tức
@@ -713,19 +711,19 @@ export function registerClassRoutes(route) {
       return [201, { created_count: created.length, skipped_dates: skipped, created_ids: created, virtual_room_id: null }];
     }
 
-    return (async () => {
+    return await (async () => {
       const vcfg = body.virtual_room_config;
       const roomOption = String(vcfg.room_option || 'CREATE_NEW').toUpperCase();
       let attachedRoomId = null;
 
       if (roomOption === 'REUSE_EXISTING' && vcfg.existing_room_id) {
-        const existingRoom = db
+        const existingRoom = await db
           .prepare('SELECT * FROM virtual_meeting_rooms WHERE id = ? AND subject_class_id = ?')
           .get(String(vcfg.existing_room_id).trim(), cls.id);
         if (!existingRoom) fail(404, 'VIRTUAL_ROOM_NOT_FOUND', 'Không tìm thấy phòng trực tuyến đã chọn trong lớp.');
-        tx(db, () => {
+        await tx(db, async () => {
           for (const sid of created) {
-            db.prepare('UPDATE sessions SET virtual_room_id = ?, room_or_link = ? WHERE session_id = ?')
+            await db.prepare('UPDATE sessions SET virtual_room_id = ?, room_or_link = ? WHERE session_id = ?')
               .run(existingRoom.id, existingRoom.join_url, sid);
           }
         });
@@ -733,7 +731,7 @@ export function registerClassRoutes(route) {
       } else {
         const provider = oneOf(vcfg, 'provider', VIRTUAL_PROVIDERS, { fallback: 'ZOOM', label: 'nền tảng họp trực tuyến' });
         const isRecurring = Boolean(vcfg.is_recurring || roomOption === 'RECURRING_ROOM' || created.length > 1);
-        const firstSession = db.prepare('SELECT * FROM sessions WHERE session_id = ?').get(created[0]);
+        const firstSession = await db.prepare('SELECT * FROM sessions WHERE session_id = ?').get(created[0]);
         const durationMinutes = Math.max(
           15,
           Math.round((Date.parse(firstSession.scheduled_end_at) - Date.parse(firstSession.scheduled_start_at)) / 60000)
@@ -752,8 +750,8 @@ export function registerClassRoutes(route) {
           const extPlatformName = text(vcfg, 'external_platform_name', { max: 100, label: 'tên nền tảng' }) ||
             (provider === 'ZOOM' ? 'Zoom Meeting' : provider === 'GOOGLE_MEET' ? 'Google Meet' : 'Microsoft Teams / Nền tảng ngoài');
           const supportsSync = provider !== 'EXTERNAL' && Boolean(extId) && Boolean(vcfg.supports_auto_sync);
-          tx(db, () => {
-            db.prepare(
+          await tx(db, async () => {
+            await db.prepare(
               `INSERT INTO virtual_meeting_rooms (
                  id, subject_class_id, session_id, provider, external_platform_name, creation_mode,
                  is_recurring_room, room_title, external_meeting_id, join_url,
@@ -780,10 +778,10 @@ export function registerClassRoutes(route) {
               now
             );
             for (const sid of created) {
-              db.prepare('UPDATE sessions SET virtual_room_id = ?, room_or_link = ? WHERE session_id = ?').run(roomId, joinUrl, sid);
+              await db.prepare('UPDATE sessions SET virtual_room_id = ?, room_or_link = ? WHERE session_id = ?').run(roomId, joinUrl, sid);
             }
             if (isRecurring) {
-              db.prepare('UPDATE subject_classes SET default_virtual_room_id = ? WHERE id = ?').run(roomId, cls.id);
+              await db.prepare('UPDATE subject_classes SET default_virtual_room_id = ? WHERE id = ?').run(roomId, cls.id);
             }
           });
           attachedRoomId = roomId;
@@ -796,8 +794,8 @@ export function registerClassRoutes(route) {
             passcode,
             isRecurring,
           });
-          tx(db, () => {
-            db.prepare(
+          await tx(db, async () => {
+            await db.prepare(
               `INSERT INTO virtual_meeting_rooms (
                  id, subject_class_id, session_id, provider, external_platform_name, creation_mode,
                  is_recurring_room, room_title, external_meeting_id, external_meeting_uuid, join_url,
@@ -826,10 +824,10 @@ export function registerClassRoutes(route) {
               now
             );
             for (const sid of created) {
-              db.prepare('UPDATE sessions SET virtual_room_id = ?, room_or_link = ? WHERE session_id = ?').run(roomId, meetingData.join_url, sid);
+              await db.prepare('UPDATE sessions SET virtual_room_id = ?, room_or_link = ? WHERE session_id = ?').run(roomId, meetingData.join_url, sid);
             }
             if (isRecurring) {
-              db.prepare('UPDATE subject_classes SET default_virtual_room_id = ? WHERE id = ?').run(roomId, cls.id);
+              await db.prepare('UPDATE subject_classes SET default_virtual_room_id = ? WHERE id = ?').run(roomId, cls.id);
             }
           });
           attachedRoomId = roomId;
@@ -841,8 +839,8 @@ export function registerClassRoutes(route) {
     })();
   });
 
-  route('PATCH', '/sessions/:id', ({ db, user, body, params }) => {
-    const { session } = requireSession(db, user, params.id, 'can_manage_sessions');
+  route('PATCH', '/sessions/:id', async ({ db, user, body, params }) => {
+    const { session } = await requireSession(db, user, params.id, 'can_manage_sessions');
     if (session.timesheet_locked_id) fail(409, 'SESSION_TIMESHEET_LOCKED', 'Buổi học đã khóa bảng giờ giảng chuyển Tài chính, không thể chỉnh sửa.');
     const f = {};
     if ('title' in body) f.session_title = text(body, 'title', { required: true, max: 200, label: 'nội dung buổi học' });
@@ -863,37 +861,37 @@ export function registerClassRoutes(route) {
     }
     // Chú ý: Không tự động tạo lại hay xóa virtual_room_id khi giảng viên chỉ chỉnh sửa tên/nội dung buổi học.
     const keys = Object.keys(f);
-    if (keys.length) db.prepare(`UPDATE sessions SET ${keys.map((k) => `${k} = ?`).join(', ')} WHERE session_id = ?`).run(...keys.map((k) => f[k]), session.session_id);
-    return sessionDto(db, db.prepare('SELECT * FROM sessions WHERE session_id = ?').get(session.session_id));
+    if (keys.length) await db.prepare(`UPDATE sessions SET ${keys.map((k) => `${k} = ?`).join(', ')} WHERE session_id = ?`).run(...keys.map((k) => f[k]), session.session_id);
+    return await sessionDto(db, await db.prepare('SELECT * FROM sessions WHERE session_id = ?').get(session.session_id));
   });
 
-  route('POST', '/sessions/:id/cancel', ({ db, user, body, params, log }) => {
-    const { session } = requireSession(db, user, params.id, 'can_manage_sessions');
+  route('POST', '/sessions/:id/cancel', async ({ db, user, body, params, log }) => {
+    const { session } = await requireSession(db, user, params.id, 'can_manage_sessions');
     if (session.timesheet_locked_id) fail(409, 'SESSION_TIMESHEET_LOCKED', 'Buổi học đã khóa bảng giờ giảng chuyển Tài chính, không thể hủy.');
     const reason = text(body, 'reason', { required: true, max: 500, label: 'lý do hủy' });
     if (session.session_status === 'CANCELLED') fail(409, 'SESSION_ALREADY_CANCELLED', 'Buổi học đã được hủy trước đó.');
-    tx(db, () => {
-      db.prepare("UPDATE sessions SET session_status = 'CANCELLED', cancel_reason = ? WHERE session_id = ?").run(reason, session.session_id);
-      db.prepare(
+    await tx(db, async () => {
+      await db.prepare("UPDATE sessions SET session_status = 'CANCELLED', cancel_reason = ? WHERE session_id = ?").run(reason, session.session_id);
+      await db.prepare(
         `INSERT INTO teaching_log_history (id, session_id, session_code, previous_status, new_status, changed_by, changed_at, note)
          VALUES (?, ?, ?, ?, 'CANCELLED', ?, ?, ?)`
       ).run(`hist_${crypto.randomBytes(4).toString('hex')}`, session.session_id, session.subject_class_code, session.session_status, user.full_name || user.id, nowIso(), `Hủy buổi học: ${reason}`);
     });
     log('INFO', `[teaching] session ${session.session_id} cancelled by ${user.id}`);
-    return sessionDto(db, db.prepare('SELECT * FROM sessions WHERE session_id = ?').get(session.session_id));
+    return await sessionDto(db, await db.prepare('SELECT * FROM sessions WHERE session_id = ?').get(session.session_id));
   });
 
-  route('POST', '/sessions/:id/restore', ({ db, user, params }) => {
-    const { session } = requireSession(db, user, params.id, 'can_manage_sessions');
+  route('POST', '/sessions/:id/restore', async ({ db, user, params }) => {
+    const { session } = await requireSession(db, user, params.id, 'can_manage_sessions');
     if (session.session_status !== 'CANCELLED') fail(409, 'SESSION_NOT_CANCELLED', 'Buổi học chưa bị hủy.');
     const status = session.scheduled_end_at < nowVn() ? 'COMPLETED' : 'SCHEDULED';
-    db.prepare('UPDATE sessions SET session_status = ?, cancel_reason = NULL WHERE session_id = ?').run(status, session.session_id);
-    return sessionDto(db, db.prepare('SELECT * FROM sessions WHERE session_id = ?').get(session.session_id));
+    await db.prepare('UPDATE sessions SET session_status = ?, cancel_reason = NULL WHERE session_id = ?').run(status, session.session_id);
+    return await sessionDto(db, await db.prepare('SELECT * FROM sessions WHERE session_id = ?').get(session.session_id));
   });
 
   // ---------- Nhật ký giảng dạy: xác nhận (quy tắc 24 giờ, không khóa xác nhận muộn)
-  route('POST', '/sessions/:id/confirm-log', ({ db, user, body, params, log }) => {
-    const { session } = requireSession(db, user, params.id, 'can_confirm_teaching_log');
+  route('POST', '/sessions/:id/confirm-log', async ({ db, user, body, params, log }) => {
+    const { session } = await requireSession(db, user, params.id, 'can_confirm_teaching_log');
     if (session.session_status === 'CANCELLED') fail(422, 'SESSION_CANCELLED', 'Buổi học đã hủy.');
     if (session.scheduled_end_at > nowVn()) fail(422, 'SESSION_NOT_ENDED', 'Chỉ xác nhận nhật ký sau khi buổi học kết thúc.');
     if (['CONFIRMED', 'CONFIRMED_LATE'].includes(session.confirmation_status)) fail(409, 'ALREADY_CONFIRMED', 'Nhật ký buổi học đã được xác nhận.');
@@ -903,22 +901,22 @@ export function registerClassRoutes(route) {
     if (isLate && !reason) fail(422, 'LATE_REASON_REQUIRED', 'Xác nhận sau 24 giờ cần nhập lý do.', { field: 'note' });
     const next = isLate ? 'CONFIRMED_LATE' : 'CONFIRMED';
     const now = nowIso();
-    tx(db, () => {
-      db.prepare('UPDATE sessions SET confirmation_status = ?, confirmed_at = ?, is_late_confirmation = ?, late_confirmation_reason = ? WHERE session_id = ?')
+    await tx(db, async () => {
+      await db.prepare('UPDATE sessions SET confirmation_status = ?, confirmed_at = ?, is_late_confirmation = ?, late_confirmation_reason = ? WHERE session_id = ?')
         .run(next, now, isLate ? 1 : 0, isLate ? reason : null, session.session_id);
-      db.prepare(
+      await db.prepare(
         `INSERT INTO teaching_log_history (id, session_id, session_code, previous_status, new_status, changed_by, changed_at, note)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
       ).run(`hist_${crypto.randomBytes(4).toString('hex')}`, session.session_id, session.subject_class_code, session.confirmation_status, next,
         user.full_name || user.id, now, `Kết thúc buổi: ${session.scheduled_end_at} | Xác nhận: ${now}${reason ? ` | Ghi chú: ${reason}` : ''}`);
     });
     log('INFO', `[teaching] teaching log ${session.session_id} -> ${next} by ${user.id}`);
-    return sessionDto(db, db.prepare('SELECT * FROM sessions WHERE session_id = ?').get(session.session_id));
+    return await sessionDto(db, await db.prepare('SELECT * FROM sessions WHERE session_id = ?').get(session.session_id));
   });
 
-  route('GET', '/classes/:id/teaching-log', ({ db, user, params }) => {
-    const { cls } = requireClassAccess(db, user, params.id, 'can_view_roster');
-    const items = db
+  route('GET', '/classes/:id/teaching-log', async ({ db, user, params }) => {
+    const { cls } = await requireClassAccess(db, user, params.id, 'can_view_roster');
+    const items = await db
       .prepare(
         `SELECT h.* FROM teaching_log_history h JOIN sessions s ON s.session_id = h.session_id
          WHERE s.subject_class_id = ? ORDER BY h.changed_at DESC LIMIT 200`
@@ -928,7 +926,7 @@ export function registerClassRoutes(route) {
   });
 
   // ---------- Lịch giảng dạy
-  route('GET', '/schedule', ({ db, user, url }) => {
+  route('GET', '/schedule', async ({ db, user, url }) => {
     const today = vnDate();
     const from = url.searchParams.get('from') || today;
     const to = url.searchParams.get('to') || vnDate(new Date(Date.now() + 6 * 86400000));
@@ -950,55 +948,54 @@ export function registerClassRoutes(route) {
       extra = ' AND s.subject_class_id = ?';
       params.push(classId);
     }
-    const rows = db
+    const rows = await db
       .prepare(
         `SELECT s.*, sc.title AS class_title FROM sessions s JOIN subject_classes sc ON sc.id = s.subject_class_id
          WHERE s.scheduled_start_at >= ? AND s.scheduled_start_at <= ? AND ${classFilter}${extra}
          ORDER BY s.scheduled_start_at`
       )
       .all(...params);
-    return { from, to, items: rows.map((s) => ({ ...sessionDto(db, s), class_title: s.class_title })) };
+    return { from, to, items: await mapAsync(rows, async (s) => ({ ...await sessionDto(db, s), class_title: s.class_title })) };
   });
 
   // ---------- Tổng quan giảng dạy
-  route('GET', '/dashboard', ({ db, user }) => {
+  route('GET', '/dashboard', async ({ db, user }) => {
     const now = nowVn();
     const today = vnDate();
     const cScope = courseScopeSql(user);
     const sScope = classScopeSql(user);
-    const courses = db.prepare(`SELECT COUNT(*) n FROM courses c WHERE ${cScope.sql} AND c.status <> 'ARCHIVED'`).get(...cScope.params).n;
-    const classIds = db.prepare(`SELECT sc.id FROM subject_classes sc WHERE ${sScope.sql} AND sc.status IN ('ACTIVE','UPCOMING')`).all(...sScope.params).map((r) => r.id);
+    const courses = (await db.prepare(`SELECT COUNT(*) n FROM courses c WHERE ${cScope.sql} AND c.status <> 'ARCHIVED'`).get(...cScope.params)).n;
+    const classIds = (await db.prepare(`SELECT sc.id FROM subject_classes sc WHERE ${sScope.sql} AND sc.status IN ('ACTIVE','UPCOMING')`).all(...sScope.params)).map((r) => r.id);
     const inList = classIds.length ? classIds.map(() => '?').join(',') : "''";
     const students = classIds.length
-      ? db.prepare(`SELECT COUNT(DISTINCT student_id) n FROM class_enrollments WHERE status = 'ACTIVE' AND subject_class_id IN (${inList})`).get(...classIds).n
+      ? (await db.prepare(`SELECT COUNT(DISTINCT student_id) n FROM class_enrollments WHERE status = 'ACTIVE' AND subject_class_id IN (${inList})`).get(...classIds)).n
       : 0;
-    const sel = (where, extraParams, limit) =>
+    const sel = async (where, extraParams, limit) =>
       classIds.length
-        ? db
+        ? await mapAsync(await db
             .prepare(
               `SELECT s.*, sc.title AS class_title FROM sessions s JOIN subject_classes sc ON sc.id = s.subject_class_id
                WHERE s.subject_class_id IN (${inList}) AND s.session_status <> 'CANCELLED' AND ${where} LIMIT ${limit}`
             )
-            .all(...classIds, ...extraParams)
-            .map((s) => ({ ...sessionDto(db, s), class_title: s.class_title }))
+            .all(...classIds, ...extraParams), async (s) => ({ ...await sessionDto(db, s), class_title: s.class_title }))
         : [];
-    const todaySessions = sel(`substr(s.scheduled_start_at, 1, 10) = ? ORDER BY s.scheduled_start_at`, [today], 20);
-    const upcoming = sel(`s.scheduled_start_at > ? ORDER BY s.scheduled_start_at`, [`${today}T23:59:59+07:00`], 8);
-    const needAttendance = sel(`s.scheduled_start_at <= ? AND s.attendance_saved_at IS NULL AND s.scheduled_start_at >= ? ORDER BY s.scheduled_start_at DESC`, [now, vnIso(new Date(Date.now() - 30 * 86400000))], 10);
-    const logsUnconfirmed = sel(`s.scheduled_end_at < ? AND s.confirmation_status IN ('AWAITING_CONFIRMATION','OVERDUE_UNCONFIRMED') ORDER BY s.scheduled_start_at DESC`, [now], 10);
+    const todaySessions = await sel(`substr(s.scheduled_start_at, 1, 10) = ? ORDER BY s.scheduled_start_at`, [today], 20);
+    const upcoming = await sel(`s.scheduled_start_at > ? ORDER BY s.scheduled_start_at`, [`${today}T23:59:59+07:00`], 8);
+    const needAttendance = await sel(`s.scheduled_start_at <= ? AND s.attendance_saved_at IS NULL AND s.scheduled_start_at >= ? ORDER BY s.scheduled_start_at DESC`, [now, vnIso(new Date(Date.now() - 30 * 86400000))], 10);
+    const logsUnconfirmed = await sel(`s.scheduled_end_at < ? AND s.confirmation_status IN ('AWAITING_CONFIRMATION','OVERDUE_UNCONFIRMED') ORDER BY s.scheduled_start_at DESC`, [now], 10);
 
     // Cảnh báo chuyên cần thấp
-    const policy = getAttendancePolicy(db);
+    const policy = await getAttendancePolicy(db);
     const lowAttendance = [];
     if (classIds.length) {
-      const rows = db
+      const rows = await db
         .prepare(
           `SELECT ar.subject_class_id, ar.student_id, ar.attendance_status st, COUNT(*) n, u.full_name, u.code, sc.code AS class_code
            FROM attendance_records ar JOIN sessions s ON s.session_id = ar.class_session_id
            JOIN users u ON u.id = ar.student_id JOIN subject_classes sc ON sc.id = ar.subject_class_id
            JOIN class_enrollments e ON e.subject_class_id = ar.subject_class_id AND e.student_id = ar.student_id AND e.status = 'ACTIVE'
            WHERE ar.subject_class_id IN (${inList}) AND s.session_status <> 'CANCELLED'
-           GROUP BY ar.subject_class_id, ar.student_id, ar.attendance_status`
+           GROUP BY ar.subject_class_id, ar.student_id, ar.attendance_status, u.full_name, u.code, sc.code`
         )
         .all(...classIds);
       const map = {};
@@ -1016,16 +1013,16 @@ export function registerClassRoutes(route) {
     let assignmentsToGrade = 0;
     let leaveRequestsPending = 0;
     if (classIds.length) {
-      const pendingSubs = db
+      const pendingSubs = (await db
         .prepare(`SELECT COUNT(*) n FROM class_assignment_submissions WHERE subject_class_id IN (${inList}) AND status = 'SUBMITTED'`)
-        .get(...classIds).n;
-      const pendingExams = db
+        .get(...classIds)).n;
+      const pendingExams = (await db
         .prepare(`SELECT COUNT(*) n FROM class_exam_attempts WHERE subject_class_id IN (${inList}) AND grading_status = 'PENDING_MANUAL'`)
-        .get(...classIds).n;
+        .get(...classIds)).n;
       assignmentsToGrade = pendingSubs + pendingExams;
-      leaveRequestsPending = db
+      leaveRequestsPending = (await db
         .prepare(`SELECT COUNT(*) n FROM leave_requests WHERE subject_class_id IN (${inList}) AND status = 'PENDING'`)
-        .get(...classIds).n;
+        .get(...classIds)).n;
     }
     return {
       counts: { courses, classes: classIds.length, students, sessions_today: todaySessions.length },

@@ -12,8 +12,8 @@ import {
 } from './masterSchema.mjs';
 import { requireClassAccess, getClass } from './classes.mjs';
 
-function requireCourse(db, id) {
-  const c = db.prepare('SELECT * FROM courses WHERE id = ?').get(id);
+async function requireCourse(db, id) {
+  const c = await db.prepare('SELECT * FROM courses WHERE id = ?').get(id);
   if (!c) fail(404, 'COURSE_NOT_FOUND', 'Không tìm thấy khóa/môn học.');
   return c;
 }
@@ -30,21 +30,21 @@ function slugify(str) {
     .slice(0, 140) || `trang-${crypto.randomBytes(3).toString('hex')}`;
 }
 
-export function buildCourseTree(db, courseId, { publishedOnly = false } = {}) {
-  ensureCourseTopicsBackfill(db, courseId);
-  const topics = db
+export async function buildCourseTree(db, courseId, { publishedOnly = false } = {}) {
+  await ensureCourseTopicsBackfill(db, courseId);
+  const topics = await db
     .prepare(
       `SELECT * FROM course_topics WHERE course_id = ? ${publishedOnly ? "AND status = 'PUBLISHED'" : "AND status <> 'ARCHIVED'"}
        ORDER BY sort_order ASC, code ASC, id ASC`
     )
     .all(courseId);
-  const chapters = db
+  const chapters = await db
     .prepare(
       `SELECT * FROM chapters WHERE course_id = ? ${publishedOnly ? "AND status = 'PUBLISHED'" : "AND status <> 'ARCHIVED'"}
        ORDER BY sort_order ASC, code ASC, id ASC`
     )
     .all(courseId);
-  const lessons = db
+  const lessons = await db
     .prepare(
       `SELECT l.* FROM lessons l JOIN chapters ch ON ch.id = l.chapter_id
        WHERE ch.course_id = ? ${publishedOnly ? "AND l.publish_status = 'PUBLISHED'" : "AND l.publish_status <> 'ARCHIVED'"}
@@ -54,20 +54,20 @@ export function buildCourseTree(db, courseId, { publishedOnly = false } = {}) {
 
   // Thống kê nhanh 3 ngân hàng & Wiki tại từng bài học lá
   const qCounts = Object.fromEntries(
-    db.prepare('SELECT lesson_id, COUNT(*) n FROM question_bank_items WHERE course_id = ? AND lesson_id IS NOT NULL AND deleted_at IS NULL GROUP BY lesson_id')
-      .all(courseId).map((r) => [r.lesson_id, r.n])
+    (await db.prepare('SELECT lesson_id, COUNT(*) n FROM question_bank_items WHERE course_id = ? AND lesson_id IS NOT NULL AND deleted_at IS NULL GROUP BY lesson_id')
+      .all(courseId)).map((r) => [r.lesson_id, r.n])
   );
   const aCounts = Object.fromEntries(
-    db.prepare('SELECT lesson_id, COUNT(*) n FROM assignment_bank_items WHERE course_id = ? AND lesson_id IS NOT NULL AND deleted_at IS NULL GROUP BY lesson_id')
-      .all(courseId).map((r) => [r.lesson_id, r.n])
+    (await db.prepare('SELECT lesson_id, COUNT(*) n FROM assignment_bank_items WHERE course_id = ? AND lesson_id IS NOT NULL AND deleted_at IS NULL GROUP BY lesson_id')
+      .all(courseId)).map((r) => [r.lesson_id, r.n])
   );
   const rCounts = Object.fromEntries(
-    db.prepare('SELECT lesson_id, COUNT(*) n FROM learning_resources WHERE course_id = ? AND lesson_id IS NOT NULL AND deleted_at IS NULL GROUP BY lesson_id')
-      .all(courseId).map((r) => [r.lesson_id, r.n])
+    (await db.prepare('SELECT lesson_id, COUNT(*) n FROM learning_resources WHERE course_id = ? AND lesson_id IS NOT NULL AND deleted_at IS NULL GROUP BY lesson_id')
+      .all(courseId)).map((r) => [r.lesson_id, r.n])
   );
   const wCounts = Object.fromEntries(
-    db.prepare('SELECT lesson_id, COUNT(*) n FROM course_wiki_pages WHERE course_id = ? AND lesson_id IS NOT NULL AND deleted_at IS NULL GROUP BY lesson_id')
-      .all(courseId).map((r) => [r.lesson_id, r.n])
+    (await db.prepare('SELECT lesson_id, COUNT(*) n FROM course_wiki_pages WHERE course_id = ? AND lesson_id IS NOT NULL AND deleted_at IS NULL GROUP BY lesson_id')
+      .all(courseId)).map((r) => [r.lesson_id, r.n])
   );
 
   const lessonsByCh = {};
@@ -128,8 +128,8 @@ export function buildCourseTree(db, courseId, { publishedOnly = false } = {}) {
   });
 }
 
-function syncBankTreePaths(db, courseId) {
-  const rows = db
+async function syncBankTreePaths(db, courseId) {
+  const rows = await db
     .prepare(
       `SELECT l.id AS lesson_id, ch.id AS chapter_id, ch.topic_id
        FROM lessons l JOIN chapters ch ON ch.id = l.chapter_id
@@ -141,10 +141,10 @@ function syncBankTreePaths(db, courseId) {
   const upR = db.prepare('UPDATE learning_resources SET topic_id = ?, chapter_id = ? WHERE lesson_id = ?');
   const upW = db.prepare('UPDATE course_wiki_pages SET topic_id = ?, chapter_id = ? WHERE lesson_id = ?');
   for (const r of rows) {
-    upQ.run(r.topic_id || null, r.chapter_id, r.lesson_id);
-    upA.run(r.topic_id || null, r.chapter_id, r.lesson_id);
-    upR.run(r.topic_id || null, r.chapter_id, r.lesson_id);
-    upW.run(r.topic_id || null, r.chapter_id, r.lesson_id);
+    await upQ.run(r.topic_id || null, r.chapter_id, r.lesson_id);
+    await upA.run(r.topic_id || null, r.chapter_id, r.lesson_id);
+    await upR.run(r.topic_id || null, r.chapter_id, r.lesson_id);
+    await upW.run(r.topic_id || null, r.chapter_id, r.lesson_id);
   }
 }
 
@@ -152,10 +152,10 @@ export function registerContentTreeAndSnapshotRoutes(route) {
   // =========================================================================
   // 1. CÂY NỘI DUNG 4 CẤP (MÔN HỌC -> CHỦ ĐỀ -> CHƯƠNG -> BÀI)
   // =========================================================================
-  route('GET', '/courses/:id/tree', ({ db, user, params }) => {
-    const course = requireCourse(db, params.id);
-    if (!canViewCourse(db, user, course)) fail(403, 'COURSE_ACCESS_DENIED', 'Bạn không có quyền xem môn học này.');
-    const topics = buildCourseTree(db, course.id);
+  route('GET', '/courses/:id/tree', async ({ db, user, params }) => {
+    const course = await requireCourse(db, params.id);
+    if (!await canViewCourse(db, user, course)) fail(403, 'COURSE_ACCESS_DENIED', 'Bạn không có quyền xem môn học này.');
+    const topics = await buildCourseTree(db, course.id);
     const totalQuestions = topics.reduce((s, t) => s + t.questions_count, 0);
     const totalAssignments = topics.reduce((s, t) => s + t.assignments_count, 0);
     const totalResources = topics.reduce((s, t) => s + t.resources_count, 0);
@@ -172,33 +172,33 @@ export function registerContentTreeAndSnapshotRoutes(route) {
       },
       capabilities: {
         can_manage: canManageCourse(db, user, course),
-        can_edit_draft: canEditCourseDraft(db, user, course),
+        can_edit_draft: await canEditCourseDraft(db, user, course),
       },
     };
   });
 
-  route('POST', '/courses/:id/topics', ({ db, user, body, params }) => {
-    const course = requireCourse(db, params.id);
+  route('POST', '/courses/:id/topics', async ({ db, user, body, params }) => {
+    const course = await requireCourse(db, params.id);
     if (!canManageCourse(db, user, course)) fail(403, 'COURSE_MANAGE_FORBIDDEN', 'Bạn không có quyền chỉnh sửa cây nội dung môn học.');
     const title = text(body, 'title', { required: true, min: 2, max: 200, label: 'tên chủ đề' });
     const description = text(body, 'description', { max: 2000, label: 'mô tả chủ đề' }) || '';
     const status = oneOf(body, 'status', ['DRAFT', 'PUBLISHED'], { fallback: 'PUBLISHED', label: 'trạng thái' });
-    const max = db.prepare('SELECT COALESCE(MAX(sort_order), 0) m, COUNT(*) n FROM course_topics WHERE course_id = ?').get(course.id);
+    const max = await db.prepare('SELECT COALESCE(MAX(sort_order), 0) m, COUNT(*) n FROM course_topics WHERE course_id = ?').get(course.id);
     const code = text(body, 'code', { max: 40, label: 'mã chủ đề' }) || `CĐ-${String(max.n + 1).padStart(2, '0')}`;
     const id = `top_${crypto.randomBytes(5).toString('hex')}`;
     const now = nowIso();
-    db.prepare(
+    await db.prepare(
       `INSERT INTO course_topics (id, course_id, code, title, description, sort_order, status, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(id, course.id, code, title, description, max.m + 10, status, now, now);
-    db.prepare('UPDATE courses SET updated_at = ? WHERE id = ?').run(now, course.id);
+    await db.prepare('UPDATE courses SET updated_at = ? WHERE id = ?').run(now, course.id);
     return [201, { id, course_id: course.id, code, title, description, sort_order: max.m + 10, status, chapters: [] }];
   });
 
-  route('PATCH', '/topics/:id', ({ db, user, body, params }) => {
-    const topic = db.prepare('SELECT * FROM course_topics WHERE id = ?').get(params.id);
+  route('PATCH', '/topics/:id', async ({ db, user, body, params }) => {
+    const topic = await db.prepare('SELECT * FROM course_topics WHERE id = ?').get(params.id);
     if (!topic) fail(404, 'TOPIC_NOT_FOUND', 'Không tìm thấy chủ đề.');
-    const course = requireCourse(db, topic.course_id);
+    const course = await requireCourse(db, topic.course_id);
     if (!canManageCourse(db, user, course)) fail(403, 'COURSE_MANAGE_FORBIDDEN', 'Bạn không có quyền chỉnh sửa chủ đề này.');
     const f = {};
     if ('title' in body) f.title = text(body, 'title', { required: true, min: 2, max: 200, label: 'tên chủ đề' });
@@ -208,36 +208,36 @@ export function registerContentTreeAndSnapshotRoutes(route) {
     const keys = Object.keys(f);
     if (keys.length) {
       const now = nowIso();
-      db.prepare(`UPDATE course_topics SET ${keys.map((k) => `${k} = ?`).join(', ')}, updated_at = ? WHERE id = ?`)
+      await db.prepare(`UPDATE course_topics SET ${keys.map((k) => `${k} = ?`).join(', ')}, updated_at = ? WHERE id = ?`)
         .run(...keys.map((k) => f[k]), now, topic.id);
-      db.prepare('UPDATE courses SET updated_at = ? WHERE id = ?').run(now, course.id);
+      await db.prepare('UPDATE courses SET updated_at = ? WHERE id = ?').run(now, course.id);
     }
-    return db.prepare('SELECT * FROM course_topics WHERE id = ?').get(topic.id);
+    return await db.prepare('SELECT * FROM course_topics WHERE id = ?').get(topic.id);
   });
 
-  route('DELETE', '/topics/:id', ({ db, user, params }) => {
-    const topic = db.prepare('SELECT * FROM course_topics WHERE id = ?').get(params.id);
+  route('DELETE', '/topics/:id', async ({ db, user, params }) => {
+    const topic = await db.prepare('SELECT * FROM course_topics WHERE id = ?').get(params.id);
     if (!topic) fail(404, 'TOPIC_NOT_FOUND', 'Không tìm thấy chủ đề.');
-    const course = requireCourse(db, topic.course_id);
+    const course = await requireCourse(db, topic.course_id);
     if (!canManageCourse(db, user, course)) fail(403, 'COURSE_MANAGE_FORBIDDEN', 'Bạn không có quyền xóa chủ đề này.');
-    const chaps = db.prepare("SELECT id FROM chapters WHERE topic_id = ? AND status <> 'ARCHIVED'").all(topic.id);
+    const chaps = await db.prepare("SELECT id FROM chapters WHERE topic_id = ? AND status <> 'ARCHIVED'").all(topic.id);
     if (chaps.length > 0) {
       fail(409, 'CONTENT_IN_USE', `Chủ đề vẫn còn ${chaps.length} chương. Hãy di chuyển các chương sang chủ đề khác hoặc lưu trữ thay vì xóa.`);
     }
-    db.prepare('DELETE FROM course_topics WHERE id = ?').run(topic.id);
+    await db.prepare('DELETE FROM course_topics WHERE id = ?').run(topic.id);
     return { deleted_id: topic.id };
   });
 
   // Sắp xếp lại toàn cây 4 tầng (di chuyển Chương sang Chủ đề khác, Bài sang Chương khác) + tự cập nhật phân loại 3 Ngân hàng
-  route('PUT', '/courses/:id/tree-reorder', ({ db, user, body, params }) => {
-    const course = requireCourse(db, params.id);
+  route('PUT', '/courses/:id/tree-reorder', async ({ db, user, body, params }) => {
+    const course = await requireCourse(db, params.id);
     if (!canManageCourse(db, user, course)) fail(403, 'COURSE_MANAGE_FORBIDDEN', 'Bạn không có quyền sắp xếp cây nội dung.');
     if (!Array.isArray(body.topics)) fail(422, 'VALIDATION_ERROR', 'Dữ liệu cây nội dung không hợp lệ.');
 
-    const ownTopics = new Set(db.prepare("SELECT id FROM course_topics WHERE course_id = ? AND status <> 'ARCHIVED'").all(course.id).map((r) => r.id));
-    const ownChaps = new Set(db.prepare("SELECT id FROM chapters WHERE course_id = ? AND status <> 'ARCHIVED'").all(course.id).map((r) => r.id));
+    const ownTopics = new Set((await db.prepare("SELECT id FROM course_topics WHERE course_id = ? AND status <> 'ARCHIVED'").all(course.id)).map((r) => r.id));
+    const ownChaps = new Set((await db.prepare("SELECT id FROM chapters WHERE course_id = ? AND status <> 'ARCHIVED'").all(course.id)).map((r) => r.id));
     const ownLessons = new Set(
-      db.prepare("SELECT l.id FROM lessons l JOIN chapters ch ON ch.id = l.chapter_id WHERE ch.course_id = ? AND l.publish_status <> 'ARCHIVED'").all(course.id).map((r) => r.id)
+      (await db.prepare("SELECT l.id FROM lessons l JOIN chapters ch ON ch.id = l.chapter_id WHERE ch.course_id = ? AND l.publish_status <> 'ARCHIVED'").all(course.id)).map((r) => r.id)
     );
 
     const seenT = new Set(); const seenC = new Set(); const seenL = new Set();
@@ -258,28 +258,28 @@ export function registerContentTreeAndSnapshotRoutes(route) {
     }
 
     const now = nowIso();
-    tx(db, () => {
-      body.topics.forEach((t, ti) => {
-        db.prepare('UPDATE course_topics SET sort_order = ?, updated_at = ? WHERE id = ?').run((ti + 1) * 10, now, t.id);
-        (t.chapters || []).forEach((ch, ci) => {
-          db.prepare('UPDATE chapters SET topic_id = ?, sort_order = ?, updated_at = ? WHERE id = ?').run(t.id, (ci + 1) * 10, now, ch.id);
-          (ch.lesson_ids || []).forEach((lid, li) => {
-            db.prepare('UPDATE lessons SET chapter_id = ?, sort_order = ?, updated_at = ? WHERE id = ?').run(ch.id, (li + 1) * 10, now, lid);
-          });
-        });
-      });
-      syncBankTreePaths(db, course.id);
-      db.prepare('UPDATE courses SET updated_at = ? WHERE id = ?').run(now, course.id);
+    await tx(db, async () => {
+      for (const [ti, t] of (body.topics).entries()) {
+        await db.prepare('UPDATE course_topics SET sort_order = ?, updated_at = ? WHERE id = ?').run((ti + 1) * 10, now, t.id);
+        for (const [ci, ch] of ((t.chapters || [])).entries()) {
+          await db.prepare('UPDATE chapters SET topic_id = ?, sort_order = ?, updated_at = ? WHERE id = ?').run(t.id, (ci + 1) * 10, now, ch.id);
+          for (const [li, lid] of ((ch.lesson_ids || [])).entries()) {
+            await db.prepare('UPDATE lessons SET chapter_id = ?, sort_order = ?, updated_at = ? WHERE id = ?').run(ch.id, (li + 1) * 10, now, lid);
+          }
+        }
+      }
+      await syncBankTreePaths(db, course.id);
+      await db.prepare('UPDATE courses SET updated_at = ? WHERE id = ?').run(now, course.id);
     });
-    return { topics: buildCourseTree(db, course.id) };
+    return { topics: await buildCourseTree(db, course.id) };
   });
 
-  route('GET', '/courses/:id/tree-impact', ({ db, user, params, url }) => {
-    const course = requireCourse(db, params.id);
-    if (!canViewCourse(db, user, course)) fail(403, 'COURSE_ACCESS_DENIED', 'Bạn không có quyền xem thông tin tác động.');
+  route('GET', '/courses/:id/tree-impact', async ({ db, user, params, url }) => {
+    const course = await requireCourse(db, params.id);
+    if (!await canViewCourse(db, user, course)) fail(403, 'COURSE_ACCESS_DENIED', 'Bạn không có quyền xem thông tin tác động.');
     const nodeType = url.searchParams.get('node_type') || 'COURSE';
     const nodeId = url.searchParams.get('node_id') || course.id;
-    const activeClasses = db
+    const activeClasses = await db
       .prepare("SELECT id, code, title, course_version_id, course_version_number FROM subject_classes WHERE course_id = ? AND status NOT IN ('ARCHIVED','CANCELLED')")
       .all(course.id);
 
@@ -289,16 +289,16 @@ export function registerContentTreeAndSnapshotRoutes(route) {
     else if (nodeType === 'CHAPTER') { whereLesson = 'ch.id = ?'; qParams[0] = nodeId; }
     else if (nodeType === 'LESSON') { whereLesson = 'l.id = ?'; qParams[0] = nodeId; }
 
-    const lessonIds = db
+    const lessonIds = await db
       .prepare(`SELECT l.id, l.publish_status FROM lessons l JOIN chapters ch ON ch.id = l.chapter_id WHERE ${whereLesson}`)
       .all(...qParams);
     const lIn = lessonIds.length ? lessonIds.map(() => '?').join(',') : "''";
     const ids = lessonIds.map((l) => l.id);
 
-    const questionsCount = ids.length ? db.prepare(`SELECT COUNT(*) n FROM question_bank_items WHERE lesson_id IN (${lIn}) AND deleted_at IS NULL`).get(...ids).n : 0;
-    const assignmentsCount = ids.length ? db.prepare(`SELECT COUNT(*) n FROM assignment_bank_items WHERE lesson_id IN (${lIn}) AND deleted_at IS NULL`).get(...ids).n : 0;
-    const resourcesCount = ids.length ? db.prepare(`SELECT COUNT(*) n FROM learning_resources WHERE lesson_id IN (${lIn}) AND deleted_at IS NULL`).get(...ids).n : 0;
-    const progressCount = ids.length ? db.prepare(`SELECT COUNT(*) n FROM lesson_progress WHERE lesson_id IN (${lIn})`).get(...ids).n : 0;
+    const questionsCount = ids.length ? (await db.prepare(`SELECT COUNT(*) n FROM question_bank_items WHERE lesson_id IN (${lIn}) AND deleted_at IS NULL`).get(...ids)).n : 0;
+    const assignmentsCount = ids.length ? (await db.prepare(`SELECT COUNT(*) n FROM assignment_bank_items WHERE lesson_id IN (${lIn}) AND deleted_at IS NULL`).get(...ids)).n : 0;
+    const resourcesCount = ids.length ? (await db.prepare(`SELECT COUNT(*) n FROM learning_resources WHERE lesson_id IN (${lIn}) AND deleted_at IS NULL`).get(...ids)).n : 0;
+    const progressCount = ids.length ? (await db.prepare(`SELECT COUNT(*) n FROM lesson_progress WHERE lesson_id IN (${lIn})`).get(...ids)).n : 0;
 
     return {
       node_type: nodeType,
@@ -318,13 +318,13 @@ export function registerContentTreeAndSnapshotRoutes(route) {
   // =========================================================================
   // 2. PHIÊN BẢN MÔN HỌC BẤT BIẾN (SNAPSHOT v1 / v2) & NÂNG CẤP CÓ KIỂM SOÁT
   // =========================================================================
-  route('GET', '/courses/:id/versions', ({ db, user, params }) => {
-    const course = requireCourse(db, params.id);
-    if (!canViewCourse(db, user, course)) fail(403, 'COURSE_ACCESS_DENIED', 'Bạn không có quyền xem phiên bản môn học.');
-    const versions = db
+  route('GET', '/courses/:id/versions', async ({ db, user, params }) => {
+    const course = await requireCourse(db, params.id);
+    if (!await canViewCourse(db, user, course)) fail(403, 'COURSE_ACCESS_DENIED', 'Bạn không có quyền xem phiên bản môn học.');
+    const versions = await db
       .prepare('SELECT * FROM course_versions WHERE course_id = ? ORDER BY version_number DESC')
       .all(course.id);
-    const classes = db
+    const classes = await db
       .prepare("SELECT id, code, title, course_version_id, course_version_number, status FROM subject_classes WHERE course_id = ? AND status NOT IN ('ARCHIVED','CANCELLED') ORDER BY code")
       .all(course.id);
     const latestPublishedAt = versions[0]?.published_at || '';
@@ -355,21 +355,21 @@ export function registerContentTreeAndSnapshotRoutes(route) {
     };
   });
 
-  route('POST', '/courses/:id/versions', ({ db, user, body, params }) => {
-    const course = requireCourse(db, params.id);
+  route('POST', '/courses/:id/versions', async ({ db, user, body, params }) => {
+    const course = await requireCourse(db, params.id);
     if (!canManageCourse(db, user, course)) fail(403, 'PUBLISH_FORBIDDEN', 'Chỉ giảng viên phụ trách hoặc quản trị viên mới được phát hành phiên bản môn học.');
-    const snap = buildCourseSnapshotPayload(db, course.id);
+    const snap = await buildCourseSnapshotPayload(db, course.id);
     if (!snap || snap.lessons.length === 0) {
       fail(422, 'NO_PUBLISHED_LESSONS', 'Cần ít nhất 1 chương và 1 bài học đã xuất bản trước khi phát hành phiên bản môn học (Snapshot).');
     }
-    const maxVer = db.prepare('SELECT COALESCE(MAX(version_number), 0) m FROM course_versions WHERE course_id = ?').get(course.id).m;
+    const maxVer = (await db.prepare('SELECT COALESCE(MAX(version_number), 0) m FROM course_versions WHERE course_id = ?').get(course.id)).m;
     const nextNum = maxVer + 1;
     const label = text(body || {}, 'version_label', { max: 64, label: 'nhãn phiên bản' }) || `v${nextNum}.0`;
     const changelog = text(body || {}, 'changelog_note', { max: 1000, label: 'ghi chú phát hành' }) || `Phát hành phiên bản ${label}`;
     const verId = `cv_${crypto.randomBytes(6).toString('hex')}`;
     const now = nowIso();
 
-    db.prepare(
+    await db.prepare(
       `INSERT INTO course_versions (id, course_id, version_number, version_label, status, snapshot_json, changelog_note, published_by, published_by_name, published_at)
        VALUES (?, ?, ?, ?, 'PUBLISHED', ?, ?, ?, ?, ?)`
     ).run(verId, course.id, nextNum, label, JSON.stringify(snap), changelog, user.id, user.full_name, now);
@@ -388,10 +388,10 @@ export function registerContentTreeAndSnapshotRoutes(route) {
     }];
   });
 
-  route('GET', '/courses/:id/versions/:versionId', ({ db, user, params }) => {
-    const course = requireCourse(db, params.id);
-    if (!canViewCourse(db, user, course)) fail(403, 'COURSE_ACCESS_DENIED', 'Bạn không có quyền xem phiên bản môn học.');
-    const ver = db.prepare('SELECT * FROM course_versions WHERE id = ? AND course_id = ?').get(params.versionId, course.id);
+  route('GET', '/courses/:id/versions/:versionId', async ({ db, user, params }) => {
+    const course = await requireCourse(db, params.id);
+    if (!await canViewCourse(db, user, course)) fail(403, 'COURSE_ACCESS_DENIED', 'Bạn không có quyền xem phiên bản môn học.');
+    const ver = await db.prepare('SELECT * FROM course_versions WHERE id = ? AND course_id = ?').get(params.versionId, course.id);
     if (!ver) fail(404, 'VERSION_NOT_FOUND', 'Không tìm thấy phiên bản môn học.');
     return {
       id: ver.id,
@@ -407,42 +407,42 @@ export function registerContentTreeAndSnapshotRoutes(route) {
   });
 
   // Tạo bản nháp làm việc tiếp từ một snapshot (giữ nguyên các lớp đang chạy snapshot v1)
-  route('POST', '/courses/:id/versions/:versionId/clone-to-draft', ({ db, user, params }) => {
-    const course = requireCourse(db, params.id);
+  route('POST', '/courses/:id/versions/:versionId/clone-to-draft', async ({ db, user, params }) => {
+    const course = await requireCourse(db, params.id);
     if (!canManageCourse(db, user, course)) fail(403, 'COURSE_MANAGE_FORBIDDEN', 'Bạn không có quyền khôi phục phiên bản về bản nháp.');
-    const ver = db.prepare('SELECT * FROM course_versions WHERE id = ? AND course_id = ?').get(params.versionId, course.id);
+    const ver = await db.prepare('SELECT * FROM course_versions WHERE id = ? AND course_id = ?').get(params.versionId, course.id);
     if (!ver) fail(404, 'VERSION_NOT_FOUND', 'Không tìm thấy phiên bản.');
     const snap = safeJson(ver.snapshot_json, {});
     const now = nowIso();
 
-    tx(db, () => {
+    await tx(db, async () => {
       for (const l of snap.lessons || []) {
         const blocks = snap.blocks_by_lesson?.[l.id] || [];
-        const existingLesson = db.prepare('SELECT id, working_draft_revision FROM lessons WHERE id = ?').get(l.id);
+        const existingLesson = await db.prepare('SELECT id, working_draft_revision FROM lessons WHERE id = ?').get(l.id);
         if (!existingLesson) continue;
-        db.prepare('DELETE FROM lesson_blocks WHERE lesson_id = ?').run(l.id);
-        blocks.forEach((b, idx) => {
-          db.prepare(
+        await db.prepare('DELETE FROM lesson_blocks WHERE lesson_id = ?').run(l.id);
+        for (const [idx, b] of (blocks).entries()) {
+          await db.prepare(
             `INSERT INTO lesson_blocks (id, lesson_id, schema_version, block_type, sort_order, status, content_json)
              VALUES (?, ?, '1.2', ?, ?, 'ACTIVE', ?)`
           ).run(`blk_${crypto.randomBytes(6).toString('hex')}`, l.id, b.block_type, b.sort_order ?? (idx + 1) * 10, JSON.stringify(b.content || {}));
-        });
-        db.prepare('UPDATE lessons SET working_draft_revision = working_draft_revision + 1, updated_at = ? WHERE id = ?').run(now, l.id);
+        }
+        await db.prepare('UPDATE lessons SET working_draft_revision = working_draft_revision + 1, updated_at = ? WHERE id = ?').run(now, l.id);
       }
-      db.prepare('UPDATE courses SET updated_at = ? WHERE id = ?').run(now, course.id);
+      await db.prepare('UPDATE courses SET updated_at = ? WHERE id = ?').run(now, course.id);
     });
     return { cloned_from_version_id: ver.id, version_label: ver.version_label, restored_lessons: (snap.lessons || []).length };
   });
 
   // Nâng cấp lớp môn học đang chạy lên phiên bản mới có xác nhận & lưu nhật ký
-  route('POST', '/classes/:id/upgrade-version', ({ db, user, body, params }) => {
-    const { cls } = requireClassAccess(db, user, params.id, 'can_manage_class');
+  route('POST', '/classes/:id/upgrade-version', async ({ db, user, body, params }) => {
+    const { cls } = await requireClassAccess(db, user, params.id, 'can_manage_class');
     if (!cls.course_id) fail(422, 'CLASS_NO_COURSE', 'Lớp môn học chưa liên kết môn học nào.');
     if (body.confirmed !== true) {
       fail(422, 'CONFIRMATION_REQUIRED', 'Vui lòng xác nhận nâng cấp phiên bản môn học cho lớp (có ảnh hưởng tới lộ trình bài học mới của học viên).');
     }
     const targetVerId = text(body, 'target_version_id', { required: true, max: 64, label: 'phiên bản đích' });
-    const ver = db.prepare('SELECT * FROM course_versions WHERE id = ? AND course_id = ?').get(targetVerId, cls.course_id);
+    const ver = await db.prepare('SELECT * FROM course_versions WHERE id = ? AND course_id = ?').get(targetVerId, cls.course_id);
     if (!ver) fail(404, 'VERSION_NOT_FOUND', 'Phiên bản môn học đích không tồn tại hoặc không thuộc môn học của lớp.');
     if (cls.course_version_id === ver.id) {
       fail(409, 'ALREADY_ON_VERSION', 'Lớp môn học đang sử dụng phiên bản này.');
@@ -450,12 +450,12 @@ export function registerContentTreeAndSnapshotRoutes(route) {
     const reason = text(body, 'upgrade_reason', { required: true, min: 3, max: 500, label: 'lý do nâng cấp phiên bản' });
     const now = nowIso();
 
-    tx(db, () => {
-      db.prepare(
+    await tx(db, async () => {
+      await db.prepare(
         `INSERT INTO class_version_upgrade_logs (id, subject_class_id, from_version_id, to_version_id, upgrade_reason, upgraded_by, upgraded_by_name, upgraded_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
       ).run(crypto.randomUUID(), cls.id, cls.course_version_id || null, ver.id, reason, user.id, user.full_name, now);
-      db.prepare('UPDATE subject_classes SET course_version_id = ?, course_version_number = ?, updated_at = ? WHERE id = ?')
+      await db.prepare('UPDATE subject_classes SET course_version_id = ?, course_version_number = ?, updated_at = ? WHERE id = ?')
         .run(ver.id, ver.version_number, now, cls.id);
     });
 
@@ -472,17 +472,17 @@ export function registerContentTreeAndSnapshotRoutes(route) {
   // =========================================================================
   // 3. WIKI MÔN HỌC (SUBJECT WIKI)
   // =========================================================================
-  route('GET', '/courses/:id/wiki', ({ db, user, params, url }) => {
-    const course = requireCourse(db, params.id);
-    if (!canViewCourse(db, user, course)) fail(403, 'COURSE_ACCESS_DENIED', 'Bạn không có quyền xem Wiki của môn học này.');
+  route('GET', '/courses/:id/wiki', async ({ db, user, params, url }) => {
+    const course = await requireCourse(db, params.id);
+    if (!await canViewCourse(db, user, course)) fail(403, 'COURSE_ACCESS_DENIED', 'Bạn không có quyền xem Wiki của môn học này.');
     const q = (url.searchParams.get('q') || '').trim();
     const lessonId = url.searchParams.get('lesson_id');
     const where = ['w.course_id = ?', 'w.deleted_at IS NULL'];
     const qParams = [course.id];
-    if (q) { where.push('(w.title LIKE ? OR w.summary LIKE ? OR w.content_markdown LIKE ?)'); qParams.push(`%${q}%`, `%${q}%`, `%${q}%`); }
+    if (q) { where.push("(LOWER(w.title) LIKE LOWER(?) OR LOWER(w.summary) LIKE LOWER(?) OR LOWER(w.content_markdown) LIKE LOWER(?))"); qParams.push(`%${q}%`, `%${q}%`, `%${q}%`); }
     if (lessonId) { where.push('w.lesson_id = ?'); qParams.push(lessonId); }
 
-    const rows = db
+    const rows = await db
       .prepare(
         `SELECT w.*, t.title AS topic_title, ch.title AS chapter_title, l.title AS lesson_title
          FROM course_wiki_pages w
@@ -499,13 +499,13 @@ export function registerContentTreeAndSnapshotRoutes(route) {
         tags: safeJson(r.tags_json, []),
         related_page_ids: safeJson(r.related_page_ids_json, []),
       })),
-      can_edit: canEditCourseDraft(db, user, course),
+      can_edit: await canEditCourseDraft(db, user, course),
     };
   });
 
-  route('POST', '/courses/:id/wiki', ({ db, user, body, params }) => {
-    const course = requireCourse(db, params.id);
-    if (!canEditCourseDraft(db, user, course)) fail(403, 'CONTENT_EDIT_FORBIDDEN', 'Bạn không có quyền tạo trang Wiki cho môn học này.');
+  route('POST', '/courses/:id/wiki', async ({ db, user, body, params }) => {
+    const course = await requireCourse(db, params.id);
+    if (!await canEditCourseDraft(db, user, course)) fail(403, 'CONTENT_EDIT_FORBIDDEN', 'Bạn không có quyền tạo trang Wiki cho môn học này.');
     const title = text(body, 'title', { required: true, min: 2, max: 200, label: 'tiêu đề trang Wiki' });
     const summary = text(body, 'summary', { max: 1000, label: 'tóm tắt' }) || '';
     const contentMarkdown = text(body, 'content_markdown', { required: true, max: 30000, label: 'nội dung Wiki' });
@@ -517,46 +517,46 @@ export function registerContentTreeAndSnapshotRoutes(route) {
     let chapterId = body.chapter_id || null;
     let topicId = body.topic_id || null;
     if (lessonId) {
-      const l = db.prepare('SELECT id, chapter_id FROM lessons WHERE id = ?').get(lessonId);
+      const l = await db.prepare('SELECT id, chapter_id FROM lessons WHERE id = ?').get(lessonId);
       if (!l) fail(422, 'VALIDATION_ERROR', 'Bài học đính kèm không tồn tại.');
-      const ch = db.prepare('SELECT id, topic_id, course_id FROM chapters WHERE id = ?').get(l.chapter_id);
+      const ch = await db.prepare('SELECT id, topic_id, course_id FROM chapters WHERE id = ?').get(l.chapter_id);
       if (!ch || ch.course_id !== course.id) fail(422, 'VALIDATION_ERROR', 'Bài học không thuộc môn học này.');
       chapterId = ch.id;
       topicId = ch.topic_id;
     } else if (chapterId) {
-      const ch = db.prepare('SELECT id, topic_id, course_id FROM chapters WHERE id = ?').get(chapterId);
+      const ch = await db.prepare('SELECT id, topic_id, course_id FROM chapters WHERE id = ?').get(chapterId);
       if (!ch || ch.course_id !== course.id) fail(422, 'VALIDATION_ERROR', 'Chương không thuộc môn học này.');
       topicId = ch.topic_id;
     }
 
     let slug = slugify(body.slug || title);
-    if (db.prepare('SELECT 1 FROM course_wiki_pages WHERE course_id = ? AND slug = ?').get(course.id, slug)) {
+    if (await db.prepare('SELECT 1 FROM course_wiki_pages WHERE course_id = ? AND slug = ?').get(course.id, slug)) {
       slug = `${slug.slice(0, 120)}-${crypto.randomBytes(2).toString('hex')}`;
     }
     const pageId = `wiki_${crypto.randomBytes(5).toString('hex')}`;
     const now = nowIso();
-    tx(db, () => {
-      db.prepare(
+    await tx(db, async () => {
+      await db.prepare(
         `INSERT INTO course_wiki_pages (
            id, course_id, topic_id, chapter_id, lesson_id, slug, title, summary, content_markdown,
            tags_json, related_page_ids_json, status, created_by, updated_by, created_at, updated_at
          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       ).run(pageId, course.id, topicId, chapterId, lessonId, slug, title, summary, contentMarkdown, JSON.stringify(tags), JSON.stringify(relatedIds), status, user.id, user.id, now, now);
-      db.prepare(
+      await db.prepare(
         `INSERT INTO course_wiki_revisions (id, page_id, revision_number, title, content_markdown, change_note, edited_by, edited_by_name, created_at)
          VALUES (?, ?, 1, ?, ?, 'Khởi tạo trang Wiki', ?, ?, ?)`
       ).run(crypto.randomUUID(), pageId, title, contentMarkdown, user.id, user.full_name, now);
     });
-    return [201, db.prepare('SELECT * FROM course_wiki_pages WHERE id = ?').get(pageId)];
+    return [201, await db.prepare('SELECT * FROM course_wiki_pages WHERE id = ?').get(pageId)];
   });
 
-  route('GET', '/wiki/:pageId', ({ db, user, params }) => {
-    const page = db.prepare('SELECT * FROM course_wiki_pages WHERE id = ? AND deleted_at IS NULL').get(params.pageId);
+  route('GET', '/wiki/:pageId', async ({ db, user, params }) => {
+    const page = await db.prepare('SELECT * FROM course_wiki_pages WHERE id = ? AND deleted_at IS NULL').get(params.pageId);
     if (!page) fail(404, 'WIKI_NOT_FOUND', 'Không tìm thấy trang Wiki.');
-    const course = requireCourse(db, page.course_id);
-    const isStaffViewer = canViewCourse(db, user, course);
+    const course = await requireCourse(db, page.course_id);
+    const isStaffViewer = await canViewCourse(db, user, course);
     if (!isStaffViewer) {
-      const enrolled = db
+      const enrolled = await db
         .prepare(
           `SELECT 1 FROM class_enrollments e JOIN subject_classes sc ON sc.id = e.subject_class_id
            WHERE e.student_id = ? AND e.status = 'ACTIVE' AND sc.course_id = ? AND sc.status NOT IN ('DRAFT','ARCHIVED','CANCELLED')`
@@ -564,12 +564,12 @@ export function registerContentTreeAndSnapshotRoutes(route) {
         .get(user.id, course.id);
       if (!enrolled || page.status !== 'PUBLISHED') fail(403, 'WIKI_ACCESS_DENIED', 'Bạn không có quyền xem trang Wiki này.');
     }
-    const revisions = db
+    const revisions = await db
       .prepare('SELECT * FROM course_wiki_revisions WHERE page_id = ? ORDER BY revision_number DESC LIMIT 30')
       .all(page.id);
     const relIds = safeJson(page.related_page_ids_json, []);
     const related = relIds.length
-      ? db.prepare(`SELECT id, title, slug, summary FROM course_wiki_pages WHERE id IN (${relIds.map(() => '?').join(',')}) AND deleted_at IS NULL`).all(...relIds)
+      ? await db.prepare(`SELECT id, title, slug, summary FROM course_wiki_pages WHERE id IN (${relIds.map(() => '?').join(',')}) AND deleted_at IS NULL`).all(...relIds)
       : [];
     return {
       ...page,
@@ -577,15 +577,15 @@ export function registerContentTreeAndSnapshotRoutes(route) {
       related_page_ids: relIds,
       related_pages: related,
       revisions,
-      can_edit: canEditCourseDraft(db, user, course),
+      can_edit: await canEditCourseDraft(db, user, course),
     };
   });
 
-  route('PATCH', '/wiki/:pageId', ({ db, user, body, params }) => {
-    const page = db.prepare('SELECT * FROM course_wiki_pages WHERE id = ? AND deleted_at IS NULL').get(params.pageId);
+  route('PATCH', '/wiki/:pageId', async ({ db, user, body, params }) => {
+    const page = await db.prepare('SELECT * FROM course_wiki_pages WHERE id = ? AND deleted_at IS NULL').get(params.pageId);
     if (!page) fail(404, 'WIKI_NOT_FOUND', 'Không tìm thấy trang Wiki.');
-    const course = requireCourse(db, page.course_id);
-    if (!canEditCourseDraft(db, user, course)) fail(403, 'CONTENT_EDIT_FORBIDDEN', 'Bạn không có quyền chỉnh sửa Wiki.');
+    const course = await requireCourse(db, page.course_id);
+    if (!await canEditCourseDraft(db, user, course)) fail(403, 'CONTENT_EDIT_FORBIDDEN', 'Bạn không có quyền chỉnh sửa Wiki.');
 
     const title = 'title' in body ? text(body, 'title', { required: true, min: 2, max: 200, label: 'tiêu đề' }) : page.title;
     const summary = 'summary' in body ? (text(body, 'summary', { max: 1000, label: 'tóm tắt' }) || '') : page.summary;
@@ -594,49 +594,49 @@ export function registerContentTreeAndSnapshotRoutes(route) {
     const tags = Array.isArray(body.tags) ? body.tags.map((t) => String(t).trim()).filter(Boolean).slice(0, 12) : safeJson(page.tags_json, []);
     const relIds = Array.isArray(body.related_page_ids) ? body.related_page_ids.slice(0, 10) : safeJson(page.related_page_ids_json, []);
     const changeNote = text(body, 'change_note', { max: 300, label: 'ghi chú sửa' }) || 'Cập nhật nội dung Wiki';
-    const maxRev = db.prepare('SELECT COALESCE(MAX(revision_number), 0) m FROM course_wiki_revisions WHERE page_id = ?').get(page.id).m;
+    const maxRev = (await db.prepare('SELECT COALESCE(MAX(revision_number), 0) m FROM course_wiki_revisions WHERE page_id = ?').get(page.id)).m;
     const now = nowIso();
 
-    tx(db, () => {
-      db.prepare(
+    await tx(db, async () => {
+      await db.prepare(
         `UPDATE course_wiki_pages SET title = ?, summary = ?, content_markdown = ?, tags_json = ?, related_page_ids_json = ?,
            status = ?, updated_by = ?, updated_at = ? WHERE id = ?`
       ).run(title, summary, contentMarkdown, JSON.stringify(tags), JSON.stringify(relIds), status, user.id, now, page.id);
-      db.prepare(
+      await db.prepare(
         `INSERT INTO course_wiki_revisions (id, page_id, revision_number, title, content_markdown, change_note, edited_by, edited_by_name, created_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
       ).run(crypto.randomUUID(), page.id, maxRev + 1, title, contentMarkdown, changeNote, user.id, user.full_name, now);
     });
-    return db.prepare('SELECT * FROM course_wiki_pages WHERE id = ?').get(page.id);
+    return await db.prepare('SELECT * FROM course_wiki_pages WHERE id = ?').get(page.id);
   });
 
-  route('DELETE', '/wiki/:pageId', ({ db, user, params }) => {
-    const page = db.prepare('SELECT * FROM course_wiki_pages WHERE id = ? AND deleted_at IS NULL').get(params.pageId);
+  route('DELETE', '/wiki/:pageId', async ({ db, user, params }) => {
+    const page = await db.prepare('SELECT * FROM course_wiki_pages WHERE id = ? AND deleted_at IS NULL').get(params.pageId);
     if (!page) fail(404, 'WIKI_NOT_FOUND', 'Không tìm thấy trang Wiki.');
-    const course = requireCourse(db, page.course_id);
+    const course = await requireCourse(db, page.course_id);
     if (!canManageCourse(db, user, course)) fail(403, 'COURSE_MANAGE_FORBIDDEN', 'Bạn không có quyền xóa trang Wiki.');
-    db.prepare('UPDATE course_wiki_pages SET deleted_at = ?, updated_at = ? WHERE id = ?').run(nowIso(), nowIso(), page.id);
+    await db.prepare('UPDATE course_wiki_pages SET deleted_at = ?, updated_at = ? WHERE id = ?').run(nowIso(), nowIso(), page.id);
     return { deleted_id: page.id };
   });
 
   // Học viên xem Wiki trong Lớp môn học của mình
-  route('GET', '/learn/classes/:id/wiki', ({ db, user, params, url }) => {
-    const cls = getClass(db, params.id);
+  route('GET', '/learn/classes/:id/wiki', async ({ db, user, params, url }) => {
+    const cls = await getClass(db, params.id);
     if (!cls) fail(404, 'CLASS_NOT_FOUND', 'Không tìm thấy lớp học.');
-    const enrolled = db.prepare(`SELECT 1 FROM class_enrollments WHERE subject_class_id = ? AND student_id = ? AND status = 'ACTIVE'`).get(cls.id, user.id);
+    const enrolled = await db.prepare(`SELECT 1 FROM class_enrollments WHERE subject_class_id = ? AND student_id = ? AND status = 'ACTIVE'`).get(cls.id, user.id);
     if (!enrolled) fail(403, 'NOT_ENROLLED', 'Bạn chưa được ghi danh vào lớp học này.');
     if (!cls.course_id) return { items: [] };
     const q = (url.searchParams.get('q') || '').trim();
     const lessonId = url.searchParams.get('lesson_id');
     const where = ['w.course_id = ?', 'w.deleted_at IS NULL', "w.status = 'PUBLISHED'"];
     const qParams = [cls.course_id];
-    if (q) { where.push('(w.title LIKE ? OR w.summary LIKE ? OR w.content_markdown LIKE ? OR w.tags_json LIKE ?)'); qParams.push(`%${q}%`, `%${q}%`, `%${q}%`, `%${q}%`); }
+    if (q) { where.push("(LOWER(w.title) LIKE LOWER(?) OR LOWER(w.summary) LIKE LOWER(?) OR LOWER(w.content_markdown) LIKE LOWER(?) OR LOWER(w.tags_json) LIKE LOWER(?))"); qParams.push(`%${q}%`, `%${q}%`, `%${q}%`, `%${q}%`); }
     if (lessonId) { where.push('(w.lesson_id = ? OR w.lesson_id IS NULL)'); qParams.push(lessonId); }
     const orderBy = lessonId
       ? 'CASE WHEN w.lesson_id = ? THEN 0 ELSE 1 END, w.title ASC'
       : 'w.title ASC';
     if (lessonId) qParams.push(lessonId);
-    const rows = db
+    const rows = await db
       .prepare(
         `SELECT w.*, t.title AS topic_title, ch.title AS chapter_title, l.title AS lesson_title
          FROM course_wiki_pages w

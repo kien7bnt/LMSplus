@@ -6,7 +6,7 @@
  */
 
 import crypto from 'node:crypto';
-import { fail, nowIso, nowVn, oneOf, text, tx } from './http.mjs';
+import { fail, nowIso, nowVn, oneOf, text, tx , mapAsync} from './http.mjs';
 import { vnDate } from './schema.mjs';
 import { isAdmin, isInstructor, isStaff } from './scope.mjs';
 
@@ -49,9 +49,9 @@ function inferHourCategory(sessionRow, courseRow) {
  * 2.2.1: Khi đến giờ bắt đầu buổi học (scheduled_start_at <= nowVn), hệ thống tự động coi như
  * giảng viên đã mở buổi dạy, gán giờ bắt đầu thực tế và người dạy thực tế mặc định nếu chưa ghi nhận.
  */
-export function syncAutoOpenedSessions(db) {
+export async function syncAutoOpenedSessions(db) {
   const now = nowVn();
-  db.prepare(
+  await db.prepare(
     `UPDATE sessions
      SET live_status = CASE
            WHEN scheduled_end_at > ? AND COALESCE(live_status, 'NOT_STARTED') = 'NOT_STARTED' THEN 'LIVE'
@@ -76,12 +76,12 @@ export function syncAutoOpenedSessions(db) {
   ).run(now, now, now, now, now);
 }
 
-function resolveQuotaForInstructor(db, instructorId, periodKey) {
-  const exact = db
+async function resolveQuotaForInstructor(db, instructorId, periodKey) {
+  const exact = await db
     .prepare('SELECT * FROM instructor_quotas WHERE instructor_id = ? AND period_key = ?')
     .get(instructorId, periodKey);
   if (exact) return exact;
-  const def = db
+  const def = await db
     .prepare("SELECT * FROM instructor_quotas WHERE instructor_id = ? ORDER BY period_key DESC LIMIT 1")
     .get(instructorId);
   if (def) return def;
@@ -104,15 +104,15 @@ export function registerTeachingHoursRoutes(route) {
   // 1. GHI NHẬN BUỔI DẠY THỰC TẾ & NGƯỜI DẠY THAY (2.2.1)
   // =========================================================================
 
-  route('PATCH', '/teaching-hours/sessions/:id/record', ({ db, user, body, params }) => {
-    syncAutoOpenedSessions(db);
-    const ses = db.prepare('SELECT * FROM sessions WHERE session_id = ?').get(params.id);
+  route('PATCH', '/teaching-hours/sessions/:id/record', async ({ db, user, body, params }) => {
+    await syncAutoOpenedSessions(db);
+    const ses = await db.prepare('SELECT * FROM sessions WHERE session_id = ?').get(params.id);
     if (!ses) fail(404, 'SESSION_NOT_FOUND', 'Không tìm thấy buổi học.');
     if (ses.timesheet_locked_id) {
       fail(409, 'SESSION_TIMESHEET_LOCKED', 'Buổi học đã chốt công chuyển Tài chính, không thể chỉnh sửa.');
     }
 
-    const cls = db.prepare('SELECT * FROM subject_classes WHERE id = ?').get(ses.subject_class_id);
+    const cls = await db.prepare('SELECT * FROM subject_classes WHERE id = ?').get(ses.subject_class_id);
     const isOwnSession = ses.scheduled_instructor_id === user.id || ses.actual_instructor_id === user.id;
     const isDeptStaff = isStaff(user) && (!user.department_id || !cls?.department_id || user.department_id === cls.department_id);
     if (!isAdmin(user) && !isDeptStaff && !(isInstructor(user) && isOwnSession)) {
@@ -138,7 +138,7 @@ export function registerTeachingHoursRoutes(route) {
       if (!isAdmin(user) && !isDeptStaff && body.actual_instructor_id !== user.id) {
         fail(403, 'SUBSTITUTE_ASSIGN_FORBIDDEN', 'Chỉ Giáo vụ hoặc Quản trị viên mới được ghi nhận giảng viên dạy thay khác.');
       }
-      const gv = db.prepare('SELECT id, full_name FROM users WHERE id = ?').get(body.actual_instructor_id);
+      const gv = await db.prepare('SELECT id, full_name FROM users WHERE id = ?').get(body.actual_instructor_id);
       if (!gv) fail(404, 'INSTRUCTOR_NOT_FOUND', 'Không tìm thấy giảng viên thực dạy.');
       actualInstructorId = gv.id;
       actualInstructorName = gv.full_name;
@@ -146,12 +146,12 @@ export function registerTeachingHoursRoutes(route) {
       subReason = isSubstitute ? (text(body, 'substitute_reason', { max: 500, label: 'lý do dạy thay' }) || subReason || 'Dạy thay theo phân công') : null;
     }
 
-    const course = cls?.course_id ? db.prepare('SELECT * FROM courses WHERE id = ?').get(cls.course_id) : null;
+    const course = cls?.course_id ? await db.prepare('SELECT * FROM courses WHERE id = ?').get(cls.course_id) : null;
     const actualPeriods = body.actual_periods !== undefined && body.actual_periods !== null && body.actual_periods !== ''
       ? Math.max(0.5, Number(body.actual_periods))
       : computeHoursAndPeriods({ ...ses, actual_start_at: nextStart, actual_end_at: nextEnd, actual_periods: null }, course).periods;
 
-    db.prepare(
+    await db.prepare(
       `UPDATE sessions
        SET actual_start_at = ?,
            actual_end_at = ?,
@@ -175,7 +175,7 @@ export function registerTeachingHoursRoutes(route) {
       ses.session_id
     );
 
-    const updated = db.prepare('SELECT * FROM sessions WHERE session_id = ?').get(ses.session_id);
+    const updated = await db.prepare('SELECT * FROM sessions WHERE session_id = ?').get(ses.session_id);
     const metrics = computeHoursAndPeriods(updated, course);
     return {
       session_id: updated.session_id,
@@ -195,7 +195,7 @@ export function registerTeachingHoursRoutes(route) {
   // 2. ĐỊNH MỨC GIỜ GIẢNG & THỐNG KÊ ĐA CHIỀU (2.2.2)
   // =========================================================================
 
-  route('GET', '/teaching-hours/quotas', ({ db, user, url }) => {
+  route('GET', '/teaching-hours/quotas', async ({ db, user, url }) => {
     const periodKey = url.searchParams.get('period_key') || vnDate().slice(0, 7);
     assertAnalyticsAccess(user, url.searchParams.get('instructor_id') || '');
 
@@ -212,11 +212,11 @@ export function registerTeachingHoursRoutes(route) {
     }
     instrSql += ' ORDER BY u.full_name';
 
-    const instructors = db.prepare(instrSql).all(...params);
+    const instructors = await db.prepare(instrSql).all(...params);
     return {
       period_key: periodKey,
-      items: instructors.map((ins) => {
-        const q = resolveQuotaForInstructor(db, ins.id, periodKey);
+      items: await mapAsync(instructors, async (ins) => {
+        const q = await resolveQuotaForInstructor(db, ins.id, periodKey);
         return {
           instructor_id: ins.id,
           instructor_code: ins.code || '',
@@ -233,7 +233,7 @@ export function registerTeachingHoursRoutes(route) {
     };
   });
 
-  route('PUT', '/teaching-hours/quotas', ({ db, user, body }) => {
+  route('PUT', '/teaching-hours/quotas', async ({ db, user, body }) => {
     if (!isAdmin(user) && !isStaff(user)) {
       fail(403, 'FORBIDDEN', 'Chỉ Giáo vụ hoặc Quản trị viên mới được thiết lập định mức giờ giảng.');
     }
@@ -244,22 +244,22 @@ export function registerTeachingHoursRoutes(route) {
     const note = text(body, 'note', { max: 300, label: 'ghi chú' }) || '';
     const now = nowIso();
 
-    const existing = db.prepare('SELECT id FROM instructor_quotas WHERE instructor_id = ? AND period_key = ?').get(instructorId, periodKey);
+    const existing = await db.prepare('SELECT id FROM instructor_quotas WHERE instructor_id = ? AND period_key = ?').get(instructorId, periodKey);
     if (existing) {
-      db.prepare('UPDATE instructor_quotas SET standard_periods = ?, standard_hours = ?, note = ?, updated_at = ? WHERE id = ?')
+      await db.prepare('UPDATE instructor_quotas SET standard_periods = ?, standard_hours = ?, note = ?, updated_at = ? WHERE id = ?')
         .run(standardPeriods, standardHours, note, now, existing.id);
     } else {
-      db.prepare(
+      await db.prepare(
         `INSERT INTO instructor_quotas (id, instructor_id, period_key, standard_periods, standard_hours, note, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?)`
       ).run(`iq_${crypto.randomBytes(5).toString('hex')}`, instructorId, periodKey, standardPeriods, standardHours, note, now);
     }
 
-    return resolveQuotaForInstructor(db, instructorId, periodKey);
+    return await resolveQuotaForInstructor(db, instructorId, periodKey);
   });
 
-  route('GET', '/teaching-hours/analytics', ({ db, user, url }) => {
-    syncAutoOpenedSessions(db);
+  route('GET', '/teaching-hours/analytics', async ({ db, user, url }) => {
+    await syncAutoOpenedSessions(db);
     const periodMonth = url.searchParams.get('period_month') || vnDate().slice(0, 7);
     const fromDate = url.searchParams.get('from') || `${periodMonth}-01`;
     const toDate = url.searchParams.get('to') || `${periodMonth}-31`;
@@ -293,7 +293,7 @@ export function registerTeachingHoursRoutes(route) {
       params.push(effectiveInstructorId, effectiveInstructorId);
     }
 
-    const rows = db
+    const rows = await db
       .prepare(
         `SELECT s.*, sc.code AS class_code, sc.title AS class_title, sc.course_id, sc.department_id,
                 c.code AS course_code, c.title AS course_title, c.minutes_per_period, c.required_room_type
@@ -310,11 +310,11 @@ export function registerTeachingHoursRoutes(route) {
     const byClassMap = new Map();
     const sessionLedger = [];
 
-    const ensureInstructorBucket = (insId, insName) => {
+    const ensureInstructorBucket = async (insId, insName) => {
       if (!insId) return null;
       if (!byInstructorMap.has(insId)) {
-        const u = db.prepare('SELECT id, full_name, department_id FROM users WHERE id = ?').get(insId);
-        const quota = resolveQuotaForInstructor(db, insId, periodMonth);
+        const u = await db.prepare('SELECT id, full_name, department_id FROM users WHERE id = ?').get(insId);
+        const quota = await resolveQuotaForInstructor(db, insId, periodMonth);
         byInstructorMap.set(insId, {
           instructor_id: insId,
           instructor_name: u?.full_name || insName || insId,
@@ -354,18 +354,18 @@ export function registerTeachingHoursRoutes(route) {
       // Ghi nhận buổi nghỉ cho GV được phân công
       if (isCancelled) {
         if (!effectiveInstructorId || scheduledId === effectiveInstructorId) {
-          const b = ensureInstructorBucket(scheduledId, r.scheduled_instructor_name);
+          const b = await ensureInstructorBucket(scheduledId, r.scheduled_instructor_name);
           if (b) b.cancelled_sessions += 1;
         }
       } else {
         // Nếu người dạy thực tế khác người phân công: cộng giờ cho người dạy thay, ghi nhận "được dạy thay" cho người phân công
         if (isSub && scheduledId && scheduledId !== actualId && (!effectiveInstructorId || scheduledId === effectiveInstructorId)) {
-          const origBucket = ensureInstructorBucket(scheduledId, r.scheduled_instructor_name);
+          const origBucket = await ensureInstructorBucket(scheduledId, r.scheduled_instructor_name);
           if (origBucket) origBucket.substituted_out_sessions += 1;
         }
 
         if (!effectiveInstructorId || actualId === effectiveInstructorId) {
-          const bucket = ensureInstructorBucket(actualId, r.actual_instructor_name || r.scheduled_instructor_name);
+          const bucket = await ensureInstructorBucket(actualId, r.actual_instructor_name || r.scheduled_instructor_name);
           if (bucket) {
             bucket.total_sessions += 1;
             if (isConfirmed) bucket.confirmed_sessions += 1;
@@ -457,7 +457,7 @@ export function registerTeachingHoursRoutes(route) {
 
     // Nếu giảng viên đăng nhập chưa có buổi nào trong kỳ vẫn hiển thị thẻ định mức của chính họ
     if (effectiveInstructorId && !byInstructorMap.has(effectiveInstructorId)) {
-      ensureInstructorBucket(effectiveInstructorId, user.full_name);
+      await ensureInstructorBucket(effectiveInstructorId, user.full_name);
     }
 
     const instructorsSummary = [...byInstructorMap.values()].map((b) => ({
@@ -511,7 +511,7 @@ export function registerTeachingHoursRoutes(route) {
   // 3. QUY TRÌNH CHỐT BẢNG GIỜ GIẢNG CUỐI THÁNG 4 BƯỚC (2.2.3)
   // =========================================================================
 
-  route('GET', '/teaching-hours/timesheets', ({ db, user, url }) => {
+  route('GET', '/teaching-hours/timesheets', async ({ db, user, url }) => {
     const periodMonth = url.searchParams.get('period_month') || vnDate().slice(0, 7);
     assertAnalyticsAccess(user, url.searchParams.get('instructor_id') || '');
 
@@ -525,13 +525,13 @@ export function registerTeachingHoursRoutes(route) {
       params.push(user.department_id);
     }
 
-    const items = db
+    const items = await db
       .prepare(`SELECT * FROM teaching_timesheets WHERE ${where.join(' AND ')} ORDER BY instructor_name`)
       .all(...params);
     return { period_month: periodMonth, items };
   });
 
-  route('GET', '/teaching-hours/timesheets/export-finance', ({ db, user, url, raw }) => {
+  route('GET', '/teaching-hours/timesheets/export-finance', async ({ db, user, url, raw }) => {
     if (!isAdmin(user) && !isStaff(user)) {
       fail(403, 'FORBIDDEN', 'Chỉ Giáo vụ hoặc Quản trị viên mới được xuất gói dữ liệu chuyển Tài chính.');
     }
@@ -547,7 +547,7 @@ export function registerTeachingHoursRoutes(route) {
       params.push(user.department_id);
     }
 
-    const sheets = db
+    const sheets = await db
       .prepare(`SELECT * FROM teaching_timesheets WHERE ${where.join(' AND ')} ORDER BY instructor_name`)
       .all(...params);
 
@@ -615,27 +615,27 @@ export function registerTeachingHoursRoutes(route) {
       exported_at: nowIso(),
       exported_by: user.full_name || user.id,
       records_count: sheets.length,
-      items: sheets.map((s) => ({
+      items: await mapAsync(sheets, async (s) => ({
         ...s,
-        line_items: db.prepare('SELECT * FROM teaching_timesheet_items WHERE timesheet_id = ? ORDER BY start_at').all(s.id),
+        line_items: await db.prepare('SELECT * FROM teaching_timesheet_items WHERE timesheet_id = ? ORDER BY start_at').all(s.id),
       })),
     };
   });
 
-  route('GET', '/teaching-hours/timesheets/:id', ({ db, user, params }) => {
-    const sheet = db.prepare('SELECT * FROM teaching_timesheets WHERE id = ?').get(params.id);
+  route('GET', '/teaching-hours/timesheets/:id', async ({ db, user, params }) => {
+    const sheet = await db.prepare('SELECT * FROM teaching_timesheets WHERE id = ?').get(params.id);
     if (!sheet) fail(404, 'TIMESHEET_NOT_FOUND', 'Không tìm thấy bảng tổng hợp giờ giảng.');
     assertAnalyticsAccess(user, sheet.instructor_id);
-    const items = db.prepare('SELECT * FROM teaching_timesheet_items WHERE timesheet_id = ? ORDER BY start_at').all(sheet.id);
+    const items = await db.prepare('SELECT * FROM teaching_timesheet_items WHERE timesheet_id = ? ORDER BY start_at').all(sheet.id);
     return { ...sheet, items };
   });
 
   // Bước 1: Cuối tháng tổng hợp bảng giờ giảng từ các buổi ĐÃ XÁC NHẬN
-  route('POST', '/teaching-hours/timesheets/generate', ({ db, user, body }) => {
+  route('POST', '/teaching-hours/timesheets/generate', async ({ db, user, body }) => {
     if (!isAdmin(user) && !isStaff(user)) {
       fail(403, 'FORBIDDEN', 'Chỉ Giáo vụ hoặc Quản trị viên mới được tổng hợp bảng giờ giảng tháng.');
     }
-    syncAutoOpenedSessions(db);
+    await syncAutoOpenedSessions(db);
     const periodMonth = text(body, 'period_month', { required: true, max: 7, label: 'tháng chốt công' });
     if (!PERIOD_MONTH_RE.test(periodMonth)) {
       fail(422, 'VALIDATION_ERROR', 'Tháng chốt công phải có định dạng YYYY-MM (VD: 2026-11).');
@@ -657,7 +657,7 @@ export function registerTeachingHoursRoutes(route) {
       params.push(user.department_id);
     }
 
-    const sessions = db
+    const sessions = await db
       .prepare(
         `SELECT s.*, sc.code AS class_code, sc.department_id, c.code AS course_code, c.title AS course_title,
                 c.minutes_per_period, c.required_room_type
@@ -670,10 +670,10 @@ export function registerTeachingHoursRoutes(route) {
       .all(...params);
 
     const grouped = new Map();
-    const ensureGroup = (insId) => {
+    const ensureGroup = async (insId) => {
       if (!insId) return null;
       if (!grouped.has(insId)) {
-        const u = db.prepare('SELECT id, full_name, department_id FROM users WHERE id = ?').get(insId);
+        const u = await db.prepare('SELECT id, full_name, department_id FROM users WHERE id = ?').get(insId);
         if (!u) return null;
         grouped.set(insId, {
           user: u,
@@ -686,12 +686,12 @@ export function registerTeachingHoursRoutes(route) {
 
     for (const s of sessions) {
       if (s.session_status === 'CANCELLED') {
-        const g = ensureGroup(s.scheduled_instructor_id);
+        const g = await ensureGroup(s.scheduled_instructor_id);
         if (g) g.cancelledCount += 1;
         continue;
       }
       const actualId = s.actual_instructor_id || s.scheduled_instructor_id;
-      const g = ensureGroup(actualId);
+      const g = await ensureGroup(actualId);
       if (g) g.confirmedRows.push(s);
     }
 
@@ -699,9 +699,9 @@ export function registerTeachingHoursRoutes(route) {
     const generated = [];
     const skippedLocked = [];
 
-    tx(db, () => {
+    await tx(db, async () => {
       for (const [insId, grp] of grouped.entries()) {
-        const existing = db
+        const existing = await db
           .prepare('SELECT * FROM teaching_timesheets WHERE period_month = ? AND instructor_id = ?')
           .get(periodMonth, insId);
 
@@ -710,7 +710,7 @@ export function registerTeachingHoursRoutes(route) {
           continue;
         }
 
-        const quota = resolveQuotaForInstructor(db, insId, periodMonth);
+        const quota = await resolveQuotaForInstructor(db, insId, periodMonth);
         let regular = 0;
         let sub = 0;
         let makeup = 0;
@@ -760,7 +760,7 @@ export function registerTeachingHoursRoutes(route) {
         const tsId = existing ? existing.id : `ts_${crypto.randomBytes(6).toString('hex')}`;
 
         if (existing) {
-          db.prepare(
+          await db.prepare(
             `UPDATE teaching_timesheets SET
                instructor_name = ?, department_id = ?, total_sessions = ?, regular_sessions = ?,
                substitute_sessions = ?, makeup_sessions = ?, cancelled_sessions = ?,
@@ -787,9 +787,9 @@ export function registerTeachingHoursRoutes(route) {
             now,
             tsId
           );
-          db.prepare('DELETE FROM teaching_timesheet_items WHERE timesheet_id = ?').run(tsId);
+          await db.prepare('DELETE FROM teaching_timesheet_items WHERE timesheet_id = ?').run(tsId);
         } else {
-          db.prepare(
+          await db.prepare(
             `INSERT INTO teaching_timesheets (
                id, period_month, instructor_id, instructor_name, department_id,
                total_sessions, regular_sessions, substitute_sessions, makeup_sessions, cancelled_sessions,
@@ -820,7 +820,7 @@ export function registerTeachingHoursRoutes(route) {
         }
 
         for (const li of lineItems) {
-          db.prepare(
+          await db.prepare(
             `INSERT INTO teaching_timesheet_items (
                id, timesheet_id, session_id, subject_class_id, class_code, course_code, course_title,
                session_title, session_date, start_at, end_at, hour_category, role_kind, periods, hours
@@ -844,7 +844,7 @@ export function registerTeachingHoursRoutes(route) {
           );
         }
 
-        db.prepare(
+        await db.prepare(
           `INSERT INTO teaching_notifications (id, user_id, notification_type, title, body, link_url, is_read, created_at)
            VALUES (?, ?, 'TIMESHEET_READY', ?, ?, '/teaching/hours', 0, ?)`
         ).run(
@@ -855,7 +855,7 @@ export function registerTeachingHoursRoutes(route) {
           now
         );
 
-        generated.push(db.prepare('SELECT * FROM teaching_timesheets WHERE id = ?').get(tsId));
+        generated.push(await db.prepare('SELECT * FROM teaching_timesheets WHERE id = ?').get(tsId));
       }
     });
 
@@ -863,8 +863,8 @@ export function registerTeachingHoursRoutes(route) {
   });
 
   // Bước 2: Giảng viên kiểm tra, xác nhận hoặc phản hồi sai sót
-  route('POST', '/teaching-hours/timesheets/:id/teacher-review', ({ db, user, body, params }) => {
-    const sheet = db.prepare('SELECT * FROM teaching_timesheets WHERE id = ?').get(params.id);
+  route('POST', '/teaching-hours/timesheets/:id/teacher-review', async ({ db, user, body, params }) => {
+    const sheet = await db.prepare('SELECT * FROM teaching_timesheets WHERE id = ?').get(params.id);
     if (!sheet) fail(404, 'TIMESHEET_NOT_FOUND', 'Không tìm thấy bảng giờ giảng.');
     if (sheet.status === 'LOCKED') {
       fail(409, 'TIMESHEET_LOCKED', 'Bảng giờ giảng đã khóa chuyển Tài chính, không thể thay đổi.');
@@ -883,21 +883,21 @@ export function registerTeachingHoursRoutes(route) {
     const now = nowIso();
     const nextStatus = decision === 'CONFIRM' ? 'TEACHER_CONFIRMED' : 'DISPUTED';
 
-    db.prepare(
+    await db.prepare(
       `UPDATE teaching_timesheets
        SET status = ?, teacher_note = ?, teacher_confirmed_at = CASE WHEN ? = 'TEACHER_CONFIRMED' THEN ? ELSE teacher_confirmed_at END, updated_at = ?
        WHERE id = ?`
     ).run(nextStatus, note, nextStatus, now, now, sheet.id);
 
-    return db.prepare('SELECT * FROM teaching_timesheets WHERE id = ?').get(sheet.id);
+    return await db.prepare('SELECT * FROM teaching_timesheets WHERE id = ?').get(sheet.id);
   });
 
   // Bước 3: Giáo vụ / Trưởng bộ môn duyệt
-  route('POST', '/teaching-hours/timesheets/:id/approve', ({ db, user, body, params }) => {
+  route('POST', '/teaching-hours/timesheets/:id/approve', async ({ db, user, body, params }) => {
     if (!isAdmin(user) && !isStaff(user)) {
       fail(403, 'FORBIDDEN', 'Chỉ Giáo vụ / Trưởng bộ môn hoặc Quản trị viên mới được duyệt bảng giờ giảng.');
     }
-    const sheet = db.prepare('SELECT * FROM teaching_timesheets WHERE id = ?').get(params.id);
+    const sheet = await db.prepare('SELECT * FROM teaching_timesheets WHERE id = ?').get(params.id);
     if (!sheet) fail(404, 'TIMESHEET_NOT_FOUND', 'Không tìm thấy bảng giờ giảng.');
     if (sheet.status === 'LOCKED') {
       fail(409, 'TIMESHEET_LOCKED', 'Bảng giờ giảng đã khóa.');
@@ -912,21 +912,21 @@ export function registerTeachingHoursRoutes(route) {
     const reviewNote = text(body, 'review_note', { max: 1000, label: 'ghi chú duyệt' }) || '';
     const now = nowIso();
 
-    db.prepare(
+    await db.prepare(
       `UPDATE teaching_timesheets
        SET status = 'APPROVED', review_note = ?, approved_by = ?, approved_by_name = ?, approved_at = ?, updated_at = ?
        WHERE id = ?`
     ).run(reviewNote, user.id, user.full_name || user.id, now, now, sheet.id);
 
-    return db.prepare('SELECT * FROM teaching_timesheets WHERE id = ?').get(sheet.id);
+    return await db.prepare('SELECT * FROM teaching_timesheets WHERE id = ?').get(sheet.id);
   });
 
   // Bước 4: Khóa bảng đã duyệt & gắn mã lô chuyển sang Tài chính tính thù lao
-  route('POST', '/teaching-hours/timesheets/:id/lock', ({ db, user, body, params }) => {
+  route('POST', '/teaching-hours/timesheets/:id/lock', async ({ db, user, body, params }) => {
     if (!isAdmin(user) && !isStaff(user)) {
       fail(403, 'FORBIDDEN', 'Chỉ Giáo vụ hoặc Quản trị viên mới được khóa sổ chuyển Tài chính.');
     }
-    const sheet = db.prepare('SELECT * FROM teaching_timesheets WHERE id = ?').get(params.id);
+    const sheet = await db.prepare('SELECT * FROM teaching_timesheets WHERE id = ?').get(params.id);
     if (!sheet) fail(404, 'TIMESHEET_NOT_FOUND', 'Không tìm thấy bảng giờ giảng.');
     if (sheet.status === 'LOCKED') {
       return sheet;
@@ -940,10 +940,10 @@ export function registerTeachingHoursRoutes(route) {
       text(body || {}, 'finance_batch_code', { max: 64, label: 'mã lô Tài chính' }) ||
       `FIN-${sheet.period_month.replace('-', '')}-${crypto.randomBytes(2).toString('hex').toUpperCase()}`;
 
-    const lineItems = db.prepare('SELECT session_id FROM teaching_timesheet_items WHERE timesheet_id = ?').all(sheet.id);
+    const lineItems = await db.prepare('SELECT session_id FROM teaching_timesheet_items WHERE timesheet_id = ?').all(sheet.id);
 
-    tx(db, () => {
-      db.prepare(
+    await tx(db, async () => {
+      await db.prepare(
         `UPDATE teaching_timesheets
          SET status = 'LOCKED', locked_by = ?, locked_by_name = ?, locked_at = ?, finance_batch_code = ?, updated_at = ?
          WHERE id = ?`
@@ -951,10 +951,10 @@ export function registerTeachingHoursRoutes(route) {
 
       const lockStmt = db.prepare('UPDATE sessions SET timesheet_locked_id = ? WHERE session_id = ?');
       for (const li of lineItems) {
-        lockStmt.run(sheet.id, li.session_id);
+        await lockStmt.run(sheet.id, li.session_id);
       }
 
-      db.prepare(
+      await db.prepare(
         `INSERT INTO teaching_notifications (id, user_id, notification_type, title, body, link_url, is_read, created_at)
          VALUES (?, ?, 'TIMESHEET_LOCKED', ?, ?, '/teaching/hours', 0, ?)`
       ).run(
@@ -966,6 +966,6 @@ export function registerTeachingHoursRoutes(route) {
       );
     });
 
-    return db.prepare('SELECT * FROM teaching_timesheets WHERE id = ?').get(sheet.id);
+    return await db.prepare('SELECT * FROM teaching_timesheets WHERE id = ?').get(sheet.id);
   });
 }

@@ -16,8 +16,8 @@ const DEFAULT_POLICY = { late_counts_as_present: true, excused_in_denominator: f
 const EDIT_REASON_AFTER_HOURS = 24;
 const OPEN_BEFORE_START_MIN = 30;
 
-export function getAttendancePolicy(db) {
-  const row = db.prepare("SELECT value FROM app_meta WHERE key = 'attendance_policy'").get();
+export async function getAttendancePolicy(db) {
+  const row = await db.prepare("SELECT value FROM app_meta WHERE key = 'attendance_policy'").get();
   let p = {};
   try {
     p = row ? JSON.parse(row.value) : {};
@@ -44,24 +44,24 @@ export function rateFromCounts(counts, policy = DEFAULT_POLICY) {
 }
 
 /** Danh sách học viên thuộc lớp tại thời điểm diễn ra buổi học. */
-export function sessionRoster(db, session) {
+export async function sessionRoster(db, session) {
   const start = Date.parse(session.scheduled_start_at);
   const end = Date.parse(session.scheduled_end_at);
-  return db
+  return (await db
     .prepare(
       `SELECT e.student_id, e.status, e.enrolled_at, e.dropped_at, u.code, u.full_name, u.email
        FROM class_enrollments e JOIN users u ON u.id = e.student_id WHERE e.subject_class_id = ?`
     )
-    .all(session.subject_class_id)
+    .all(session.subject_class_id))
     .filter((r) => Date.parse(r.enrolled_at) <= end && (r.status === 'ACTIVE' || (r.dropped_at && Date.parse(r.dropped_at) > start)))
     .sort((a, b) => compareVietnameseName(a.full_name, b.full_name));
 }
 
-function attendanceView(db, user, session, cls, caps) {
-  const roster = sessionRoster(db, session);
-  const records = db.prepare('SELECT * FROM attendance_records WHERE class_session_id = ?').all(session.session_id);
+async function attendanceView(db, user, session, cls, caps) {
+  const roster = await sessionRoster(db, session);
+  const records = await db.prepare('SELECT * FROM attendance_records WHERE class_session_id = ?').all(session.session_id);
   const byStudent = Object.fromEntries(records.map((r) => [r.student_id, r]));
-  const staff = db
+  const staff = await db
     .prepare(
       `SELECT u.full_name, t.staff_role FROM teaching_staff_assignments t JOIN users u ON u.id = t.user_id
        WHERE t.subject_class_id = ? AND t.is_active = 1`
@@ -87,7 +87,7 @@ function attendanceView(db, user, session, cls, caps) {
   const openFrom = vnIso(new Date(Date.parse(session.scheduled_start_at) - OPEN_BEFORE_START_MIN * 60000));
   const cancelled = session.session_status === 'CANCELLED';
   const locked = Boolean(session.attendance_locked_at);
-  const qr = db
+  const qr = await db
     .prepare('SELECT * FROM attendance_qr_sessions WHERE class_session_id = ? AND is_active = 1 AND valid_until > ? ORDER BY created_at DESC LIMIT 1')
     .get(session.session_id, nowIso());
   return {
@@ -145,8 +145,8 @@ function recordFailure(key) {
   else entry.count++;
 }
 
-function computeStats(db, cls, { from, to, includeDropped = false }) {
-  const policy = getAttendancePolicy(db);
+async function computeStats(db, cls, { from, to, includeDropped = false }) {
+  const policy = await getAttendancePolicy(db);
   const now = nowVn();
   const where = ["subject_class_id = ?", "session_status <> 'CANCELLED'", 'scheduled_start_at <= ?'];
   const p = [cls.id, now];
@@ -158,12 +158,12 @@ function computeStats(db, cls, { from, to, includeDropped = false }) {
     where.push('scheduled_start_at <= ?');
     p.push(`${to}T23:59:59+07:00`);
   }
-  const sessions = db.prepare(`SELECT * FROM sessions WHERE ${where.join(' AND ')} ORDER BY scheduled_start_at`).all(...p);
+  const sessions = await db.prepare(`SELECT * FROM sessions WHERE ${where.join(' AND ')} ORDER BY scheduled_start_at`).all(...p);
   const sessionIds = new Set(sessions.map((s) => s.session_id));
-  const records = db.prepare('SELECT class_session_id, student_id, attendance_status FROM attendance_records WHERE subject_class_id = ?').all(cls.id)
+  const records = (await db.prepare('SELECT class_session_id, student_id, attendance_status FROM attendance_records WHERE subject_class_id = ?').all(cls.id))
     .filter((r) => sessionIds.has(r.class_session_id));
   const recMap = new Map(records.map((r) => [`${r.class_session_id}|${r.student_id}`, r.attendance_status]));
-  let students = db
+  let students = await db
     .prepare(
       `SELECT e.student_id, e.status, e.enrolled_at, e.dropped_at, u.code, u.full_name
        FROM class_enrollments e JOIN users u ON u.id = e.student_id WHERE e.subject_class_id = ?`
@@ -215,7 +215,7 @@ function computeStats(db, cls, { from, to, includeDropped = false }) {
     policy,
     sessions_held: sessions.length,
     sessions_with_attendance: sessions.filter((s) => s.attendance_saved_at).length,
-    cancelled_sessions: db.prepare(`SELECT COUNT(*) n FROM sessions WHERE subject_class_id = ? AND session_status = 'CANCELLED'`).get(cls.id).n,
+    cancelled_sessions: (await db.prepare(`SELECT COUNT(*) n FROM sessions WHERE subject_class_id = ? AND session_status = 'CANCELLED'`).get(cls.id)).n,
     class_totals: { ...classCounts, rate: rateFromCounts(classCounts, policy) },
     students: rows,
     sessions: sessionRows,
@@ -230,18 +230,18 @@ function csvCell(v) {
 }
 
 export function registerAttendanceRoutes(route) {
-  route('GET', '/sessions/:id/attendance', ({ db, user, params }) => {
-    const { session, cls, caps } = requireSession(db, user, params.id, 'can_view_roster');
-    return attendanceView(db, user, session, cls, caps);
+  route('GET', '/sessions/:id/attendance', async ({ db, user, params }) => {
+    const { session, cls, caps } = await requireSession(db, user, params.id, 'can_view_roster');
+    return await attendanceView(db, user, session, cls, caps);
   });
 
   // ---------- Lưu điểm danh theo lô (một transaction)
-  route('PUT', '/sessions/:id/attendance', ({ db, user, body, params, log }) => {
-    const { session, cls, caps } = requireSession(db, user, params.id, 'can_take_attendance');
+  route('PUT', '/sessions/:id/attendance', async ({ db, user, body, params, log }) => {
+    const { session, cls, caps } = await requireSession(db, user, params.id, 'can_take_attendance');
     const endpoint = `PUT /sessions/${session.session_id}/attendance`;
     const idemKey = typeof body.idempotency_key === 'string' ? body.idempotency_key.slice(0, 100) : null;
     if (idemKey) {
-      const prev = db.prepare('SELECT * FROM api_idempotency_keys WHERE idempotency_key = ?').get(idemKey);
+      const prev = await db.prepare('SELECT * FROM api_idempotency_keys WHERE idempotency_key = ?').get(idemKey);
       if (prev) {
         if (prev.user_id !== user.id || prev.endpoint !== endpoint) fail(409, 'IDEMPOTENCY_KEY_REUSED', 'Mã yêu cầu đã được dùng cho thao tác khác.');
         return { ...JSON.parse(prev.response_json), replayed: true };
@@ -256,7 +256,7 @@ export function registerAttendanceRoutes(route) {
     if (!Array.isArray(body.records) || body.records.length === 0) fail(422, 'VALIDATION_ERROR', 'Không có dữ liệu điểm danh.');
     if (body.records.length > 2000) fail(422, 'VALIDATION_ERROR', 'Quá nhiều bản ghi trong một lần lưu.');
 
-    const roster = new Map(sessionRoster(db, session).map((r) => [r.student_id, r]));
+    const roster = new Map((await sessionRoster(db, session)).map((r) => [r.student_id, r]));
     const seen = new Set();
     for (const r of body.records) {
       if (!r || typeof r.student_id !== 'string') fail(422, 'VALIDATION_ERROR', 'Thiếu mã học viên.');
@@ -272,20 +272,20 @@ export function registerAttendanceRoutes(route) {
     const reason = text(body, 'change_reason', { max: 500, label: 'lý do chỉnh sửa' });
 
     const now = nowIso();
-    const result = tx(db, () => {
+    const result = await tx(db, async () => {
       let created = 0;
       let changed = 0;
       let unchanged = 0;
       for (const r of body.records) {
         const note = (r.note || '').trim() || null;
-        const existing = db.prepare('SELECT * FROM attendance_records WHERE class_session_id = ? AND student_id = ?').get(session.session_id, r.student_id);
+        const existing = await db.prepare('SELECT * FROM attendance_records WHERE class_session_id = ? AND student_id = ?').get(session.session_id, r.student_id);
         if (!existing) {
           const id = crypto.randomUUID();
-          db.prepare(
+          await db.prepare(
             `INSERT INTO attendance_records (id, subject_class_id, class_session_id, student_id, attendance_status, check_in_method,
                check_in_at, note, recorded_by, updated_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'MANUAL', ?, ?, ?, ?, ?, ?)`
           ).run(id, cls.id, session.session_id, r.student_id, r.status, ['PRESENT', 'LATE'].includes(r.status) ? now : null, note, user.id, user.id, now, now);
-          db.prepare(
+          await db.prepare(
             `INSERT INTO attendance_audit_logs (id, attendance_record_id, previous_status, new_status, previous_note, new_note, change_reason, changed_by, changed_at)
              VALUES (?, ?, NULL, ?, NULL, ?, ?, ?, ?)`
           ).run(crypto.randomUUID(), id, r.status, note, reason || 'Điểm danh lần đầu', user.id, now);
@@ -294,9 +294,9 @@ export function registerAttendanceRoutes(route) {
           if (reasonRequired && !reason) {
             fail(422, 'CHANGE_REASON_REQUIRED', `Chỉnh sửa điểm danh sau ${EDIT_REASON_AFTER_HOURS} giờ kể từ khi kết thúc buổi học cần nhập lý do.`, { field: 'change_reason' });
           }
-          db.prepare('UPDATE attendance_records SET attendance_status = ?, note = ?, updated_by = ?, updated_at = ? WHERE id = ?')
+          await db.prepare('UPDATE attendance_records SET attendance_status = ?, note = ?, updated_by = ?, updated_at = ? WHERE id = ?')
             .run(r.status, note, user.id, now, existing.id);
-          db.prepare(
+          await db.prepare(
             `INSERT INTO attendance_audit_logs (id, attendance_record_id, previous_status, new_status, previous_note, new_note, change_reason, changed_by, changed_at)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
           ).run(crypto.randomUUID(), existing.id, existing.attendance_status, r.status, existing.note, note, reason || 'Cập nhật điểm danh', user.id, now);
@@ -305,11 +305,11 @@ export function registerAttendanceRoutes(route) {
           unchanged++;
         }
       }
-      db.prepare('UPDATE sessions SET attendance_saved_at = ?, attendance_saved_by = ? WHERE session_id = ?').run(now, user.id, session.session_id);
-      const view = attendanceView(db, user, db.prepare('SELECT * FROM sessions WHERE session_id = ?').get(session.session_id), cls, caps);
+      await db.prepare('UPDATE sessions SET attendance_saved_at = ?, attendance_saved_by = ? WHERE session_id = ?').run(now, user.id, session.session_id);
+      const view = await attendanceView(db, user, await db.prepare('SELECT * FROM sessions WHERE session_id = ?').get(session.session_id), cls, caps);
       const response = { created, changed, unchanged, saved_at: now, counts: view.counts };
       if (idemKey) {
-        db.prepare('INSERT INTO api_idempotency_keys (idempotency_key, user_id, endpoint, response_json, created_at) VALUES (?, ?, ?, ?, ?)')
+        await db.prepare('INSERT INTO api_idempotency_keys (idempotency_key, user_id, endpoint, response_json, created_at) VALUES (?, ?, ?, ?, ?)')
           .run(idemKey, user.id, endpoint, JSON.stringify(response), now);
       }
       return response;
@@ -318,35 +318,35 @@ export function registerAttendanceRoutes(route) {
     return result;
   });
 
-  route('GET', '/sessions/:id/attendance/history', ({ db, user, params }) => {
-    const { session } = requireSession(db, user, params.id, 'can_view_roster');
-    const items = db
+  route('GET', '/sessions/:id/attendance/history', async ({ db, user, params }) => {
+    const { session } = await requireSession(db, user, params.id, 'can_view_roster');
+    const items = await db
       .prepare(
         `SELECT l.*, s.code AS student_code, s.full_name AS student_name, a.full_name AS changed_by_name
          FROM attendance_audit_logs l
          JOIN attendance_records r ON r.id = l.attendance_record_id
          JOIN users s ON s.id = r.student_id
          LEFT JOIN users a ON a.id = l.changed_by
-         WHERE r.class_session_id = ? ORDER BY l.changed_at DESC, l.rowid DESC LIMIT 500`
+         WHERE r.class_session_id = ? ORDER BY l.changed_at DESC, l.id DESC LIMIT 500`
       )
       .all(session.session_id);
-    const events = db
+    const events = await db
       .prepare(`SELECT * FROM teaching_log_history WHERE session_id = ? ORDER BY changed_at DESC`)
       .all(session.session_id);
     return { items, session_events: events };
   });
 
-  const lockToggle = (lock) => ({ db, user, body, params, log }) => {
-    const { session } = requireSession(db, user, params.id, 'can_lock_attendance');
+  const lockToggle = (lock) => async ({ db, user, body, params, log }) => {
+    const { session } = await requireSession(db, user, params.id, 'can_lock_attendance');
     if (lock && !session.attendance_saved_at) fail(422, 'ATTENDANCE_NOT_SAVED', 'Buổi học chưa có dữ liệu điểm danh để chốt.');
     if (lock && session.attendance_locked_at) fail(409, 'ALREADY_LOCKED', 'Điểm danh đã được chốt.');
     if (!lock && !session.attendance_locked_at) fail(409, 'NOT_LOCKED', 'Điểm danh chưa được chốt.');
     const reason = text(body, 'reason', { required: !lock, max: 500, label: 'lý do mở chốt' });
     const now = nowIso();
-    tx(db, () => {
-      db.prepare('UPDATE sessions SET attendance_locked_at = ?, attendance_locked_by = ? WHERE session_id = ?')
+    await tx(db, async () => {
+      await db.prepare('UPDATE sessions SET attendance_locked_at = ?, attendance_locked_by = ? WHERE session_id = ?')
         .run(lock ? now : null, lock ? user.id : null, session.session_id);
-      db.prepare(
+      await db.prepare(
         `INSERT INTO teaching_log_history (id, session_id, session_code, previous_status, new_status, changed_by, changed_at, note)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
       ).run(`hist_${crypto.randomBytes(4).toString('hex')}`, session.session_id, session.subject_class_code,
@@ -360,8 +360,8 @@ export function registerAttendanceRoutes(route) {
   route('POST', '/sessions/:id/attendance/unlock', lockToggle(false));
 
   // ---------- Mã điểm danh động (bổ sung, không thay thế điểm danh thủ công)
-  route('POST', '/sessions/:id/attendance/qr', ({ db, user, body, params, log }) => {
-    const { session } = requireSession(db, user, params.id, 'can_take_attendance');
+  route('POST', '/sessions/:id/attendance/qr', async ({ db, user, body, params, log }) => {
+    const { session } = await requireSession(db, user, params.id, 'can_take_attendance');
     if (session.session_status === 'CANCELLED') fail(422, 'SESSION_CANCELLED', 'Buổi học đã bị hủy.');
     if (session.attendance_locked_at) fail(423, 'ATTENDANCE_LOCKED', 'Điểm danh đã được chốt.');
     const now = Date.now();
@@ -371,9 +371,9 @@ export function registerAttendanceRoutes(route) {
     const minutes = intField(body, 'duration_minutes', { min: 1, max: 60, label: 'thời hạn (phút)' }) || 10;
     const late = intField(body, 'late_threshold_minutes', { min: 0, max: 120, label: 'ngưỡng đi muộn (phút)' }) ?? 15;
     const id = crypto.randomUUID();
-    tx(db, () => {
-      db.prepare('UPDATE attendance_qr_sessions SET is_active = 0 WHERE class_session_id = ?').run(session.session_id);
-      db.prepare(
+    await tx(db, async () => {
+      await db.prepare('UPDATE attendance_qr_sessions SET is_active = 0 WHERE class_session_id = ?').run(session.session_id);
+      await db.prepare(
         `INSERT INTO attendance_qr_sessions (id, class_session_id, secret_seed, rotation_interval_sec, late_threshold_minutes,
            valid_from, valid_until, is_active, created_by, created_at) VALUES (?, ?, ?, 30, ?, ?, ?, 1, ?, ?)`
       ).run(id, session.session_id, crypto.randomBytes(32).toString('hex'), late, new Date(now).toISOString(),
@@ -383,15 +383,15 @@ export function registerAttendanceRoutes(route) {
     return [201, { id, valid_until: new Date(now + minutes * 60000).toISOString() }];
   });
 
-  route('GET', '/sessions/:id/attendance/qr', ({ db, user, params }) => {
-    const { session } = requireSession(db, user, params.id, 'can_take_attendance');
-    const q = db
+  route('GET', '/sessions/:id/attendance/qr', async ({ db, user, params }) => {
+    const { session } = await requireSession(db, user, params.id, 'can_take_attendance');
+    const q = await db
       .prepare('SELECT * FROM attendance_qr_sessions WHERE class_session_id = ? AND is_active = 1 AND valid_until > ? ORDER BY created_at DESC LIMIT 1')
       .get(session.session_id, nowIso());
     if (!q) return { active: false };
     const interval = q.rotation_interval_sec;
     const windowIndex = Math.floor(Date.now() / 1000 / interval);
-    const checkedIn = db.prepare(`SELECT COUNT(*) n FROM attendance_records WHERE class_session_id = ? AND check_in_method = 'QR_CODE'`).get(session.session_id).n;
+    const checkedIn = (await db.prepare(`SELECT COUNT(*) n FROM attendance_records WHERE class_session_id = ? AND check_in_method = 'QR_CODE'`).get(session.session_id)).n;
     return {
       active: true,
       code: codeForWindow(q.secret_seed, windowIndex),
@@ -404,18 +404,18 @@ export function registerAttendanceRoutes(route) {
     };
   });
 
-  route('DELETE', '/sessions/:id/attendance/qr', ({ db, user, params }) => {
-    const { session } = requireSession(db, user, params.id, 'can_take_attendance');
-    db.prepare('UPDATE attendance_qr_sessions SET is_active = 0 WHERE class_session_id = ?').run(session.session_id);
+  route('DELETE', '/sessions/:id/attendance/qr', async ({ db, user, params }) => {
+    const { session } = await requireSession(db, user, params.id, 'can_take_attendance');
+    await db.prepare('UPDATE attendance_qr_sessions SET is_active = 0 WHERE class_session_id = ?').run(session.session_id);
     return { active: false };
   });
 
-  route('POST', '/attendance/check-in', ({ db, user, body, log }) => {
+  route('POST', '/attendance/check-in', async ({ db, user, body, log }) => {
     if (!isStudent(user)) fail(403, 'CHECKIN_STUDENT_ONLY', 'Chỉ học viên mới tự điểm danh bằng mã.');
     const code = typeof body.code === 'string' ? body.code.replace(/\s+/g, '') : '';
     if (!/^\d{6}$/.test(code)) fail(422, 'VALIDATION_ERROR', 'Mã điểm danh gồm 6 chữ số.');
     // Tìm các phiên mã đang hoạt động thuộc lớp học viên đang theo học
-    const candidates = db
+    const candidates = await db
       .prepare(
         `SELECT q.*, s.subject_class_id, s.scheduled_start_at, s.session_title, s.session_status, s.attendance_locked_at
          FROM attendance_qr_sessions q JOIN sessions s ON s.session_id = q.class_session_id
@@ -436,7 +436,7 @@ export function registerAttendanceRoutes(route) {
       fail(422, 'INVALID_CODE', 'Mã điểm danh không đúng hoặc đã hết hạn. Vui lòng nhập mã đang hiển thị trên màn hình lớp.');
     }
     if (match.session_status === 'CANCELLED' || match.attendance_locked_at) fail(422, 'CHECKIN_CLOSED', 'Buổi học không còn nhận điểm danh.');
-    const existing = db.prepare('SELECT * FROM attendance_records WHERE class_session_id = ? AND student_id = ?').get(match.class_session_id, user.id);
+    const existing = await db.prepare('SELECT * FROM attendance_records WHERE class_session_id = ? AND student_id = ?').get(match.class_session_id, user.id);
     if (existing) {
       if (existing.check_in_method === 'QR_CODE') {
         return { already_checked_in: true, status: existing.attendance_status, check_in_at: existing.check_in_at, session_title: match.session_title };
@@ -448,12 +448,12 @@ export function registerAttendanceRoutes(route) {
     const now = nowIso();
     const id = crypto.randomUUID();
     try {
-      tx(db, () => {
-        db.prepare(
+      await tx(db, async () => {
+        await db.prepare(
           `INSERT INTO attendance_records (id, subject_class_id, class_session_id, student_id, attendance_status, check_in_method,
              check_in_at, note, recorded_by, updated_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'QR_CODE', ?, NULL, ?, ?, ?, ?)`
         ).run(id, match.subject_class_id, match.class_session_id, user.id, status, now, user.id, user.id, now, now);
-        db.prepare(
+        await db.prepare(
           `INSERT INTO attendance_audit_logs (id, attendance_record_id, previous_status, new_status, change_reason, changed_by, changed_at)
            VALUES (?, ?, NULL, ?, 'Học viên tự điểm danh bằng mã', ?, ?)`
         ).run(crypto.randomUUID(), id, status, user.id, now);
@@ -467,18 +467,18 @@ export function registerAttendanceRoutes(route) {
   });
 
   // ---------- Thống kê chuyên cần
-  route('GET', '/classes/:id/attendance/stats', ({ db, user, params, url }) => {
-    const { cls } = requireClassAccess(db, user, params.id, 'can_view_roster');
-    return computeStats(db, cls, {
+  route('GET', '/classes/:id/attendance/stats', async ({ db, user, params, url }) => {
+    const { cls } = await requireClassAccess(db, user, params.id, 'can_view_roster');
+    return await computeStats(db, cls, {
       from: url.searchParams.get('from'),
       to: url.searchParams.get('to'),
       includeDropped: url.searchParams.get('include_dropped') === '1',
     });
   });
 
-  route('GET', '/classes/:id/attendance/export', ({ db, user, params, url, raw }) => {
-    const { cls } = requireClassAccess(db, user, params.id, 'can_view_roster');
-    const stats = computeStats(db, cls, { from: url.searchParams.get('from'), to: url.searchParams.get('to') });
+  route('GET', '/classes/:id/attendance/export', async ({ db, user, params, url, raw }) => {
+    const { cls } = await requireClassAccess(db, user, params.id, 'can_view_roster');
+    const stats = await computeStats(db, cls, { from: url.searchParams.get('from'), to: url.searchParams.get('to') });
     const header = ['STT', 'Mã học viên', 'Họ và tên', 'Tổng số buổi', 'Có mặt', 'Đi muộn', 'Vắng có phép', 'Vắng không phép', 'Chưa điểm danh', 'Tỷ lệ chuyên cần (%)'];
     const lines = [header.map(csvCell).join(',')];
     stats.students.forEach((s, i) => {

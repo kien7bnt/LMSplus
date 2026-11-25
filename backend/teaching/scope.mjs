@@ -1,4 +1,5 @@
-/**
+
+import { someAsync } from './http.mjs';/**
  * LMSPLUS Teaching Module — RBAC + Data Scope.
  * Mọi kiểm tra quyền được thực hiện tại Backend; Frontend chỉ dùng `capabilities` để ẩn/hiện nút.
  */
@@ -15,12 +16,12 @@ export const isStudent = (user) => has(user, 'STUDENT');
 
 const sameDept = (user, deptId) => Boolean(user?.department_id) && user.department_id === deptId;
 
-export function staffAssignments(db, userId, classId = null) {
+export async function staffAssignments(db, userId, classId = null) {
   const rows = classId
-    ? db.prepare(
+    ? await db.prepare(
         `SELECT * FROM teaching_staff_assignments WHERE user_id = ? AND subject_class_id = ? AND is_active = 1`
       ).all(userId, classId)
-    : db.prepare(`SELECT * FROM teaching_staff_assignments WHERE user_id = ? AND is_active = 1`).all(userId);
+    : await db.prepare(`SELECT * FROM teaching_staff_assignments WHERE user_id = ? AND is_active = 1`).all(userId);
   return rows.map((r) => ({ ...r, permissions: safeJson(r.permissions_json, {}) }));
 }
 
@@ -47,21 +48,21 @@ export function canManageCourse(db, user, course) {
 }
 
 /** Trợ giảng được giảng viên cấp quyền "biên tập học liệu" trong một lớp dùng khóa học này → chỉ sửa bản nháp. */
-export function canEditCourseDraft(db, user, course) {
+export async function canEditCourseDraft(db, user, course) {
   if (canManageCourse(db, user, course)) return true;
   if (!course) return false;
-  return staffAssignments(db, user.id).some((a) => {
+  return await someAsync(await staffAssignments(db, user.id), async (a) => {
     if (!a.permissions.can_manage_materials) return false;
-    const cls = db.prepare('SELECT course_id FROM subject_classes WHERE id = ?').get(a.subject_class_id);
+    const cls = await db.prepare('SELECT course_id FROM subject_classes WHERE id = ?').get(a.subject_class_id);
     return cls && cls.course_id === course.id;
   });
 }
 
-export function canViewCourse(db, user, course) {
+export async function canViewCourse(db, user, course) {
   if (!course) return false;
   if (canManageCourse(db, user, course)) return true;
-  return staffAssignments(db, user.id).some((a) => {
-    const cls = db.prepare('SELECT course_id FROM subject_classes WHERE id = ?').get(a.subject_class_id);
+  return await someAsync(await staffAssignments(db, user.id), async (a) => {
+    const cls = await db.prepare('SELECT course_id FROM subject_classes WHERE id = ?').get(a.subject_class_id);
     return cls && cls.course_id === course.id;
   });
 }
@@ -92,14 +93,14 @@ export function canCreateClass(user) {
   return isAdmin(user) || isStaff(user) || isInstructor(user);
 }
 
-export function classRole(db, user, cls) {
+export async function classRole(db, user, cls) {
   if (!cls) return null;
   if (isAdmin(user)) return 'ADMIN';
   if (isStaff(user) && sameDept(user, cls.department_id)) return 'ACADEMIC_STAFF';
-  const assignment = staffAssignments(db, user.id, cls.id)[0];
+  const assignment = (await staffAssignments(db, user.id, cls.id))[0];
   if (assignment) return assignment.staff_role;
   if (isStudent(user)) {
-    const e = db
+    const e = await db
       .prepare(`SELECT 1 FROM class_enrollments WHERE subject_class_id = ? AND student_id = ? AND status = 'ACTIVE'`)
       .get(cls.id, user.id);
     if (e) return 'STUDENT';
@@ -107,10 +108,10 @@ export function classRole(db, user, cls) {
   return null;
 }
 
-export function classCapabilities(db, user, cls) {
-  const role = classRole(db, user, cls);
+export async function classCapabilities(db, user, cls) {
+  const role = await classRole(db, user, cls);
   const assignment = role && ['PRIMARY_INSTRUCTOR', 'CO_INSTRUCTOR', 'TEACHING_ASSISTANT'].includes(role)
-    ? staffAssignments(db, user.id, cls.id)[0]
+    ? (await staffAssignments(db, user.id, cls.id))[0]
     : null;
   const perms = assignment ? assignment.permissions : {};
   const admin = role === 'ADMIN' || role === 'ACADEMIC_STAFF';

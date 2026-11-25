@@ -16,8 +16,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
+import {
+  createDbClient,
+  isUniqueViolation,
+  isForeignKeyViolation,
+  isCheckViolation,
+} from './db/client.mjs';
 import {
   ensureTeachingSchema,
   clearTeachingData,
@@ -25,6 +30,7 @@ import {
 } from './teaching/schema.mjs';
 import { seedMasterLmsStarterData } from './teaching/masterSchema.mjs';
 import { createTeachingRouter, TEACHING_PREFIX } from './teaching/routes.mjs';
+import { mapAsync } from './teaching/http.mjs';
 import { verifyMediaStreamToken } from './teaching/studio.mjs';
 
 const currentFilePath = fileURLToPath(import.meta.url);
@@ -33,32 +39,21 @@ const ROOT_DIR = path.resolve(__dirname, '..');
 const IS_SERVERLESS = Boolean(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME);
 const LOG_DIR = path.join(ROOT_DIR, 'logs');
 const DB_DIR = path.join(ROOT_DIR, 'database');
+const PG_SCHEMA_PATH = path.join(DB_DIR, 'migrations', '010_postgres18_live_schema.sql');
 
 const LOG_FILE = process.env.LMSPLUS_LOG_FILE
   ? path.resolve(process.env.LMSPLUS_LOG_FILE)
   : IS_SERVERLESS || process.env.LMSPLUS_DB_PATH
     ? null
     : path.join(LOG_DIR, 'backend.log');
-const DB_PATH = process.env.LMSPLUS_DB_PATH
-  ? path.resolve(process.env.LMSPLUS_DB_PATH)
-  : IS_SERVERLESS
-    ? path.join(os.tmpdir(), 'lmsplus_elearning.sqlite')
-    : path.join(DB_DIR, 'lmsplus_elearning.sqlite');
 const SEED_PATH = path.join(DB_DIR, 'lmsplus_elearning_seed.json');
 if (LOG_FILE && !fs.existsSync(path.dirname(LOG_FILE))) {
   fs.mkdirSync(path.dirname(LOG_FILE), { recursive: true });
 }
-if (DB_PATH !== ':memory:' && !fs.existsSync(path.dirname(DB_PATH))) {
-  fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
-}
 const PORT = Number(process.env.BACKEND_PORT || 8000);
 const JWT_SECRET = process.env.LMSPLUS_JWT_SECRET || 'lmsplus-production-grade-hmac-secret-2026';
 
-export const db = new DatabaseSync(DB_PATH);
-db.exec('PRAGMA foreign_keys = ON;');
-// Backend (:8000) và Vite dev server có thể cùng mở CSDL → chờ khóa thay vì lỗi SQLITE_BUSY ngay.
-db.exec('PRAGMA busy_timeout = 5000;');
-db.exec('PRAGMA journal_mode = WAL;');
+export const db = createDbClient();
 
 function hashPassword(plainPassword) {
   return crypto
@@ -158,8 +153,17 @@ const DEFAULT_WIKI_TERMS = [
   },
 ];
 
-export function initSchemaAndSeed(forceReset = false) {
-  db.exec(`
+export async function initSchemaAndSeed(forceReset = false) {
+  if (db.isPg) {
+    const hasUsers = await db
+      .prepare("SELECT to_regclass('public.users') AS tbl")
+      .get();
+    if (forceReset || !hasUsers?.tbl) {
+      const schemaSql = fs.readFileSync(PG_SCHEMA_PATH, 'utf8');
+      await db.exec(schemaSql);
+    }
+  } else {
+    await db.exec(`
     CREATE TABLE IF NOT EXISTS users (
       id TEXT PRIMARY KEY,
       code TEXT NOT NULL UNIQUE,
@@ -311,28 +315,33 @@ export function initSchemaAndSeed(forceReset = false) {
     );
   `);
 
-  // Ensure password_hash column exists if migrating an older SQLite file
-  try {
-    db.exec("ALTER TABLE users ADD COLUMN password_hash TEXT NOT NULL DEFAULT '';");
-  } catch {
-    // Column already exists
+    await db.addColumn('users', 'password_hash', "TEXT NOT NULL DEFAULT ''");
+    // Module giảng dạy: chỉ bổ sung bảng/cột (không xóa dữ liệu hiện có)
+    await ensureTeachingSchema(db);
   }
 
-  // Module giảng dạy: chỉ bổ sung bảng/cột (không xóa dữ liệu hiện có)
-  ensureTeachingSchema(db);
-
-  const userCount = db.prepare('SELECT COUNT(*) AS cnt FROM users').get().cnt;
-  const wikiCount = db.prepare('SELECT COUNT(*) AS cnt FROM wiki_terms').get().cnt;
+  const userCount = (await db.prepare('SELECT COUNT(*) AS cnt FROM users').get()).cnt;
+  const wikiCount = (await db.prepare('SELECT COUNT(*) AS cnt FROM wiki_terms').get()).cnt;
 
   if (!forceReset && userCount > 0 && wikiCount > 0) {
-    seedTeachingData(db, { seed: JSON.parse(fs.readFileSync(SEED_PATH, 'utf8')), hashPassword });
-    seedMasterLmsStarterData(db);
+    await seedTeachingData(db, { seed: JSON.parse(fs.readFileSync(SEED_PATH, 'utf8')), hashPassword });
+    await seedMasterLmsStarterData(db);
+    _initPromise = Promise.resolve();
     return;
   }
 
   const seed = JSON.parse(fs.readFileSync(SEED_PATH, 'utf8'));
-  clearTeachingData(db);
-  db.exec(`
+  if (db.isPg) {
+    const schemaSql = fs.readFileSync(PG_SCHEMA_PATH, 'utf8');
+    const tbls = [...schemaSql.matchAll(/CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\s+([a-z0-9_]+)/gi)]
+      .map((m) => `"${m[1]}"`)
+      .reverse();
+    if (tbls.length > 0) {
+      await db.exec(`TRUNCATE TABLE ${tbls.join(', ')} RESTART IDENTITY CASCADE;`);
+    }
+  } else {
+    await clearTeachingData(db);
+    await db.exec(`
     DELETE FROM learning_events;
     DELETE FROM leave_requests;
     DELETE FROM teaching_log_history;
@@ -346,6 +355,7 @@ export function initSchemaAndSeed(forceReset = false) {
     DELETE FROM courses;
     DELETE FROM users;
   `);
+  }
 
   const defaultPassHash = hashPassword('123456');
   const insUser = db.prepare(
@@ -353,7 +363,7 @@ export function initSchemaAndSeed(forceReset = false) {
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
   );
   for (const u of seed.users) {
-    insUser.run(
+    await insUser.run(
       u.id,
       u.code,
       u.email,
@@ -374,7 +384,7 @@ export function initSchemaAndSeed(forceReset = false) {
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   );
   for (const c of seed.courses) {
-    insCourse.run(
+    await insCourse.run(
       c.id,
       c.code,
       c.title,
@@ -402,9 +412,9 @@ export function initSchemaAndSeed(forceReset = false) {
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 4, 2)`
   );
   for (const ch of seed.chapters) {
-    insChapter.run(ch.id, ch.subject_class_id, ch.code, ch.title, ch.progress_pct);
+    await insChapter.run(ch.id, ch.subject_class_id, ch.code, ch.title, ch.progress_pct);
     for (const l of ch.lessons) {
-      insLesson.run(
+      await insLesson.run(
         l.id,
         ch.id,
         l.code,
@@ -427,7 +437,7 @@ export function initSchemaAndSeed(forceReset = false) {
   );
   for (const [lessonId, draft] of Object.entries(seed.lesson_drafts || {})) {
     for (const b of draft.blocks) {
-      insBlock.run(
+      await insBlock.run(
         b.id,
         lessonId,
         b.schema_version,
@@ -437,7 +447,7 @@ export function initSchemaAndSeed(forceReset = false) {
         JSON.stringify(b.content)
       );
     }
-    db.prepare(
+    await db.prepare(
       `INSERT INTO lesson_versions (id, lesson_id, version_number, blocks_snapshot_json, published_by, published_at)
        VALUES (?, ?, 2, ?, 'TS. Lê Hoàng Nam', ?)`
     ).run(crypto.randomUUID(), lessonId, JSON.stringify(draft.blocks), nowIso);
@@ -448,7 +458,7 @@ export function initSchemaAndSeed(forceReset = false) {
      VALUES (?, ?, ?, ?, ?, ?, ?)`
   );
   for (const wt of DEFAULT_WIKI_TERMS) {
-    insWiki.run(
+    await insWiki.run(
       wt.id,
       wt.canonical_name,
       JSON.stringify(wt.aliases),
@@ -468,7 +478,7 @@ export function initSchemaAndSeed(forceReset = false) {
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   );
   for (const s of seed.sessions) {
-    insSession.run(
+    await insSession.run(
       s.session_id,
       s.subject_class_id,
       s.subject_class_code,
@@ -497,7 +507,7 @@ export function initSchemaAndSeed(forceReset = false) {
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
   );
   for (const h of seed.teaching_log_history) {
-    insHist.run(
+    await insHist.run(
       h.id,
       h.session_id,
       h.session_code,
@@ -514,7 +524,7 @@ export function initSchemaAndSeed(forceReset = false) {
      VALUES (?, ?, ?, ?, ?, ?, ?)`
   );
   for (const lv of seed.leave_requests) {
-    insLeave.run(
+    await insLeave.run(
       lv.id,
       lv.subject_class_id,
       lv.student_code,
@@ -525,11 +535,21 @@ export function initSchemaAndSeed(forceReset = false) {
     );
   }
 
-  seedTeachingData(db, { seed, hashPassword });
-  seedMasterLmsStarterData(db);
+  await seedTeachingData(db, { seed, hashPassword });
+  await seedMasterLmsStarterData(db);
+  _initPromise = Promise.resolve();
 }
 
-initSchemaAndSeed(false);
+let _initPromise = null;
+export async function ensureInitialized() {
+  if (!_initPromise) {
+    _initPromise = (await initSchemaAndSeed(false)).catch((err) => {
+      _initPromise = null;
+      throw err;
+    });
+  }
+  return _initPromise;
+}
 
 const UPLOADS_DIR = process.env.LMSPLUS_UPLOADS_DIR
   ? path.resolve(process.env.LMSPLUS_UPLOADS_DIR)
@@ -540,7 +560,7 @@ fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 export const MAX_BODY_BYTES = 24 * 1024 * 1024;
 const handleTeaching = createTeachingRouter({ db, uploadsDir: UPLOADS_DIR, jwtSecret: JWT_SECRET, log: writeLog });
 
-function resolveUser(req, url = null, pathname = '', method = 'GET') {
+async function resolveUser(req, url = null, pathname = '', method = 'GET') {
   const auth = req.headers['authorization'];
   if (auth && auth.startsWith('Bearer ')) {
     const claims = verifyJwtToken(auth.slice(7).trim());
@@ -562,7 +582,7 @@ function resolveUser(req, url = null, pathname = '', method = 'GET') {
       const resourceId = decodeURIComponent(streamMatch[1]);
       const verified = verifyMediaStreamToken(JWT_SECRET, st, resourceId);
       if (verified && verified.uid) {
-        const row = db.prepare('SELECT * FROM users WHERE id = ?').get(verified.uid);
+        const row = await db.prepare('SELECT * FROM users WHERE id = ?').get(verified.uid);
         return sanitizeUserRecord(row);
       }
     }
@@ -583,16 +603,16 @@ function sendJson(res, statusCode, payload) {
   res.end(body);
 }
 
-export function handleApiRequest(req, res, bodyData) {
+export async function handleApiRequest(req, res, bodyData) {
   try {
-    return handleApiRequestInner(req, res, bodyData);
+    await ensureInitialized();
+    return await handleApiRequestInner(req, res, bodyData);
   } catch (err) {
-    const msg = String((err && err.message) || err || '');
-    if (msg.includes('UNIQUE constraint failed')) {
+    if (isUniqueViolation(err)) {
       sendJson(res, 409, { detail: { code: 'DUPLICATE_RECORD', message: 'Mã định danh hoặc Email đã tồn tại trong hệ thống.' } });
       return;
     }
-    if (msg.includes('FOREIGN KEY constraint failed')) {
+    if (isForeignKeyViolation(err)) {
       sendJson(res, 409, {
         detail: {
           code: 'REFERENTIAL_INTEGRITY_CONFLICT',
@@ -601,7 +621,7 @@ export function handleApiRequest(req, res, bodyData) {
       });
       return;
     }
-    if (msg.includes('CHECK constraint failed')) {
+    if (isCheckViolation(err)) {
       sendJson(res, 422, { detail: { code: 'VALIDATION_ERROR', message: 'Giá trị dữ liệu không nằm trong danh mục hợp lệ.' } });
       return;
     }
@@ -612,7 +632,7 @@ export function handleApiRequest(req, res, bodyData) {
   }
 }
 
-function handleApiRequestInner(req, res, bodyData) {
+async function handleApiRequestInner(req, res, bodyData) {
   const url = new URL(req.url || '/', `http://localhost:${PORT}`);
   const pathname = url.pathname;
   const method = req.method || 'GET';
@@ -645,11 +665,12 @@ function handleApiRequestInner(req, res, bodyData) {
   }
 
   if (pathname === '/health') {
-    const userCnt = db.prepare('SELECT COUNT(*) AS cnt FROM users').get().cnt;
+    const userCnt = (await db.prepare('SELECT COUNT(*) AS cnt FROM users').get()).cnt;
     sendJson(res, 200, {
       status: 'ok',
       service: 'lmsplus-elearning-sql-backend',
-      database: 'sqlite3 (database/lmsplus_elearning.sqlite)',
+      database: db.targetLabel,
+      engine: db.engine,
       users_in_db: userCnt,
       timestamp: new Date().toISOString(),
     });
@@ -657,7 +678,7 @@ function handleApiRequestInner(req, res, bodyData) {
   }
 
   if (pathname === '/api/v1/elearning/testing/reset-seed' && method === 'POST') {
-    initSchemaAndSeed(true);
+    await initSchemaAndSeed(true);
     sendJson(res, 200, { success: true, data: { reset: true } });
     return;
   }
@@ -674,7 +695,7 @@ function handleApiRequestInner(req, res, bodyData) {
   }
   if (pathname === '/api/v1/elearning/auth/token' && method === 'POST') {
     const requestedRole = String(body.role || 'STUDENT').toUpperCase();
-    const rows = db.prepare('SELECT * FROM users').all();
+    const rows = await db.prepare('SELECT * FROM users').all();
     const match = rows.find((r) => JSON.parse(r.roles_json).includes(requestedRole));
     if (!match) {
       sendJson(res, 404, { detail: { code: 'USER_NOT_FOUND', message: 'Không tìm thấy tài khoản.' } });
@@ -702,7 +723,7 @@ function handleApiRequestInner(req, res, bodyData) {
       });
       return;
     }
-    const row = db
+    const row = await db
       .prepare('SELECT * FROM users WHERE LOWER(email) = ? OR LOWER(code) = ?')
       .get(identifier, identifier);
     if (!row) {
@@ -741,7 +762,7 @@ function handleApiRequestInner(req, res, bodyData) {
     const role = String(body.role || 'STUDENT').toUpperCase();
     const validRoles = ['STUDENT', 'INSTRUCTOR', 'TEACHING_ASSISTANT', 'ACADEMIC_STAFF', 'ADMIN'];
     // Tự đăng ký công khai chỉ tạo tài khoản Học viên; vai trò khác phải do Quản trị viên tạo.
-    const requester = resolveUser(req);
+    const requester = await resolveUser(req);
     const requesterIsAdmin = Boolean(requester && requester.roles.includes('ADMIN'));
     if (role !== 'STUDENT' && !requesterIsAdmin) {
       sendJson(res, 403, {
@@ -764,7 +785,7 @@ function handleApiRequestInner(req, res, bodyData) {
       return;
     }
 
-    const existing = db.prepare('SELECT id FROM users WHERE LOWER(email) = ?').get(email);
+    const existing = await db.prepare('SELECT id FROM users WHERE LOWER(email) = ?').get(email);
     if (existing) {
       sendJson(res, 409, {
         detail: {
@@ -779,7 +800,7 @@ function handleApiRequestInner(req, res, bodyData) {
     const userCode =
       String(body.code || '').trim().toUpperCase() ||
       `${prefix}${Math.floor(100000 + Math.random() * 900000)}`;
-    const existingCode = db.prepare('SELECT id FROM users WHERE UPPER(code) = ?').get(userCode);
+    const existingCode = await db.prepare('SELECT id FROM users WHERE UPPER(code) = ?').get(userCode);
     if (existingCode) {
       sendJson(res, 409, {
         detail: {
@@ -789,13 +810,13 @@ function handleApiRequestInner(req, res, bodyData) {
       });
       return;
     }
-    const defaultDeptRow = db
+    const defaultDeptRow = await db
       .prepare("SELECT department_id FROM courses WHERE department_id IS NOT NULL AND department_id <> '' ORDER BY CASE WHEN department_id = 'khoi_5' THEN 0 ELSE 1 END LIMIT 1")
       .get();
     const resolvedDept = String(body.department_id || '').trim() || defaultDeptRow?.department_id || 'khoi_5';
     const newId = `usr_${crypto.randomBytes(4).toString('hex')}`;
 
-    db.prepare(
+    await db.prepare(
       `INSERT INTO users (id, code, email, full_name, password_hash, roles_json, department_id, assigned_course_ids_json, enrolled_subject_class_ids_json)
        VALUES (?, ?, ?, ?, ?, ?, ?, '[]', '[]')`
     ).run(
@@ -808,7 +829,7 @@ function handleApiRequestInner(req, res, bodyData) {
       resolvedDept
     );
 
-    const createdRow = db.prepare('SELECT * FROM users WHERE id = ?').get(newId);
+    const createdRow = await db.prepare('SELECT * FROM users WHERE id = ?').get(newId);
     const userObj = sanitizeUserRecord(createdRow);
     const token = createJwtToken(userObj);
     sendJson(res, 201, {
@@ -820,7 +841,7 @@ function handleApiRequestInner(req, res, bodyData) {
 
   // Webhook từ nhà cung cấp phòng học trực tuyến (Zoom / Google Meet) xác thực bằng chữ ký HMAC-SHA256 riêng
   if (pathname.startsWith(`${TEACHING_PREFIX}/webhooks/`)) {
-    const webhookUser = resolveUser(req, url, pathname, method) || {
+    const webhookUser = await resolveUser(req, url, pathname, method) || {
       id: 'webhook_system',
       code: 'WEBHOOK',
       email: 'webhook@lmsplus.edu.vn',
@@ -831,7 +852,7 @@ function handleApiRequestInner(req, res, bodyData) {
     return handleTeaching({ req, method, pathname, url, body, bodyError, user: webhookUser, res, sendJson });
   }
 
-  const user = resolveUser(req, url, pathname, method);
+  const user = await resolveUser(req, url, pathname, method);
   if (!user) {
     sendJson(res, 401, {
       detail: { code: 'INVALID_OR_EXPIRED_JWT', message: 'Phiên đăng nhập không hợp lệ hoặc đã hết hạn.' },
@@ -846,7 +867,7 @@ function handleApiRequestInner(req, res, bodyData) {
 
   // 1. Workspace Bootstrap (SQL-backed)
   if (pathname === '/api/v1/elearning/workspace/bootstrap' && method === 'GET') {
-    const allCoursesRaw = db.prepare('SELECT * FROM courses ORDER BY id').all();
+    const allCoursesRaw = await db.prepare('SELECT * FROM courses ORDER BY id').all();
     const mapCourse = (c) => ({
       id: c.id,
       code: c.code,
@@ -873,14 +894,14 @@ function handleApiRequestInner(req, res, bodyData) {
     const all_courses = allCoursesRaw.map(mapCourse);
 
     // Màn hình học bài cũ chỉ hiển thị chương gắn với lớp; chương của khóa học mới nằm trong module giảng dạy.
-    const chapters = db.prepare("SELECT * FROM chapters WHERE subject_class_id <> '' ORDER BY id").all().map((ch) => ({
+    const chapters = await mapAsync(await db.prepare("SELECT * FROM chapters WHERE subject_class_id <> '' ORDER BY id").all(), async (ch) => ({
       id: ch.id,
       code: ch.code,
       title: ch.title,
       progress_pct: ch.progress_pct,
-      lessons: db
+      lessons: (await db
         .prepare('SELECT * FROM lessons WHERE chapter_id = ? ORDER BY code')
-        .all(ch.id)
+        .all(ch.id))
         .map((l) => ({
           id: l.id,
           code: l.code,
@@ -896,9 +917,9 @@ function handleApiRequestInner(req, res, bodyData) {
         })),
     }));
 
-    const blocks = db
+    const blocks = (await db
       .prepare("SELECT * FROM lesson_blocks WHERE lesson_id = 'les_302' ORDER BY sort_order")
-      .all()
+      .all())
       .map((b) => ({
         id: b.id,
         lesson_id: b.lesson_id,
@@ -909,7 +930,7 @@ function handleApiRequestInner(req, res, bodyData) {
         content: JSON.parse(b.content_json),
       }));
 
-    const wiki_terms = db.prepare('SELECT * FROM wiki_terms ORDER BY id').all().map((wt) => ({
+    const wiki_terms = (await db.prepare('SELECT * FROM wiki_terms ORDER BY id').all()).map((wt) => ({
       id: wt.id,
       canonical_name: wt.canonical_name,
       aliases: JSON.parse(wt.aliases_json || '[]'),
@@ -919,10 +940,10 @@ function handleApiRequestInner(req, res, bodyData) {
     }));
 
     const users_list = user.roles.includes('ADMIN')
-      ? db.prepare('SELECT * FROM users ORDER BY id').all().map(sanitizeUserRecord)
+      ? (await db.prepare('SELECT * FROM users ORDER BY id').all()).map(sanitizeUserRecord)
       : [];
 
-    const sessions = db.prepare('SELECT * FROM sessions ORDER BY session_id DESC').all().map((s) => ({
+    const sessions = (await db.prepare('SELECT * FROM sessions ORDER BY session_id DESC').all()).map((s) => ({
       session_id: s.session_id,
       subject_class_code: s.subject_class_code,
       subject_title: s.subject_title,
@@ -944,10 +965,10 @@ function handleApiRequestInner(req, res, bodyData) {
       lessons_delivery: JSON.parse(s.lessons_delivery_json),
     }));
 
-    const teaching_log_history = db
-      .prepare('SELECT * FROM teaching_log_history ORDER BY rowid DESC')
+    const teaching_log_history = await db
+      .prepare('SELECT * FROM teaching_log_history ORDER BY changed_at DESC, id DESC')
       .all();
-    const leave_requests = db.prepare('SELECT * FROM leave_requests ORDER BY id').all();
+    const leave_requests = await db.prepare('SELECT * FROM leave_requests ORDER BY id').all();
 
     sendJson(res, 200, {
       success: true,
@@ -1004,7 +1025,7 @@ function handleApiRequestInner(req, res, bodyData) {
     const isAssigned = body.is_assigned_to_student ? 1 : 0;
     const nowIso = new Date().toISOString();
 
-    db.prepare(
+    await db.prepare(
       `INSERT INTO courses (id, code, title, instructor_id, instructor_name, department_id, department_name,
                             chapters_count, lessons_count, progress_pct, enrollment_policy, enrollment_status,
                             is_assigned_to_student, updated_at)
@@ -1024,7 +1045,7 @@ function handleApiRequestInner(req, res, bodyData) {
       nowIso
     );
 
-    const created = db.prepare('SELECT * FROM courses WHERE id = ?').get(newId);
+    const created = await db.prepare('SELECT * FROM courses WHERE id = ?').get(newId);
     sendJson(res, 201, {
       success: true,
       data: {
@@ -1039,7 +1060,7 @@ function handleApiRequestInner(req, res, bodyData) {
   const crudCourseMatch = pathname.match(/^\/api\/v1\/elearning\/crud\/courses\/([^/]+)$/);
   if (crudCourseMatch && method === 'PUT') {
     const courseId = crudCourseMatch[1];
-    const existing = db.prepare('SELECT * FROM courses WHERE id = ?').get(courseId);
+    const existing = await db.prepare('SELECT * FROM courses WHERE id = ?').get(courseId);
     if (!existing) {
       sendJson(res, 404, { detail: { code: 'COURSE_NOT_FOUND', message: 'Không tìm thấy khóa học.' } });
       return;
@@ -1060,7 +1081,7 @@ function handleApiRequestInner(req, res, bodyData) {
           : 0
         : existing.is_assigned_to_student;
 
-    db.prepare(
+    await db.prepare(
       `UPDATE courses
        SET code = ?, title = ?, instructor_name = ?, department_name = ?,
            chapters_count = ?, lessons_count = ?, enrollment_policy = ?,
@@ -1078,7 +1099,7 @@ function handleApiRequestInner(req, res, bodyData) {
       new Date().toISOString(),
       courseId
     );
-    const updated = db.prepare('SELECT * FROM courses WHERE id = ?').get(courseId);
+    const updated = await db.prepare('SELECT * FROM courses WHERE id = ?').get(courseId);
     sendJson(res, 200, {
       success: true,
       data: {
@@ -1090,9 +1111,9 @@ function handleApiRequestInner(req, res, bodyData) {
   }
 
   if (crudCourseMatch && method === 'DELETE') {
-    const inUse = db
+    const inUse = (await db
       .prepare("SELECT COUNT(*) AS n FROM subject_classes WHERE course_id = ?")
-      .get(crudCourseMatch[1]).n;
+      .get(crudCourseMatch[1])).n;
     if (inUse > 0) {
       sendJson(res, 409, {
         detail: {
@@ -1102,7 +1123,7 @@ function handleApiRequestInner(req, res, bodyData) {
       });
       return;
     }
-    db.prepare('DELETE FROM courses WHERE id = ?').run(crudCourseMatch[1]);
+    await db.prepare('DELETE FROM courses WHERE id = ?').run(crudCourseMatch[1]);
     sendJson(res, 200, { success: true, data: { deleted_id: crudCourseMatch[1] } });
     return;
   }
@@ -1112,7 +1133,7 @@ function handleApiRequestInner(req, res, bodyData) {
     const newId = `ch_${crypto.randomBytes(3).toString('hex')}`;
     const code = String(body.code || 'Chương mới').trim();
     const title = String(body.title || 'Nội dung chương học mới').trim();
-    db.prepare(
+    await db.prepare(
       `INSERT INTO chapters (id, subject_class_id, code, title, progress_pct)
        VALUES (?, 'sc_se302_01', ?, ?, 0)`
     ).run(newId, code, title);
@@ -1126,7 +1147,7 @@ function handleApiRequestInner(req, res, bodyData) {
   const crudChapterMatch = pathname.match(/^\/api\/v1\/elearning\/crud\/chapters\/([^/]+)$/);
   if (crudChapterMatch && method === 'PUT') {
     const chId = crudChapterMatch[1];
-    db.prepare('UPDATE chapters SET code = ?, title = ? WHERE id = ?').run(
+    await db.prepare('UPDATE chapters SET code = ?, title = ? WHERE id = ?').run(
       String(body.code || '').trim(),
       String(body.title || '').trim(),
       chId
@@ -1136,7 +1157,7 @@ function handleApiRequestInner(req, res, bodyData) {
   }
 
   if (crudChapterMatch && method === 'DELETE') {
-    db.prepare('DELETE FROM chapters WHERE id = ?').run(crudChapterMatch[1]);
+    await db.prepare('DELETE FROM chapters WHERE id = ?').run(crudChapterMatch[1]);
     sendJson(res, 200, { success: true, data: { deleted_id: crudChapterMatch[1] } });
     return;
   }
@@ -1153,7 +1174,7 @@ function handleApiRequestInner(req, res, bodyData) {
       : 'IN_PROGRESS';
     const unlockCondition = body.unlock_condition_text || null;
 
-    db.prepare(
+    await db.prepare(
       `INSERT INTO lessons (id, chapter_id, code, title, duration_minutes, status, unlock_condition_text,
                             required_video_pct, require_quick_check, last_video_position_sec,
                             total_video_seconds, quick_check_passed, working_draft_revision, published_version)
@@ -1180,7 +1201,7 @@ function handleApiRequestInner(req, res, bodyData) {
   const crudLessonMatch = pathname.match(/^\/api\/v1\/elearning\/crud\/lessons\/([^/]+)$/);
   if (crudLessonMatch && method === 'PUT') {
     const lesId = crudLessonMatch[1];
-    const existing = db.prepare('SELECT * FROM lessons WHERE id = ?').get(lesId);
+    const existing = await db.prepare('SELECT * FROM lessons WHERE id = ?').get(lesId);
     if (!existing) {
       sendJson(res, 404, { detail: { code: 'LESSON_NOT_FOUND', message: 'Không tìm thấy bài giảng.' } });
       return;
@@ -1194,7 +1215,7 @@ function handleApiRequestInner(req, res, bodyData) {
     const unlockText =
       body.unlock_condition_text !== undefined ? body.unlock_condition_text : existing.unlock_condition_text;
 
-    db.prepare(
+    await db.prepare(
       `UPDATE lessons
        SET code = ?, title = ?, duration_minutes = ?, status = ?, unlock_condition_text = ?, total_video_seconds = ?
        WHERE id = ?`
@@ -1215,7 +1236,7 @@ function handleApiRequestInner(req, res, bodyData) {
   }
 
   if (crudLessonMatch && method === 'DELETE') {
-    db.prepare('DELETE FROM lessons WHERE id = ?').run(crudLessonMatch[1]);
+    await db.prepare('DELETE FROM lessons WHERE id = ?').run(crudLessonMatch[1]);
     sendJson(res, 200, { success: true, data: { deleted_id: crudLessonMatch[1] } });
     return;
   }
@@ -1234,7 +1255,7 @@ function handleApiRequestInner(req, res, bodyData) {
     const shortDefinition = String(body.short_definition || '').trim();
     const formulaOrExample = body.formula_or_example ? String(body.formula_or_example).trim() : null;
 
-    db.prepare(
+    await db.prepare(
       `INSERT INTO wiki_terms (id, canonical_name, aliases_json, subject_context, short_definition, formula_or_example, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?)`
     ).run(
@@ -1270,7 +1291,7 @@ function handleApiRequestInner(req, res, bodyData) {
           .split(',')
           .map((s) => s.trim())
           .filter(Boolean);
-    db.prepare(
+    await db.prepare(
       `UPDATE wiki_terms
        SET canonical_name = ?, aliases_json = ?, subject_context = ?, short_definition = ?, formula_or_example = ?, updated_at = ?
        WHERE id = ?`
@@ -1298,7 +1319,7 @@ function handleApiRequestInner(req, res, bodyData) {
   }
 
   if (crudWikiMatch && method === 'DELETE') {
-    db.prepare('DELETE FROM wiki_terms WHERE id = ?').run(crudWikiMatch[1]);
+    await db.prepare('DELETE FROM wiki_terms WHERE id = ?').run(crudWikiMatch[1]);
     sendJson(res, 200, { success: true, data: { deleted_id: crudWikiMatch[1] } });
     return;
   }
@@ -1307,7 +1328,7 @@ function handleApiRequestInner(req, res, bodyData) {
   const crudUserMatch = pathname.match(/^\/api\/v1\/elearning\/crud\/users\/([^/]+)$/);
   if (crudUserMatch && method === 'PUT') {
     const usrId = crudUserMatch[1];
-    const existing = db.prepare('SELECT * FROM users WHERE id = ?').get(usrId);
+    const existing = await db.prepare('SELECT * FROM users WHERE id = ?').get(usrId);
     if (!existing) {
       sendJson(res, 404, { detail: { code: 'USER_NOT_FOUND', message: 'Không tìm thấy người dùng.' } });
       return;
@@ -1324,22 +1345,22 @@ function handleApiRequestInner(req, res, bodyData) {
       sendJson(res, 422, { detail: { code: 'VALIDATION_ERROR', message: 'Họ tên, Mã định danh và Email không được để trống.' } });
       return;
     }
-    const dupEmail = db.prepare('SELECT id FROM users WHERE LOWER(email) = ? AND id <> ?').get(email, usrId);
+    const dupEmail = await db.prepare('SELECT id FROM users WHERE LOWER(email) = ? AND id <> ?').get(email, usrId);
     if (dupEmail) {
       sendJson(res, 409, { detail: { code: 'EMAIL_ALREADY_EXISTS', message: 'Địa chỉ Email này đã được dùng bởi tài khoản khác.' } });
       return;
     }
-    const dupCode = db.prepare('SELECT id FROM users WHERE UPPER(code) = ? AND id <> ?').get(code, usrId);
+    const dupCode = await db.prepare('SELECT id FROM users WHERE UPPER(code) = ? AND id <> ?').get(code, usrId);
     if (dupCode) {
       sendJson(res, 409, { detail: { code: 'CODE_ALREADY_EXISTS', message: `Mã định danh "${code}" đã được dùng bởi tài khoản khác.` } });
       return;
     }
 
-    db.prepare(
+    await db.prepare(
       `UPDATE users SET full_name = ?, email = ?, code = ?, roles_json = ?, department_id = ? WHERE id = ?`
     ).run(fullName, email, code, JSON.stringify([role]), departmentId, usrId);
 
-    const updated = db.prepare('SELECT * FROM users WHERE id = ?').get(usrId);
+    const updated = await db.prepare('SELECT * FROM users WHERE id = ?').get(usrId);
     sendJson(res, 200, { success: true, data: sanitizeUserRecord(updated) });
     return;
   }
@@ -1351,9 +1372,9 @@ function handleApiRequestInner(req, res, bodyData) {
       return;
     }
     try {
-      db.prepare('DELETE FROM users WHERE id = ?').run(usrId);
+      await db.prepare('DELETE FROM users WHERE id = ?').run(usrId);
     } catch (err) {
-      if (String(err && err.message).includes('FOREIGN KEY constraint failed')) {
+      if (isForeignKeyViolation(err)) {
         sendJson(res, 409, {
           detail: {
             code: 'USER_HAS_ACTIVE_DATA',
@@ -1375,7 +1396,7 @@ function handleApiRequestInner(req, res, bodyData) {
   // 2. Get Course Detail (with ASSIGNED_ONLY RBAC check)
   const courseMatch = pathname.match(/^\/api\/v1\/elearning\/courses\/([^/]+)$/);
   if (courseMatch && method === 'GET') {
-    const c = db.prepare('SELECT * FROM courses WHERE id = ?').get(courseMatch[1]);
+    const c = await db.prepare('SELECT * FROM courses WHERE id = ?').get(courseMatch[1]);
     if (!c) {
       sendJson(res, 404, { detail: { code: 'COURSE_NOT_FOUND', message: 'Course not found' } });
       return;
@@ -1416,7 +1437,7 @@ function handleApiRequestInner(req, res, bodyData) {
       });
       return;
     }
-    db.prepare('UPDATE courses SET enrollment_policy = ?, updated_at = ? WHERE id = ?').run(
+    await db.prepare('UPDATE courses SET enrollment_policy = ?, updated_at = ? WHERE id = ?').run(
       newPolicy,
       new Date().toISOString(),
       policyMatch[1]
@@ -1431,7 +1452,7 @@ function handleApiRequestInner(req, res, bodyData) {
   // 4. Enroll or Request Enrollment
   const enrollMatch = pathname.match(/^\/api\/v1\/elearning\/courses\/([^/]+)\/enroll$/);
   if (enrollMatch && method === 'POST') {
-    const c = db.prepare('SELECT * FROM courses WHERE id = ?').get(enrollMatch[1]);
+    const c = await db.prepare('SELECT * FROM courses WHERE id = ?').get(enrollMatch[1]);
     if (!c) {
       sendJson(res, 404, { detail: { code: 'COURSE_NOT_FOUND', message: 'Course not found' } });
       return;
@@ -1447,7 +1468,7 @@ function handleApiRequestInner(req, res, bodyData) {
     }
     const nowIso = new Date().toISOString();
     if (c.enrollment_policy === 'REQUEST_APPROVAL') {
-      db.prepare("UPDATE courses SET enrollment_status = 'PENDING_APPROVAL', updated_at = ? WHERE id = ?").run(
+      await db.prepare("UPDATE courses SET enrollment_status = 'PENDING_APPROVAL', updated_at = ? WHERE id = ?").run(
         nowIso,
         c.id
       );
@@ -1457,7 +1478,7 @@ function handleApiRequestInner(req, res, bodyData) {
       });
       return;
     }
-    db.prepare("UPDATE courses SET enrollment_status = 'ENROLLED', progress_pct = 5, updated_at = ? WHERE id = ?").run(
+    await db.prepare("UPDATE courses SET enrollment_status = 'ENROLLED', progress_pct = 5, updated_at = ? WHERE id = ?").run(
       nowIso,
       c.id
     );
@@ -1478,7 +1499,7 @@ function handleApiRequestInner(req, res, bodyData) {
       return;
     }
     const newStatus = body.decision === 'APPROVED' ? 'ENROLLED' : 'NOT_ENROLLED';
-    db.prepare(
+    await db.prepare(
       'UPDATE courses SET enrollment_status = ?, progress_pct = ?, updated_at = ? WHERE id = ?'
     ).run(newStatus, newStatus === 'ENROLLED' ? 5 : 0, new Date().toISOString(), approveMatch[1]);
     sendJson(res, 200, {
@@ -1501,7 +1522,7 @@ function handleApiRequestInner(req, res, bodyData) {
       });
       return;
     }
-    const les = db.prepare('SELECT * FROM lessons WHERE id = ?').get(draftMatch[1]);
+    const les = await db.prepare('SELECT * FROM lessons WHERE id = ?').get(draftMatch[1]);
     if (!les) {
       sendJson(res, 404, { detail: { code: 'LESSON_NOT_FOUND', message: 'Lesson not found' } });
       return;
@@ -1518,14 +1539,14 @@ function handleApiRequestInner(req, res, bodyData) {
       return;
     }
     const nextRev = les.working_draft_revision + 1;
-    db.prepare('DELETE FROM lesson_blocks WHERE lesson_id = ?').run(draftMatch[1]);
+    await db.prepare('DELETE FROM lesson_blocks WHERE lesson_id = ?').run(draftMatch[1]);
     const insBlk = db.prepare(
       `INSERT INTO lesson_blocks (id, lesson_id, schema_version, block_type, sort_order, status, content_json)
        VALUES (?, ?, '1.0', ?, ?, ?, ?)`
     );
     const incomingBlocks = Array.isArray(body.blocks) ? body.blocks : [];
-    incomingBlocks.forEach((b, idx) => {
-      insBlk.run(
+    for (const [idx, b] of (incomingBlocks).entries()) {
+      await insBlk.run(
         b.id || `blk_${idx + 1}`,
         draftMatch[1],
         b.block_type || 'paragraph',
@@ -1533,8 +1554,8 @@ function handleApiRequestInner(req, res, bodyData) {
         b.status || 'ACTIVE',
         JSON.stringify(b.content || {})
       );
-    });
-    db.prepare('UPDATE lessons SET working_draft_revision = ? WHERE id = ?').run(
+    }
+    await db.prepare('UPDATE lessons SET working_draft_revision = ? WHERE id = ?').run(
       nextRev,
       draftMatch[1]
     );
@@ -1561,16 +1582,16 @@ function handleApiRequestInner(req, res, bodyData) {
       });
       return;
     }
-    const les = db.prepare('SELECT * FROM lessons WHERE id = ?').get(publishMatch[1]);
+    const les = await db.prepare('SELECT * FROM lessons WHERE id = ?').get(publishMatch[1]);
     if (!les) {
       sendJson(res, 404, { detail: { code: 'LESSON_NOT_FOUND', message: 'Lesson not found' } });
       return;
     }
     const nextVer = les.published_version + 1;
-    const blks = db
+    const blks = await db
       .prepare('SELECT * FROM lesson_blocks WHERE lesson_id = ? ORDER BY sort_order')
       .all(publishMatch[1]);
-    db.prepare(
+    await db.prepare(
       `INSERT INTO lesson_versions (id, lesson_id, version_number, blocks_snapshot_json, published_by, published_at)
        VALUES (?, ?, ?, ?, ?, ?)`
     ).run(
@@ -1581,7 +1602,7 @@ function handleApiRequestInner(req, res, bodyData) {
       user.full_name,
       new Date().toISOString()
     );
-    db.prepare('UPDATE lessons SET published_version = ? WHERE id = ?').run(nextVer, publishMatch[1]);
+    await db.prepare('UPDATE lessons SET published_version = ? WHERE id = ?').run(nextVer, publishMatch[1]);
     sendJson(res, 200, {
       success: true,
       data: { lesson_id: publishMatch[1], published_version: nextVer },
@@ -1594,18 +1615,18 @@ function handleApiRequestInner(req, res, bodyData) {
     const key = body.idempotency_key || `hb_${crypto.randomUUID()}`;
     const lessonId = body.lesson_id || 'les_302';
     const pos = Number(body.last_video_position_sec || 0);
-    db.prepare(
-      `INSERT OR IGNORE INTO learning_events (idempotency_key, student_id, lesson_id, event_type, occurred_at)
-       VALUES (?, ?, ?, 'HEARTBEAT', ?)`
+    await db.prepare(
+      `INSERT INTO learning_events (idempotency_key, student_id, lesson_id, event_type, occurred_at)
+       VALUES (?, ?, ?, 'HEARTBEAT', ?) ON CONFLICT DO NOTHING`
     ).run(key, user.id, lessonId, new Date().toISOString());
 
     if (typeof body.quick_check_passed === 'boolean') {
-      db.prepare(
-        'UPDATE lessons SET last_video_position_sec = MAX(last_video_position_sec, ?), quick_check_passed = ? WHERE id = ?'
+      await db.prepare(
+        'UPDATE lessons SET last_video_position_sec = GREATEST(last_video_position_sec, ?), quick_check_passed = ? WHERE id = ?'
       ).run(pos, body.quick_check_passed ? 1 : 0, lessonId);
     } else {
-      db.prepare(
-        'UPDATE lessons SET last_video_position_sec = MAX(last_video_position_sec, ?) WHERE id = ?'
+      await db.prepare(
+        'UPDATE lessons SET last_video_position_sec = GREATEST(last_video_position_sec, ?) WHERE id = ?'
       ).run(pos, lessonId);
     }
     sendJson(res, 200, {
@@ -1618,7 +1639,7 @@ function handleApiRequestInner(req, res, bodyData) {
   // 9. Complete Lesson & Unlock Next (`422` if criteria not met)
   const completeMatch = pathname.match(/^\/api\/v1\/elearning\/progress\/lessons\/([^/]+)\/complete$/);
   if (completeMatch && method === 'POST') {
-    const les = db.prepare('SELECT * FROM lessons WHERE id = ?').get(completeMatch[1]);
+    const les = await db.prepare('SELECT * FROM lessons WHERE id = ?').get(completeMatch[1]);
     if (!les) {
       sendJson(res, 404, { detail: { code: 'LESSON_NOT_FOUND', message: 'Lesson not found' } });
       return;
@@ -1637,9 +1658,9 @@ function handleApiRequestInner(req, res, bodyData) {
       });
       return;
     }
-    db.prepare("UPDATE lessons SET status = 'COMPLETED' WHERE id = ?").run(les.id);
-    db.prepare("UPDATE lessons SET status = 'IN_PROGRESS' WHERE id = 'les_303'").run();
-    db.prepare('UPDATE chapters SET progress_pct = 100 WHERE id = ?').run(les.chapter_id);
+    await db.prepare("UPDATE lessons SET status = 'COMPLETED' WHERE id = ?").run(les.id);
+    await db.prepare("UPDATE lessons SET status = 'IN_PROGRESS' WHERE id = 'les_303'").run();
+    await db.prepare('UPDATE chapters SET progress_pct = 100 WHERE id = ?').run(les.chapter_id);
     sendJson(res, 200, {
       success: true,
       data: {
@@ -1656,16 +1677,16 @@ function handleApiRequestInner(req, res, bodyData) {
     /^\/api\/v1\/elearning\/sessions\/([^/]+)\/simulate-overdue-24h$/
   );
   if (overdueMatch && method === 'POST') {
-    const s = db.prepare('SELECT * FROM sessions WHERE session_id = ?').get(overdueMatch[1]);
+    const s = await db.prepare('SELECT * FROM sessions WHERE session_id = ?').get(overdueMatch[1]);
     if (!s) {
       sendJson(res, 404, { detail: { code: 'SESSION_NOT_FOUND', message: 'Session not found' } });
       return;
     }
     const nowStr = new Date().toISOString();
-    db.prepare("UPDATE sessions SET confirmation_status = 'OVERDUE_UNCONFIRMED' WHERE session_id = ?").run(
+    await db.prepare("UPDATE sessions SET confirmation_status = 'OVERDUE_UNCONFIRMED' WHERE session_id = ?").run(
       s.session_id
     );
-    db.prepare(
+    await db.prepare(
       `INSERT INTO teaching_log_history (id, session_id, session_code, previous_status, new_status, changed_by, changed_at, note)
        VALUES (?, ?, ?, ?, 'OVERDUE_UNCONFIRMED', 'Hệ thống tự động (Sau 24 giờ)', ?, 'Quá 24 giờ kể từ khi kết thúc buổi học chưa xác nhận -> Chuyển sang trạng thái Quá hạn chưa xác nhận (Vẫn cho phép Giảng viên ký xác nhận bổ sung).')`
     ).run(
@@ -1696,7 +1717,7 @@ function handleApiRequestInner(req, res, bodyData) {
       });
       return;
     }
-    const s = db.prepare('SELECT * FROM sessions WHERE session_id = ?').get(confirmMatch[1]);
+    const s = await db.prepare('SELECT * FROM sessions WHERE session_id = ?').get(confirmMatch[1]);
     if (!s) {
       sendJson(res, 404, { detail: { code: 'SESSION_NOT_FOUND', message: 'Session not found' } });
       return;
@@ -1705,7 +1726,7 @@ function handleApiRequestInner(req, res, bodyData) {
     const isAssigned =
       s.scheduled_instructor_id === user.id ||
       Boolean(
-        db.prepare(
+        await db.prepare(
           `SELECT 1 FROM teaching_staff_assignments WHERE subject_class_id = ? AND user_id = ? AND is_active = 1
              AND staff_role IN ('PRIMARY_INSTRUCTOR','CO_INSTRUCTOR')`
         ).get(s.subject_class_id, user.id)
@@ -1726,13 +1747,13 @@ function handleApiRequestInner(req, res, bodyData) {
       ? body.late_confirmation_reason || 'Giảng viên xác nhận bổ sung sau hạn 24 giờ.'
       : 'Giảng viên ký xác nhận đúng hạn 24 giờ.';
 
-    db.prepare(
+    await db.prepare(
       `UPDATE sessions
        SET confirmation_status = ?, confirmed_at = ?, is_late_confirmation = ?, late_confirmation_reason = ?
        WHERE session_id = ?`
     ).run(nextStatus, nowStr, isOverdue ? 1 : 0, isOverdue ? reason : null, s.session_id);
 
-    db.prepare(
+    await db.prepare(
       `INSERT INTO teaching_log_history (id, session_id, session_code, previous_status, new_status, changed_by, changed_at, note)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
@@ -1767,7 +1788,7 @@ function handleApiRequestInner(req, res, bodyData) {
       });
       return;
     }
-    db.prepare('UPDATE leave_requests SET status = ? WHERE id = ?').run(body.status, leaveMatch[1]);
+    await db.prepare('UPDATE leave_requests SET status = ? WHERE id = ?').run(body.status, leaveMatch[1]);
     sendJson(res, 200, { success: true, data: { id: leaveMatch[1], status: body.status } });
     return;
   }
@@ -1810,13 +1831,13 @@ function createMockExchange(method, urlPath, headers) {
 }
 
 /** Gọi API trong cùng tiến trình (dùng cho kiểm thử tích hợp). */
-export function invokeApi(method, urlPath, headers = {}, bodyObj = {}) {
+export async function invokeApi(method, urlPath, headers = {}, bodyObj = {}) {
   const { mockReq, mockRes, result } = createMockExchange(method, urlPath, headers);
-  handleApiRequest(mockReq, mockRes, bodyObj ? JSON.stringify(bodyObj) : '');
+  await handleApiRequest(mockReq, mockRes, bodyObj ? JSON.stringify(bodyObj) : '');
   return result();
 }
 
-/** Như invokeApi nhưng chờ các handler bất đồng bộ (ví dụ kiểm tra YouTube). */
+/** Như invokeApi nhưng hỗ trợ truyền rawBody tùy biến (upload nhị phân/text). */
 export async function invokeApiAsync(method, urlPath, headers = {}, bodyObj = {}, rawBody = null) {
   const { mockReq, mockRes, result } = createMockExchange(method, urlPath, headers);
   await handleApiRequest(mockReq, mockRes, rawBody !== null ? rawBody : bodyObj ? JSON.stringify(bodyObj) : '');
@@ -1824,34 +1845,41 @@ export async function invokeApiAsync(method, urlPath, headers = {}, bodyObj = {}
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(currentFilePath)) {
-  const server = http.createServer((req, res) => {
-    const chunks = [];
-    let size = 0;
-    let aborted = false;
-    req.on('data', (chunk) => {
-      size += chunk.length;
-      if (size > MAX_BODY_BYTES && !aborted) {
-        aborted = true;
-        sendJson(res, 413, { detail: { code: 'PAYLOAD_TOO_LARGE', message: 'Dữ liệu gửi lên vượt quá giới hạn 24 MB.' } });
-        req.destroy();
-        return;
-      }
-      if (!aborted) chunks.push(chunk);
-    });
-    req.on('end', () => {
-      if (aborted) return;
-      writeLog('INFO ', `${req.method} ${req.url}`);
-      Promise.resolve(handleApiRequest(req, res, Buffer.concat(chunks).toString('utf8'))).catch((err) => {
-        writeLog('ERROR', `${req.method} ${req.url}: ${err && err.stack ? err.stack : err}`);
-        if (!res.headersSent) sendJson(res, 500, { detail: { code: 'INTERNAL_ERROR', message: 'Đã xảy ra lỗi hệ thống.' } });
+  (await ensureInitialized())
+    .then(() => {
+      const server = http.createServer((req, res) => {
+        const chunks = [];
+        let size = 0;
+        let aborted = false;
+        req.on('data', (chunk) => {
+          size += chunk.length;
+          if (size > MAX_BODY_BYTES && !aborted) {
+            aborted = true;
+            sendJson(res, 413, { detail: { code: 'PAYLOAD_TOO_LARGE', message: 'Dữ liệu gửi lên vượt quá giới hạn 24 MB.' } });
+            req.destroy();
+            return;
+          }
+          if (!aborted) chunks.push(chunk);
+        });
+        req.on('end', async () => {
+          if (aborted) return;
+          writeLog('INFO ', `${req.method} ${req.url}`);
+          Promise.resolve(await handleApiRequest(req, res, Buffer.concat(chunks).toString('utf8'))).catch((err) => {
+            writeLog('ERROR', `${req.method} ${req.url}: ${err && err.stack ? err.stack : err}`);
+            if (!res.headersSent) sendJson(res, 500, { detail: { code: 'INTERNAL_ERROR', message: 'Đã xảy ra lỗi hệ thống.' } });
+          });
+        });
       });
-    });
-  });
 
-  server.listen(PORT, '127.0.0.1', () => {
-    writeLog(
-      'PASS ',
-      `LMSPLUS E-Learning SQL Backend API listening on http://localhost:${PORT} (SQLite: ${DB_PATH})`
-    );
-  });
+      server.listen(PORT, '127.0.0.1', () => {
+        writeLog(
+          'PASS ',
+          `LMSPLUS E-Learning SQL Backend API listening on http://localhost:${PORT} (${db.targetLabel})`
+        );
+      });
+    })
+    .catch((err) => {
+      writeLog('ERROR', `Không thể khởi tạo cơ sở dữ liệu: ${err && err.stack ? err.stack : err}`);
+      process.exit(1);
+    });
 }

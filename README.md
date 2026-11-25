@@ -8,6 +8,14 @@ Nền tảng quản lý khóa học, lớp học, **Lesson Studio** (soạn giá
 - **Điểm danh & Nhật ký giảng dạy 24 giờ:** Điểm danh nhanh trên một màn hình, mã QR động có thời hạn, lịch sử kiểm toán và xác nhận nhật ký giảng dạy.
 - **Chuẩn thiết kế:** Multi-Theme Token System (`airbnb-light`, `nordic-calm`, `cinema-dark`) đạt chuẩn tương phản WCAG AA.
 
+## Cơ sở dữ liệu PostgreSQL 18 (Local & Production)
+Hệ thống giữ nguyên trọn vẹn cấu trúc 80 bảng hiện tại và hỗ trợ kết nối **PostgreSQL 18** (`DATABASE_URL` hoặc các biến `PGHOST`/`PGPORT`/`PGDATABASE`/`PGUSER`/`PGPASSWORD`):
+1. **Local với Docker (PostgreSQL 18 Alpine):**
+   - Khởi động container: `docker compose up -d` (dùng image `postgres:18-alpine`, volume `/var/lib/postgresql`).
+   - Sao chép `.env.example` thành `.env`.
+   - Khởi tạo schema 80 bảng và migrate toàn bộ dữ liệu hiện có từ SQLite sang PostgreSQL 18: `npm run db:migrate` (hoặc `2-migrate-db.bat`).
+2. **Chế độ Fallback an toàn:** Nếu chưa đặt `DATABASE_URL`/`PGHOST` (ví dụ khi chưa cấu hình DB trên Vercel hoặc chạy test cô lập), backend tự động fallback sang `node:sqlite` trên `/tmp` hoặc `database/lmsplus_elearning.sqlite` với cùng API bất đồng bộ.
+
 ## Chạy trên máy cục bộ (Windows)
 - Yêu cầu **Node.js >= 22.5** (khuyến nghị **Node.js 24 LTS**).
 - Chạy file `3-start-all.bat` để khởi động đồng thời Backend (`http://localhost:8000`) và Frontend (`http://localhost:5173`).
@@ -20,7 +28,7 @@ Nền tảng quản lý khóa học, lớp học, **Lesson Studio** (soạn giá
 | Học viên | `minhanh.hs@lmsplus.edu.vn` (`HS50101`) | `123456` |
 
 ## Triển khai lên Vercel
-Dự án đã cấu hình sẵn `vercel.json` và Serverless API (`api/index.mjs`) dùng Node.js 24 (`node:sqlite` khởi tạo trên `/tmp` từ dữ liệu mẫu `database/lmsplus_elearning_seed.json`):
+Dự án đã cấu hình sẵn `vercel.json` và Serverless API (`api/index.mjs`) dùng Node.js 24 (`pg` cho PostgreSQL 18 qua `DATABASE_URL`, tự fallback `node:sqlite` trên `/tmp` nếu chưa khai báo `DATABASE_URL`):
 1. Kết nối kho mã nguồn GitHub `kien7bnt/LMSplus` tại [vercel.com/new](https://vercel.com/new).
-2. Giữ **Root Directory** là `.` (thư mục gốc dự án) và bấm **Deploy**.
-3. Khuyến nghị đặt biến môi trường `LMSPLUS_JWT_SECRET` trên Vercel Project Settings cho môi trường vận hành chính thức.
+2. Giữ **Root Directory** là `.` (thư mục gốc dự án), khai báo `DATABASE_URL` trỏ tới PostgreSQL 18 (Neon / Supabase / Cloud PG 18) và `LMSPLUS_JWT_SECRET` trong Vercel Environment Variables, rồi bấm **Deploy**.
+3. Nếu chuyển từ SQLite hiện tại lên PostgreSQL 18 lần đầu, trỏ `.env` về `DATABASE_URL` đích và chạy `npm run db:migrate` để đẩy toàn bộ 80 bảng + dữ liệu thực tế lên server.

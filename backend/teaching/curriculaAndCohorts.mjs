@@ -10,6 +10,7 @@
 import crypto from 'node:crypto';
 import {
   fail, pageParams, nowIso, text, intField, oneOf, dateField, tx, publicUser, compareVietnameseName,
+  mapAsync,
 } from './http.mjs';
 import { isAdmin, isStaff, isInstructor, isStudent, safeJson } from './scope.mjs';
 import { getAttendancePolicy, rateFromCounts } from './attendance.mjs';
@@ -31,15 +32,15 @@ function canViewPrograms(user) {
   return isAdmin(user) || isStaff(user) || isInstructor(user);
 }
 
-function logCurriculumAudit(db, curriculumId, actionType, payload, user) {
-  db.prepare(
+async function logCurriculumAudit(db, curriculumId, actionType, payload, user) {
+  await db.prepare(
     `INSERT INTO curriculum_audit_logs (id, curriculum_id, action_type, payload_json, actor_id, actor_name, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?)`
   ).run(crypto.randomUUID(), curriculumId, actionType, JSON.stringify(payload || {}), user?.id || null, user?.full_name || 'Hệ thống', nowIso());
 }
 
-function logCohortAudit(db, cohortId, actionType, targetStudentId, payload, user) {
-  db.prepare(
+async function logCohortAudit(db, cohortId, actionType, targetStudentId, payload, user) {
+  await db.prepare(
     `INSERT INTO cohort_audit_logs (id, cohort_id, action_type, target_student_id, payload_json, actor_id, actor_name, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(crypto.randomUUID(), cohortId, actionType, targetStudentId || null, JSON.stringify(payload || {}), user?.id || null, user?.full_name || 'Hệ thống', nowIso());
@@ -49,17 +50,17 @@ function logCohortAudit(db, cohortId, actionType, targetStudentId, payload, user
  * Đồng bộ danh sách học viên từ Lớp khóa học xuống các Lớp môn học liên kết.
  * Bảo toàn học viên có enrollment_source IN ('MAKEUP','RETAKE','SUPPLEMENTAL','ACADEMIC_ASSIGNED').
  */
-export function syncCohortRosterToClasses(db, cohortId, actorUser = null, specificClassIds = null) {
-  const activeCohortStudents = db
+export async function syncCohortRosterToClasses(db, cohortId, actorUser = null, specificClassIds = null) {
+  const activeCohortStudents = (await db
     .prepare(`SELECT student_id FROM cohort_enrollments WHERE cohort_id = ? AND status = 'ACTIVE'`)
-    .all(cohortId)
+    .all(cohortId))
     .map((r) => r.student_id);
-  const inactiveCohortStudents = db
+  const inactiveCohortStudents = (await db
     .prepare(`SELECT student_id FROM cohort_enrollments WHERE cohort_id = ? AND status IN ('WITHDRAWN','TRANSFERRED')`)
-    .all(cohortId)
+    .all(cohortId))
     .map((r) => r.student_id);
 
-  let classes = db
+  let classes = await db
     .prepare(`SELECT * FROM subject_classes WHERE cohort_id = ? AND status NOT IN ('ARCHIVED','CANCELLED')`)
     .all(cohortId);
   if (Array.isArray(specificClassIds) && specificClassIds.length > 0) {
@@ -74,17 +75,17 @@ export function syncCohortRosterToClasses(db, cohortId, actorUser = null, specif
 
   for (const cls of classes) {
     for (const sid of activeCohortStudents) {
-      const existing = db
+      const existing = await db
         .prepare('SELECT * FROM class_enrollments WHERE subject_class_id = ? AND student_id = ?')
         .get(cls.id, sid);
       if (!existing) {
-        db.prepare(
+        await db.prepare(
           `INSERT INTO class_enrollments (id, subject_class_id, student_id, enrollment_source, status, enrolled_at, updated_by)
            VALUES (?, ?, ?, 'COHORT_SYNCED', 'ACTIVE', ?, ?)`
         ).run(crypto.randomUUID(), cls.id, sid, now, actorUser?.id || null);
         insertedCount++;
       } else if (existing.status === 'DROPPED' && existing.enrollment_source === 'COHORT_SYNCED') {
-        db.prepare(
+        await db.prepare(
           `UPDATE class_enrollments SET status = 'ACTIVE', dropped_at = NULL, updated_by = ? WHERE id = ?`
         ).run(actorUser?.id || null, existing.id);
         reactivatedCount++;
@@ -92,29 +93,29 @@ export function syncCohortRosterToClasses(db, cohortId, actorUser = null, specif
     }
 
     for (const sid of inactiveCohortStudents) {
-      const existing = db
+      const existing = await db
         .prepare(`SELECT * FROM class_enrollments WHERE subject_class_id = ? AND student_id = ? AND status = 'ACTIVE' AND enrollment_source = 'COHORT_SYNCED'`)
         .get(cls.id, sid);
       if (existing) {
-        db.prepare(
+        await db.prepare(
           `UPDATE class_enrollments SET status = 'DROPPED', dropped_at = ?, updated_by = ? WHERE id = ?`
         ).run(now, actorUser?.id || null, existing.id);
         droppedCount++;
       }
     }
 
-    const activeCount = db
+    const activeCount = (await db
       .prepare(`SELECT COUNT(*) n FROM class_enrollments WHERE subject_class_id = ? AND status = 'ACTIVE'`)
-      .get(cls.id).n;
-    db.prepare('UPDATE subject_classes SET student_count = ?, updated_at = ? WHERE id = ?').run(activeCount, now, cls.id);
+      .get(cls.id)).n;
+    await db.prepare('UPDATE subject_classes SET student_count = ?, updated_at = ? WHERE id = ?').run(activeCount, now, cls.id);
   }
 
   return { classes_synced: classes.length, added: insertedCount, reactivated: reactivatedCount, dropped: droppedCount };
 }
 
-function curriculumDto(db, row) {
-  const subjectsCount = db.prepare('SELECT COUNT(*) n FROM curriculum_subjects WHERE curriculum_id = ?').get(row.id).n;
-  const cohortsCount = db.prepare("SELECT COUNT(*) n FROM program_cohorts WHERE curriculum_id = ? AND status <> 'ARCHIVED'").get(row.id).n;
+async function curriculumDto(db, row) {
+  const subjectsCount = (await db.prepare('SELECT COUNT(*) n FROM curriculum_subjects WHERE curriculum_id = ?').get(row.id)).n;
+  const cohortsCount = (await db.prepare("SELECT COUNT(*) n FROM program_cohorts WHERE curriculum_id = ? AND status <> 'ARCHIVED'").get(row.id)).n;
   return {
     id: row.id,
     code: row.code,
@@ -136,14 +137,14 @@ function curriculumDto(db, row) {
   };
 }
 
-function cohortSummaryDto(db, row) {
-  const curr = db.prepare('SELECT id, code, title, version FROM curricula WHERE id = ?').get(row.curriculum_id);
-  const activeStudents = db
+async function cohortSummaryDto(db, row) {
+  const curr = await db.prepare('SELECT id, code, title, version FROM curricula WHERE id = ?').get(row.curriculum_id);
+  const activeStudents = (await db
     .prepare("SELECT COUNT(DISTINCT student_id) n FROM cohort_enrollments WHERE cohort_id = ? AND status = 'ACTIVE'")
-    .get(row.id).n;
-  const classesCount = db
+    .get(row.id)).n;
+  const classesCount = (await db
     .prepare("SELECT COUNT(*) n FROM subject_classes WHERE cohort_id = ? AND status NOT IN ('ARCHIVED','CANCELLED')")
-    .get(row.id).n;
+    .get(row.id)).n;
   return {
     id: row.id,
     code: row.code,
@@ -171,7 +172,7 @@ export function registerCurriculaAndCohortRoutes(route) {
   // =========================================================================
   // LEVEL 1: KHUNG CHƯƠNG TRÌNH (CURRICULA)
   // =========================================================================
-  route('GET', '/curricula', ({ db, user, url }) => {
+  route('GET', '/curricula', async ({ db, user, url }) => {
     if (!canViewPrograms(user)) fail(403, 'PROGRAM_ACCESS_DENIED', 'Bạn không có quyền xem Khung chương trình.');
     const { page, size, offset } = pageParams(url, 20, 100);
     const where = ['1 = 1'];
@@ -182,7 +183,7 @@ export function registerCurriculaAndCohortRoutes(route) {
     }
     const q = (url.searchParams.get('q') || '').trim();
     if (q) {
-      where.push('(code LIKE ? OR title LIKE ?)');
+      where.push("(LOWER(code) LIKE LOWER(?) OR LOWER(title) LIKE LOWER(?))");
       params.push(`%${q}%`, `%${q}%`);
     }
     const status = url.searchParams.get('status');
@@ -193,10 +194,10 @@ export function registerCurriculaAndCohortRoutes(route) {
       where.push("status <> 'ARCHIVED'");
     }
     const whereSql = where.join(' AND ');
-    const total = db.prepare(`SELECT COUNT(*) n FROM curricula WHERE ${whereSql}`).get(...params).n;
-    const rows = db.prepare(`SELECT * FROM curricula WHERE ${whereSql} ORDER BY updated_at DESC LIMIT ? OFFSET ?`).all(...params, size, offset);
+    const total = (await db.prepare(`SELECT COUNT(*) n FROM curricula WHERE ${whereSql}`).get(...params)).n;
+    const rows = await db.prepare(`SELECT * FROM curricula WHERE ${whereSql} ORDER BY updated_at DESC LIMIT ? OFFSET ?`).all(...params, size, offset);
     return {
-      items: rows.map((r) => curriculumDto(db, r)),
+      items: await mapAsync(rows, async (r) => await curriculumDto(db, r)),
       page,
       page_size: size,
       total,
@@ -204,12 +205,12 @@ export function registerCurriculaAndCohortRoutes(route) {
     };
   });
 
-  route('POST', '/curricula', ({ db, user, body }) => {
+  route('POST', '/curricula', async ({ db, user, body }) => {
     const deptId = body.department_id || user.department_id || 'khoi_5';
     requireAdminOrStaff(user, deptId);
     const code = text(body, 'code', { required: true, max: 40, label: 'mã khung chương trình' }).toUpperCase();
     if (!CURR_CODE_RE.test(code)) fail(422, 'VALIDATION_ERROR', 'Mã khung chương trình chỉ gồm chữ, số, dấu chấm, gạch ngang.');
-    if (db.prepare('SELECT 1 FROM curricula WHERE UPPER(code) = ?').get(code)) {
+    if (await db.prepare('SELECT 1 FROM curricula WHERE UPPER(code) = ?').get(code)) {
       fail(409, 'CURRICULUM_CODE_EXISTS', `Mã khung chương trình "${code}" đã tồn tại.`);
     }
     const title = text(body, 'title', { required: true, min: 3, max: 200, label: 'tên khung chương trình' });
@@ -226,21 +227,21 @@ export function registerCurriculaAndCohortRoutes(route) {
     const id = `curr_${crypto.randomBytes(5).toString('hex')}`;
     const now = nowIso();
 
-    tx(db, () => {
-      db.prepare(
+    await tx(db, async () => {
+      await db.prepare(
         `INSERT INTO curricula (id, code, title, description, version, effective_date, department_id, status, lifecycle_status, created_by, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       ).run(id, code, title, description, version, effectiveDate, deptId, mappedStatus, lifecycleStatus, user.id, now, now);
-      logCurriculumAudit(db, id, 'CURRICULUM_CREATED', { code, title, version }, user);
+      await logCurriculumAudit(db, id, 'CURRICULUM_CREATED', { code, title, version }, user);
     });
-    return [201, curriculumDto(db, db.prepare('SELECT * FROM curricula WHERE id = ?').get(id))];
+    return [201, await curriculumDto(db, await db.prepare('SELECT * FROM curricula WHERE id = ?').get(id))];
   });
 
-  route('GET', '/curricula/:id', ({ db, user, params }) => {
+  route('GET', '/curricula/:id', async ({ db, user, params }) => {
     if (!canViewPrograms(user)) fail(403, 'PROGRAM_ACCESS_DENIED', 'Bạn không có quyền xem Khung chương trình.');
-    const curr = db.prepare('SELECT * FROM curricula WHERE id = ?').get(params.id);
+    const curr = await db.prepare('SELECT * FROM curricula WHERE id = ?').get(params.id);
     if (!curr) fail(404, 'CURRICULUM_NOT_FOUND', 'Không tìm thấy khung chương trình.');
-    const subjects = db
+    const subjects = await db
       .prepare(
         `SELECT cs.*, c.code AS course_code, c.title AS course_title, c.subject AS subject_name,
                 c.status AS course_status, c.instructor_name,
@@ -251,17 +252,16 @@ export function registerCurriculaAndCohortRoutes(route) {
          ORDER BY cs.semester_order ASC, cs.sort_order ASC`
       )
       .all(curr.id);
-    const cohorts = db
+    const cohorts = await mapAsync(await db
       .prepare('SELECT * FROM program_cohorts WHERE curriculum_id = ? ORDER BY created_at DESC')
-      .all(curr.id)
-      .map((c) => cohortSummaryDto(db, c));
-    const logs = db
+      .all(curr.id), async (c) => await cohortSummaryDto(db, c));
+    const logs = (await db
       .prepare('SELECT * FROM curriculum_audit_logs WHERE curriculum_id = ? ORDER BY created_at DESC LIMIT 50')
-      .all(curr.id)
+      .all(curr.id))
       .map((l) => ({ ...l, payload: safeJson(l.payload_json, {}) }));
 
     return {
-      ...curriculumDto(db, curr),
+      ...await curriculumDto(db, curr),
       subjects: subjects.map((s) => ({
         id: s.id,
         course_id: s.course_id,
@@ -284,8 +284,8 @@ export function registerCurriculaAndCohortRoutes(route) {
     };
   });
 
-  route('PATCH', '/curricula/:id', ({ db, user, body, params }) => {
-    const curr = db.prepare('SELECT * FROM curricula WHERE id = ?').get(params.id);
+  route('PATCH', '/curricula/:id', async ({ db, user, body, params }) => {
+    const curr = await db.prepare('SELECT * FROM curricula WHERE id = ?').get(params.id);
     if (!curr) fail(404, 'CURRICULUM_NOT_FOUND', 'Không tìm thấy khung chương trình.');
     requireAdminOrStaff(user, curr.department_id);
     const f = {};
@@ -296,38 +296,38 @@ export function registerCurriculaAndCohortRoutes(route) {
     if ('status' in body) f.status = oneOf(body, 'status', ['DRAFT', 'ACTIVE', 'ARCHIVED'], { required: true, label: 'trạng thái' });
     const keys = Object.keys(f);
     if (keys.length) {
-      tx(db, () => {
-        db.prepare(`UPDATE curricula SET ${keys.map((k) => `${k} = ?`).join(', ')}, updated_at = ? WHERE id = ?`)
+      await tx(db, async () => {
+        await db.prepare(`UPDATE curricula SET ${keys.map((k) => `${k} = ?`).join(', ')}, updated_at = ? WHERE id = ?`)
           .run(...keys.map((k) => f[k]), nowIso(), curr.id);
-        logCurriculumAudit(db, curr.id, 'CURRICULUM_UPDATED', f, user);
+        await logCurriculumAudit(db, curr.id, 'CURRICULUM_UPDATED', f, user);
       });
     }
-    return curriculumDto(db, db.prepare('SELECT * FROM curricula WHERE id = ?').get(curr.id));
+    return await curriculumDto(db, await db.prepare('SELECT * FROM curricula WHERE id = ?').get(curr.id));
   });
 
-  route('DELETE', '/curricula/:id', ({ db, user, params }) => {
-    const curr = db.prepare('SELECT * FROM curricula WHERE id = ?').get(params.id);
+  route('DELETE', '/curricula/:id', async ({ db, user, params }) => {
+    const curr = await db.prepare('SELECT * FROM curricula WHERE id = ?').get(params.id);
     if (!curr) fail(404, 'CURRICULUM_NOT_FOUND', 'Không tìm thấy khung chương trình.');
     requireAdminOrStaff(user, curr.department_id);
-    const cohortsUsing = db.prepare('SELECT COUNT(*) n FROM program_cohorts WHERE curriculum_id = ?').get(curr.id).n;
+    const cohortsUsing = (await db.prepare('SELECT COUNT(*) n FROM program_cohorts WHERE curriculum_id = ?').get(curr.id)).n;
     if (cohortsUsing > 0) {
       fail(409, 'CURRICULUM_IN_USE', `Không thể xóa khung chương trình đang được ${cohortsUsing} lớp khóa học sử dụng. Hãy lưu trữ thay vì xóa.`);
     }
-    db.prepare('DELETE FROM curricula WHERE id = ?').run(curr.id);
+    await db.prepare('DELETE FROM curricula WHERE id = ?').run(curr.id);
     return { deleted_id: curr.id };
   });
 
-  route('POST', '/curricula/:id/subjects', ({ db, user, body, params }) => {
-    const curr = db.prepare('SELECT * FROM curricula WHERE id = ?').get(params.id);
+  route('POST', '/curricula/:id/subjects', async ({ db, user, body, params }) => {
+    const curr = await db.prepare('SELECT * FROM curricula WHERE id = ?').get(params.id);
     if (!curr) fail(404, 'CURRICULUM_NOT_FOUND', 'Không tìm thấy khung chương trình.');
     requireAdminOrStaff(user, curr.department_id);
     const courseId = text(body, 'course_id', { required: true, max: 64, label: 'môn học' });
-    const course = db.prepare('SELECT * FROM courses WHERE id = ?').get(courseId);
+    const course = await db.prepare('SELECT * FROM courses WHERE id = ?').get(courseId);
     if (!course) fail(404, 'COURSE_NOT_FOUND', 'Không tìm thấy môn học.');
-    if (db.prepare('SELECT 1 FROM curriculum_subjects WHERE curriculum_id = ? AND course_id = ?').get(curr.id, course.id)) {
+    if (await db.prepare('SELECT 1 FROM curriculum_subjects WHERE curriculum_id = ? AND course_id = ?').get(curr.id, course.id)) {
       fail(409, 'SUBJECT_ALREADY_IN_CURRICULUM', 'Môn học này đã nằm trong khung chương trình.');
     }
-    const maxSort = db.prepare('SELECT COALESCE(MAX(sort_order), 0) m FROM curriculum_subjects WHERE curriculum_id = ?').get(curr.id).m;
+    const maxSort = (await db.prepare('SELECT COALESCE(MAX(sort_order), 0) m FROM curriculum_subjects WHERE curriculum_id = ?').get(curr.id)).m;
     const itemId = `cs_${crypto.randomBytes(5).toString('hex')}`;
     const sem = intField(body, 'semester_order', { min: 1, max: 12, label: 'học kỳ' }) ?? 1;
     const periods = intField(body, 'planned_periods', { min: 1, max: 1000, label: 'số tiết' }) ?? 30;
@@ -335,22 +335,22 @@ export function registerCurriculaAndCohortRoutes(route) {
     const isMandatory = body.is_mandatory === false ? 0 : 1;
     const note = text(body, 'note', { max: 500, label: 'ghi chú' }) || '';
 
-    tx(db, () => {
-      db.prepare(
+    await tx(db, async () => {
+      await db.prepare(
         `INSERT INTO curriculum_subjects (id, curriculum_id, course_id, semester_order, sort_order, planned_periods, planned_hours, is_mandatory, note, created_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       ).run(itemId, curr.id, course.id, sem, maxSort + 10, periods, hours, isMandatory, note, nowIso());
-      db.prepare('UPDATE curricula SET updated_at = ? WHERE id = ?').run(nowIso(), curr.id);
-      logCurriculumAudit(db, curr.id, 'SUBJECT_ADDED', { course_id: course.id, course_code: course.code, semester_order: sem }, user);
+      await db.prepare('UPDATE curricula SET updated_at = ? WHERE id = ?').run(nowIso(), curr.id);
+      await logCurriculumAudit(db, curr.id, 'SUBJECT_ADDED', { course_id: course.id, course_code: course.code, semester_order: sem }, user);
     });
     return [201, { id: itemId, curriculum_id: curr.id, course_id: course.id, semester_order: sem, sort_order: maxSort + 10, planned_periods: periods, planned_hours: hours }];
   });
 
-  route('PATCH', '/curricula/:id/subjects/:itemId', ({ db, user, body, params }) => {
-    const curr = db.prepare('SELECT * FROM curricula WHERE id = ?').get(params.id);
+  route('PATCH', '/curricula/:id/subjects/:itemId', async ({ db, user, body, params }) => {
+    const curr = await db.prepare('SELECT * FROM curricula WHERE id = ?').get(params.id);
     if (!curr) fail(404, 'CURRICULUM_NOT_FOUND', 'Không tìm thấy khung chương trình.');
     requireAdminOrStaff(user, curr.department_id);
-    const item = db.prepare('SELECT * FROM curriculum_subjects WHERE id = ? AND curriculum_id = ?').get(params.itemId, curr.id);
+    const item = await db.prepare('SELECT * FROM curriculum_subjects WHERE id = ? AND curriculum_id = ?').get(params.itemId, curr.id);
     if (!item) fail(404, 'CURRICULUM_SUBJECT_NOT_FOUND', 'Không tìm thấy môn học trong khung chương trình.');
     const f = {};
     if ('semester_order' in body) f.semester_order = intField(body, 'semester_order', { min: 1, max: 12, required: true, label: 'học kỳ' });
@@ -361,37 +361,37 @@ export function registerCurriculaAndCohortRoutes(route) {
     if ('note' in body) f.note = text(body, 'note', { max: 500, label: 'ghi chú' }) || '';
     const keys = Object.keys(f);
     if (keys.length) {
-      db.prepare(`UPDATE curriculum_subjects SET ${keys.map((k) => `${k} = ?`).join(', ')} WHERE id = ?`)
+      await db.prepare(`UPDATE curriculum_subjects SET ${keys.map((k) => `${k} = ?`).join(', ')} WHERE id = ?`)
         .run(...keys.map((k) => f[k]), item.id);
-      logCurriculumAudit(db, curr.id, 'SUBJECT_UPDATED', { item_id: item.id, ...f }, user);
+      await logCurriculumAudit(db, curr.id, 'SUBJECT_UPDATED', { item_id: item.id, ...f }, user);
     }
     return { ...item, ...f };
   });
 
-  route('DELETE', '/curricula/:id/subjects/:itemId', ({ db, user, params }) => {
-    const curr = db.prepare('SELECT * FROM curricula WHERE id = ?').get(params.id);
+  route('DELETE', '/curricula/:id/subjects/:itemId', async ({ db, user, params }) => {
+    const curr = await db.prepare('SELECT * FROM curricula WHERE id = ?').get(params.id);
     if (!curr) fail(404, 'CURRICULUM_NOT_FOUND', 'Không tìm thấy khung chương trình.');
     requireAdminOrStaff(user, curr.department_id);
-    const item = db.prepare('SELECT * FROM curriculum_subjects WHERE id = ? AND curriculum_id = ?').get(params.itemId, curr.id);
+    const item = await db.prepare('SELECT * FROM curriculum_subjects WHERE id = ? AND curriculum_id = ?').get(params.itemId, curr.id);
     if (!item) fail(404, 'CURRICULUM_SUBJECT_NOT_FOUND', 'Không tìm thấy môn học trong khung chương trình.');
-    const linkedCls = db
+    const linkedCls = (await db
       .prepare(
         `SELECT COUNT(*) n FROM subject_classes sc JOIN program_cohorts pc ON pc.id = sc.cohort_id
          WHERE pc.curriculum_id = ? AND sc.course_id = ? AND sc.status NOT IN ('ARCHIVED','CANCELLED')`
       )
-      .get(curr.id, item.course_id).n;
+      .get(curr.id, item.course_id)).n;
     if (linkedCls > 0) {
       fail(409, 'SUBJECT_IN_COHORT_CLASSES', 'Môn học này đang có lớp môn học hoạt động thuộc lớp khóa học dùng khung chương trình.');
     }
-    db.prepare('DELETE FROM curriculum_subjects WHERE id = ?').run(item.id);
-    logCurriculumAudit(db, curr.id, 'SUBJECT_REMOVED', { course_id: item.course_id }, user);
+    await db.prepare('DELETE FROM curriculum_subjects WHERE id = ?').run(item.id);
+    await logCurriculumAudit(db, curr.id, 'SUBJECT_REMOVED', { course_id: item.course_id }, user);
     return { deleted_id: item.id };
   });
 
   // =========================================================================
   // LEVEL 2: KHÓA HỌC / LỚP KHÓA HỌC (PROGRAM COHORTS)
   // =========================================================================
-  route('GET', '/cohorts', ({ db, user, url }) => {
+  route('GET', '/cohorts', async ({ db, user, url }) => {
     if (!canViewPrograms(user) && !isStudent(user)) {
       fail(403, 'COHORT_ACCESS_DENIED', 'Bạn không có quyền xem Lớp khóa học.');
     }
@@ -407,7 +407,7 @@ export function registerCurriculaAndCohortRoutes(route) {
     }
     const q = (url.searchParams.get('q') || '').trim();
     if (q) {
-      where.push('(code LIKE ? OR title LIKE ? OR academic_year LIKE ?)');
+      where.push("(LOWER(code) LIKE LOWER(?) OR LOWER(title) LIKE LOWER(?) OR LOWER(academic_year) LIKE LOWER(?))");
       params.push(`%${q}%`, `%${q}%`, `%${q}%`);
     }
     const currId = url.searchParams.get('curriculum_id');
@@ -423,10 +423,10 @@ export function registerCurriculaAndCohortRoutes(route) {
       where.push("status <> 'ARCHIVED'");
     }
     const whereSql = where.join(' AND ');
-    const total = db.prepare(`SELECT COUNT(*) n FROM program_cohorts WHERE ${whereSql}`).get(...params).n;
-    const rows = db.prepare(`SELECT * FROM program_cohorts WHERE ${whereSql} ORDER BY updated_at DESC LIMIT ? OFFSET ?`).all(...params, size, offset);
+    const total = (await db.prepare(`SELECT COUNT(*) n FROM program_cohorts WHERE ${whereSql}`).get(...params)).n;
+    const rows = await db.prepare(`SELECT * FROM program_cohorts WHERE ${whereSql} ORDER BY updated_at DESC LIMIT ? OFFSET ?`).all(...params, size, offset);
     return {
-      items: rows.map((r) => cohortSummaryDto(db, r)),
+      items: await mapAsync(rows, async (r) => await cohortSummaryDto(db, r)),
       page,
       page_size: size,
       total,
@@ -434,9 +434,9 @@ export function registerCurriculaAndCohortRoutes(route) {
     };
   });
 
-  route('POST', '/cohorts', ({ db, user, body }) => {
+  route('POST', '/cohorts', async ({ db, user, body }) => {
     const curriculumId = text(body, 'curriculum_id', { required: true, max: 64, label: 'khung chương trình' });
-    const curr = db.prepare('SELECT * FROM curricula WHERE id = ?').get(curriculumId);
+    const curr = await db.prepare('SELECT * FROM curricula WHERE id = ?').get(curriculumId);
     if (!curr) fail(404, 'CURRICULUM_NOT_FOUND', 'Khung chương trình không tồn tại.');
     const deptId = body.department_id || curr.department_id || user.department_id || 'khoi_5';
     requireAdminOrStaff(user, deptId);
@@ -447,7 +447,7 @@ export function registerCurriculaAndCohortRoutes(route) {
 
     const code = text(body, 'code', { required: true, max: 40, label: 'mã lớp khóa học' }).toUpperCase();
     if (!CURR_CODE_RE.test(code)) fail(422, 'VALIDATION_ERROR', 'Mã lớp khóa học không hợp lệ.');
-    if (db.prepare('SELECT 1 FROM program_cohorts WHERE UPPER(code) = ?').get(code)) {
+    if (await db.prepare('SELECT 1 FROM program_cohorts WHERE UPPER(code) = ?').get(code)) {
       fail(409, 'COHORT_CODE_EXISTS', `Mã lớp khóa học "${code}" đã tồn tại.`);
     }
     const title = text(body, 'title', { required: true, min: 3, max: 200, label: 'tên lớp khóa học' });
@@ -459,14 +459,14 @@ export function registerCurriculaAndCohortRoutes(route) {
     const deliveryMode = oneOf(body, 'delivery_mode', ['OFFLINE', 'ONLINE', 'HYBRID'], { fallback: 'HYBRID', label: 'hình thức' });
     const locationNote = text(body, 'location_note', { max: 500, label: 'địa điểm / phòng học' }) || '';
     const coordinatorId = text(body, 'coordinator_id', { max: 64, label: 'người điều phối' }) || user.id;
-    const coordUser = db.prepare('SELECT id, full_name FROM users WHERE id = ?').get(coordinatorId);
+    const coordUser = await db.prepare('SELECT id, full_name FROM users WHERE id = ?').get(coordinatorId);
     const maxStudents = intField(body, 'max_students', { min: 1, max: 2000, label: 'sĩ số tối đa' });
     const status = oneOf(body, 'status', ['DRAFT', 'ACTIVE', 'COMPLETED'], { fallback: 'ACTIVE', label: 'trạng thái' });
     const id = `coh_${crypto.randomBytes(5).toString('hex')}`;
     const now = nowIso();
 
-    tx(db, () => {
-      db.prepare(
+    await tx(db, async () => {
+      await db.prepare(
         `INSERT INTO program_cohorts (
            id, curriculum_id, code, title, academic_year, semester, start_date, end_date,
            delivery_mode, location_note, coordinator_id, coordinator_name, max_students, department_id, status,
@@ -477,34 +477,34 @@ export function registerCurriculaAndCohortRoutes(route) {
         deliveryMode, locationNote, coordUser?.id || user.id, coordUser?.full_name || user.full_name,
         maxStudents, deptId, status, user.id, now, now
       );
-      logCohortAudit(db, id, 'COHORT_CREATED', null, { code, title, curriculum_id: curr.id }, user);
+      await logCohortAudit(db, id, 'COHORT_CREATED', null, { code, title, curriculum_id: curr.id }, user);
     });
-    return [201, cohortSummaryDto(db, db.prepare('SELECT * FROM program_cohorts WHERE id = ?').get(id))];
+    return [201, await cohortSummaryDto(db, await db.prepare('SELECT * FROM program_cohorts WHERE id = ?').get(id))];
   });
 
   // Chi tiết 8 tab của Lớp khóa học
-  route('GET', '/cohorts/:id', ({ db, user, params }) => {
+  route('GET', '/cohorts/:id', async ({ db, user, params }) => {
     if (!canViewPrograms(user) && !isStudent(user)) {
       fail(403, 'COHORT_ACCESS_DENIED', 'Bạn không có quyền xem Lớp khóa học.');
     }
-    const cohort = db.prepare('SELECT * FROM program_cohorts WHERE id = ?').get(params.id);
+    const cohort = await db.prepare('SELECT * FROM program_cohorts WHERE id = ?').get(params.id);
     if (!cohort) fail(404, 'COHORT_NOT_FOUND', 'Không tìm thấy lớp khóa học.');
     if (isStudent(user) && !canViewPrograms(user)) {
-      const mem = db.prepare(`SELECT 1 FROM cohort_enrollments WHERE cohort_id = ? AND student_id = ? AND status = 'ACTIVE'`).get(cohort.id, user.id);
+      const mem = await db.prepare(`SELECT 1 FROM cohort_enrollments WHERE cohort_id = ? AND student_id = ? AND status = 'ACTIVE'`).get(cohort.id, user.id);
       if (!mem) fail(403, 'COHORT_ACCESS_DENIED', 'Bạn không thuộc lớp khóa học này.');
     }
 
-    const summary = cohortSummaryDto(db, cohort);
-    const studentsRaw = db
+    const summary = await cohortSummaryDto(db, cohort);
+    const studentsRaw = (await db
       .prepare(
         `SELECT ce.*, u.code AS student_code, u.full_name, u.email
          FROM cohort_enrollments ce JOIN users u ON u.id = ce.student_id
          WHERE ce.cohort_id = ?`
       )
-      .all(cohort.id)
+      .all(cohort.id))
       .sort((a, b) => compareVietnameseName(a.full_name, b.full_name));
 
-    const linkedClasses = db
+    const linkedClasses = await db
       .prepare(
         `SELECT sc.*, c.code AS course_code, c.title AS course_title,
                 cv.version_number AS pinned_version_number, cv.version_label AS pinned_version_label,
@@ -519,7 +519,7 @@ export function registerCurriculaAndCohortRoutes(route) {
       )
       .all(cohort.id);
 
-    const curriculumSubjects = db
+    const curriculumSubjects = await db
       .prepare(
         `SELECT cs.*, c.code AS course_code, c.title AS course_title, c.instructor_id, c.instructor_name
          FROM curriculum_subjects cs JOIN courses c ON c.id = cs.course_id
@@ -532,7 +532,7 @@ export function registerCurriculaAndCohortRoutes(route) {
 
     // Tab Giảng viên (gom nhóm theo giảng viên & vai trò để tránh trùng dòng và trả đúng class_codes[])
     const rawInstructors = linkedClassIds.length
-      ? db
+      ? await db
           .prepare(
             `SELECT u.id, u.code, u.full_name, u.email, t.staff_role, sc.id AS class_id, sc.code AS class_code, sc.title AS class_title
              FROM teaching_staff_assignments t
@@ -568,7 +568,7 @@ export function registerCurriculaAndCohortRoutes(route) {
 
     // Tab Lịch học
     const schedule = linkedClassIds.length
-      ? db
+      ? await db
           .prepare(
             `SELECT s.*, sc.code AS class_code, sc.title AS class_title
              FROM sessions s JOIN subject_classes sc ON sc.id = s.subject_class_id
@@ -580,12 +580,12 @@ export function registerCurriculaAndCohortRoutes(route) {
 
     // Tab Tiến độ & Thống kê toàn lớp khóa học (dùng DISTINCT student_id, không cộng trùng)
     const activeCohortIds = studentsRaw.filter((s) => s.status === 'ACTIVE').map((s) => s.student_id);
-    const policy = getAttendancePolicy(db);
-    const studentProgressRows = studentsRaw.map((st) => {
+    const policy = await getAttendancePolicy(db);
+    const studentProgressRows = await mapAsync(studentsRaw, async (st) => {
       let attP = 0; let attL = 0; let attE = 0; let attA = 0;
       let doneLessons = 0; let totalLessons = 0;
       if (linkedClassIds.length) {
-        const att = db
+        const att = await db
           .prepare(
             `SELECT ar.attendance_status, COUNT(*) n
              FROM attendance_records ar JOIN sessions s ON s.session_id = ar.class_session_id
@@ -599,19 +599,19 @@ export function registerCurriculaAndCohortRoutes(route) {
           else if (a.attendance_status === 'EXCUSED_ABSENCE') attE = a.n;
           else if (a.attendance_status === 'UNEXCUSED_ABSENCE') attA = a.n;
         }
-        doneLessons = db
+        doneLessons = (await db
           .prepare(
             `SELECT COUNT(*) n FROM lesson_progress p
              WHERE p.student_id = ? AND p.subject_class_id IN (${inCls}) AND p.status = 'COMPLETED'`
           )
-          .get(st.student_id, ...linkedClassIds).n;
-        totalLessons = db
+          .get(st.student_id, ...linkedClassIds)).n;
+        totalLessons = (await db
           .prepare(
             `SELECT COUNT(*) n FROM lessons l JOIN chapters ch ON ch.id = l.chapter_id
              JOIN subject_classes sc ON sc.course_id = ch.course_id
              WHERE sc.id IN (${inCls}) AND ch.status = 'PUBLISHED' AND l.publish_status = 'PUBLISHED'`
           )
-          .get(...linkedClassIds).n;
+          .get(...linkedClassIds)).n;
       }
       const attRate = rateFromCounts({ PRESENT: attP, LATE: attL, EXCUSED_ABSENCE: attE, UNEXCUSED_ABSENCE: attA }, policy);
       const completionPct = totalLessons > 0 ? Math.round((doneLessons / totalLessons) * 100) : 0;
@@ -633,16 +633,16 @@ export function registerCurriculaAndCohortRoutes(route) {
 
     const distinctTotalEnrolled = activeCohortIds.length;
     const distinctFromClasses = linkedClassIds.length
-      ? db.prepare(
+      ? (await db.prepare(
           `SELECT COUNT(DISTINCT student_id) n FROM class_enrollments
            WHERE subject_class_id IN (${inCls}) AND status = 'ACTIVE' AND enrollment_source = 'COHORT_SYNCED'`
-        ).get(...linkedClassIds).n
+        ).get(...linkedClassIds)).n
       : 0;
     const distinctExtraStudents = linkedClassIds.length
-      ? db.prepare(
+      ? (await db.prepare(
           `SELECT COUNT(DISTINCT student_id) n FROM class_enrollments
            WHERE subject_class_id IN (${inCls}) AND status = 'ACTIVE' AND enrollment_source <> 'COHORT_SYNCED'`
-        ).get(...linkedClassIds).n
+        ).get(...linkedClassIds)).n
       : 0;
 
     const avgCompletion = studentProgressRows.filter((s) => s.status === 'ACTIVE').length
@@ -652,9 +652,9 @@ export function registerCurriculaAndCohortRoutes(route) {
         ) / 10
       : 0;
 
-    const auditLogs = db
+    const auditLogs = (await db
       .prepare('SELECT * FROM cohort_audit_logs WHERE cohort_id = ? ORDER BY created_at DESC LIMIT 80')
-      .all(cohort.id)
+      .all(cohort.id))
       .map((l) => ({ ...l, payload: safeJson(l.payload_json, {}) }));
 
     return {
@@ -712,8 +712,8 @@ export function registerCurriculaAndCohortRoutes(route) {
     };
   });
 
-  route('PATCH', '/cohorts/:id', ({ db, user, body, params }) => {
-    const cohort = db.prepare('SELECT * FROM program_cohorts WHERE id = ?').get(params.id);
+  route('PATCH', '/cohorts/:id', async ({ db, user, body, params }) => {
+    const cohort = await db.prepare('SELECT * FROM program_cohorts WHERE id = ?').get(params.id);
     if (!cohort) fail(404, 'COHORT_NOT_FOUND', 'Không tìm thấy lớp khóa học.');
     requireAdminOrStaff(user, cohort.department_id);
     const f = {};
@@ -728,16 +728,16 @@ export function registerCurriculaAndCohortRoutes(route) {
     if ('status' in body) f.status = oneOf(body, 'status', ['DRAFT', 'ACTIVE', 'COMPLETED', 'ARCHIVED'], { required: true, label: 'trạng thái' });
     const keys = Object.keys(f);
     if (keys.length) {
-      tx(db, () => {
-        db.prepare(`UPDATE program_cohorts SET ${keys.map((k) => `${k} = ?`).join(', ')}, updated_at = ? WHERE id = ?`)
+      await tx(db, async () => {
+        await db.prepare(`UPDATE program_cohorts SET ${keys.map((k) => `${k} = ?`).join(', ')}, updated_at = ? WHERE id = ?`)
           .run(...keys.map((k) => f[k]), nowIso(), cohort.id);
-        logCohortAudit(db, cohort.id, 'COHORT_UPDATED', null, f, user);
+        await logCohortAudit(db, cohort.id, 'COHORT_UPDATED', null, f, user);
       });
     }
-    return cohortSummaryDto(db, db.prepare('SELECT * FROM program_cohorts WHERE id = ?').get(cohort.id));
+    return await cohortSummaryDto(db, await db.prepare('SELECT * FROM program_cohorts WHERE id = ?').get(cohort.id));
   });
 
-  function enrollStudentsInCohort(db, user, cohort, identifiers, syncNow = true) {
+  async function enrollStudentsInCohort(db, user, cohort, identifiers, syncNow = true) {
     if (!identifiers.length) fail(422, 'VALIDATION_ERROR', 'Danh sách học viên trống.');
     const added = [];
     const reactivated = [];
@@ -745,57 +745,57 @@ export function registerCurriculaAndCohortRoutes(route) {
     const notFound = [];
     const now = nowIso();
 
-    tx(db, () => {
+    await tx(db, async () => {
       for (const raw of identifiers) {
         const key = String(raw).trim();
         if (!key) continue;
-        const u = db.prepare('SELECT * FROM users WHERE id = ? OR UPPER(code) = UPPER(?) OR LOWER(email) = LOWER(?)').get(key, key, key);
+        const u = await db.prepare('SELECT * FROM users WHERE id = ? OR UPPER(code) = UPPER(?) OR LOWER(email) = LOWER(?)').get(key, key, key);
         if (!u || !JSON.parse(u.roles_json || '[]').includes('STUDENT')) {
           notFound.push(key);
           continue;
         }
         if (cohort.max_students) {
-          const cnt = db.prepare(`SELECT COUNT(*) n FROM cohort_enrollments WHERE cohort_id = ? AND status = 'ACTIVE'`).get(cohort.id).n;
+          const cnt = (await db.prepare(`SELECT COUNT(*) n FROM cohort_enrollments WHERE cohort_id = ? AND status = 'ACTIVE'`).get(cohort.id)).n;
           if (cnt >= cohort.max_students) fail(422, 'COHORT_FULL', `Lớp khóa học đã đạt sĩ số tối đa (${cohort.max_students}).`);
         }
-        const ex = db.prepare('SELECT * FROM cohort_enrollments WHERE cohort_id = ? AND student_id = ?').get(cohort.id, u.id);
+        const ex = await db.prepare('SELECT * FROM cohort_enrollments WHERE cohort_id = ? AND student_id = ?').get(cohort.id, u.id);
         if (ex && ex.status === 'ACTIVE') {
           already.push(u.code);
           continue;
         }
         if (ex) {
-          db.prepare(`UPDATE cohort_enrollments SET status = 'ACTIVE', ended_at = NULL, transfer_to_cohort_id = NULL, enrolled_at = ?, updated_by = ? WHERE id = ?`)
+          await db.prepare(`UPDATE cohort_enrollments SET status = 'ACTIVE', ended_at = NULL, transfer_to_cohort_id = NULL, enrolled_at = ?, updated_by = ? WHERE id = ?`)
             .run(now, user.id, ex.id);
           reactivated.push(u.code);
         } else {
-          db.prepare(
+          await db.prepare(
             `INSERT INTO cohort_enrollments (id, cohort_id, student_id, status, enrolled_at, note, updated_by)
              VALUES (?, ?, ?, 'ACTIVE', ?, 'Thêm vào lớp khóa học', ?)`
           ).run(crypto.randomUUID(), cohort.id, u.id, now, user.id);
           added.push(u.code);
         }
-        logCohortAudit(db, cohort.id, 'STUDENT_ENROLLED', u.id, { student_code: u.code, student_name: u.full_name }, user);
+        await logCohortAudit(db, cohort.id, 'STUDENT_ENROLLED', u.id, { student_code: u.code, student_name: u.full_name }, user);
       }
-      const syncResult = syncNow ? syncCohortRosterToClasses(db, cohort.id, user) : { classes_synced: 0 };
-      db.prepare('UPDATE program_cohorts SET updated_at = ? WHERE id = ?').run(now, cohort.id);
+      const syncResult = syncNow ? await syncCohortRosterToClasses(db, cohort.id, user) : { classes_synced: 0 };
+      await db.prepare('UPDATE program_cohorts SET updated_at = ? WHERE id = ?').run(now, cohort.id);
       return syncResult;
     });
 
-    const syncSummary = syncNow ? syncCohortRosterToClasses(db, cohort.id, user) : { classes_synced: 0 };
+    const syncSummary = syncNow ? await syncCohortRosterToClasses(db, cohort.id, user) : { classes_synced: 0 };
     return { added, reactivated, already_enrolled: already, not_found: notFound, sync_summary: syncSummary };
   }
 
-  route('POST', '/cohorts/:id/students', ({ db, user, body, params }) => {
-    const cohort = db.prepare('SELECT * FROM program_cohorts WHERE id = ?').get(params.id);
+  route('POST', '/cohorts/:id/students', async ({ db, user, body, params }) => {
+    const cohort = await db.prepare('SELECT * FROM program_cohorts WHERE id = ?').get(params.id);
     if (!cohort) fail(404, 'COHORT_NOT_FOUND', 'Không tìm thấy lớp khóa học.');
     requireAdminOrStaff(user, cohort.department_id);
     const ids = Array.isArray(body.students) ? body.students : [];
     const syncNow = body.sync_to_classes !== false;
-    return enrollStudentsInCohort(db, user, cohort, ids, syncNow);
+    return await enrollStudentsInCohort(db, user, cohort, ids, syncNow);
   });
 
-  route('POST', '/cohorts/:id/students/import', ({ db, user, body, params }) => {
-    const cohort = db.prepare('SELECT * FROM program_cohorts WHERE id = ?').get(params.id);
+  route('POST', '/cohorts/:id/students/import', async ({ db, user, body, params }) => {
+    const cohort = await db.prepare('SELECT * FROM program_cohorts WHERE id = ?').get(params.id);
     if (!cohort) fail(404, 'COHORT_NOT_FOUND', 'Không tìm thấy lớp khóa học.');
     requireAdminOrStaff(user, cohort.department_id);
     const raw = typeof body.text === 'string' ? body.text : '';
@@ -803,14 +803,14 @@ export function registerCurriculaAndCohortRoutes(route) {
       .split(/[\r\n,;\t]+/)
       .map((s) => s.trim().replace(/^"|"$/g, ''))
       .filter((s) => s && !/^(mã|ma|code|email|stt|họ)/i.test(s));
-    return enrollStudentsInCohort(db, user, cohort, [...new Set(identifiers)], body.sync_to_classes !== false);
+    return await enrollStudentsInCohort(db, user, cohort, [...new Set(identifiers)], body.sync_to_classes !== false);
   });
 
-  route('GET', '/cohorts/:id/students/export', ({ db, user, params, raw }) => {
+  route('GET', '/cohorts/:id/students/export', async ({ db, user, params, raw }) => {
     if (!canViewPrograms(user)) fail(403, 'COHORT_ACCESS_DENIED', 'Bạn không có quyền xuất danh sách lớp khóa học.');
-    const cohort = db.prepare('SELECT * FROM program_cohorts WHERE id = ?').get(params.id);
+    const cohort = await db.prepare('SELECT * FROM program_cohorts WHERE id = ?').get(params.id);
     if (!cohort) fail(404, 'COHORT_NOT_FOUND', 'Không tìm thấy lớp khóa học.');
-    const rows = db
+    const rows = await db
       .prepare(
         `SELECT u.code, u.full_name, u.email, ce.status, ce.enrolled_at, ce.ended_at
          FROM cohort_enrollments ce JOIN users u ON u.id = ce.student_id
@@ -835,54 +835,54 @@ export function registerCurriculaAndCohortRoutes(route) {
     }, `\uFEFF${csv}`);
   });
 
-  route('POST', '/cohorts/:id/students/:studentId/withdraw', ({ db, user, body, params }) => {
-    const cohort = db.prepare('SELECT * FROM program_cohorts WHERE id = ?').get(params.id);
+  route('POST', '/cohorts/:id/students/:studentId/withdraw', async ({ db, user, body, params }) => {
+    const cohort = await db.prepare('SELECT * FROM program_cohorts WHERE id = ?').get(params.id);
     if (!cohort) fail(404, 'COHORT_NOT_FOUND', 'Không tìm thấy lớp khóa học.');
     requireAdminOrStaff(user, cohort.department_id);
-    const enr = db.prepare(`SELECT * FROM cohort_enrollments WHERE cohort_id = ? AND student_id = ? AND status = 'ACTIVE'`).get(cohort.id, params.studentId);
+    const enr = await db.prepare(`SELECT * FROM cohort_enrollments WHERE cohort_id = ? AND student_id = ? AND status = 'ACTIVE'`).get(cohort.id, params.studentId);
     if (!enr) fail(404, 'ENROLLMENT_NOT_FOUND', 'Học viên không có trong danh sách đang học của lớp khóa học.');
     const note = text(body || {}, 'note', { max: 500, label: 'lý do rời lớp' }) || 'Học viên rời lớp khóa học';
     const now = nowIso();
     let syncRes;
-    tx(db, () => {
-      db.prepare(`UPDATE cohort_enrollments SET status = 'WITHDRAWN', ended_at = ?, note = ?, updated_by = ? WHERE id = ?`)
+    await tx(db, async () => {
+      await db.prepare(`UPDATE cohort_enrollments SET status = 'WITHDRAWN', ended_at = ?, note = ?, updated_by = ? WHERE id = ?`)
         .run(now, note, user.id, enr.id);
-      syncRes = syncCohortRosterToClasses(db, cohort.id, user);
-      logCohortAudit(db, cohort.id, 'STUDENT_WITHDRAWN', params.studentId, { note, sync: syncRes }, user);
+      syncRes = await syncCohortRosterToClasses(db, cohort.id, user);
+      await logCohortAudit(db, cohort.id, 'STUDENT_WITHDRAWN', params.studentId, { note, sync: syncRes }, user);
     });
     return { cohort_id: cohort.id, student_id: params.studentId, status: 'WITHDRAWN', sync_summary: syncRes };
   });
 
-  route('POST', '/cohorts/:id/students/:studentId/transfer', ({ db, user, body, params }) => {
-    const srcCohort = db.prepare('SELECT * FROM program_cohorts WHERE id = ?').get(params.id);
+  route('POST', '/cohorts/:id/students/:studentId/transfer', async ({ db, user, body, params }) => {
+    const srcCohort = await db.prepare('SELECT * FROM program_cohorts WHERE id = ?').get(params.id);
     if (!srcCohort) fail(404, 'COHORT_NOT_FOUND', 'Không tìm thấy lớp khóa học nguồn.');
     requireAdminOrStaff(user, srcCohort.department_id);
     const targetCohortId = text(body, 'target_cohort_id', { required: true, max: 64, label: 'lớp khóa học đích' });
     if (targetCohortId === srcCohort.id) fail(422, 'VALIDATION_ERROR', 'Lớp khóa học đích phải khác lớp nguồn.');
-    const dstCohort = db.prepare('SELECT * FROM program_cohorts WHERE id = ?').get(targetCohortId);
+    const dstCohort = await db.prepare('SELECT * FROM program_cohorts WHERE id = ?').get(targetCohortId);
     if (!dstCohort) fail(404, 'COHORT_NOT_FOUND', 'Không tìm thấy lớp khóa học đích.');
-    const enr = db.prepare(`SELECT * FROM cohort_enrollments WHERE cohort_id = ? AND student_id = ? AND status = 'ACTIVE'`).get(srcCohort.id, params.studentId);
+    const enr = await db.prepare(`SELECT * FROM cohort_enrollments WHERE cohort_id = ? AND student_id = ? AND status = 'ACTIVE'`).get(srcCohort.id, params.studentId);
     if (!enr) fail(404, 'ENROLLMENT_NOT_FOUND', 'Học viên không thuộc lớp khóa học nguồn.');
     const note = text(body, 'note', { max: 500, label: 'ghi chú chuyển lớp' }) || `Chuyển sang ${dstCohort.code}`;
     const now = nowIso();
     let srcSync; let dstSync;
-    tx(db, () => {
-      db.prepare(`UPDATE cohort_enrollments SET status = 'TRANSFERRED', ended_at = ?, transfer_to_cohort_id = ?, note = ?, updated_by = ? WHERE id = ?`)
+    await tx(db, async () => {
+      await db.prepare(`UPDATE cohort_enrollments SET status = 'TRANSFERRED', ended_at = ?, transfer_to_cohort_id = ?, note = ?, updated_by = ? WHERE id = ?`)
         .run(now, dstCohort.id, note, user.id, enr.id);
-      const dstExisting = db.prepare('SELECT * FROM cohort_enrollments WHERE cohort_id = ? AND student_id = ?').get(dstCohort.id, params.studentId);
+      const dstExisting = await db.prepare('SELECT * FROM cohort_enrollments WHERE cohort_id = ? AND student_id = ?').get(dstCohort.id, params.studentId);
       if (dstExisting) {
-        db.prepare(`UPDATE cohort_enrollments SET status = 'ACTIVE', ended_at = NULL, enrolled_at = ?, note = ?, updated_by = ? WHERE id = ?`)
+        await db.prepare(`UPDATE cohort_enrollments SET status = 'ACTIVE', ended_at = NULL, enrolled_at = ?, note = ?, updated_by = ? WHERE id = ?`)
           .run(now, `Chuyển từ ${srcCohort.code}`, user.id, dstExisting.id);
       } else {
-        db.prepare(
+        await db.prepare(
           `INSERT INTO cohort_enrollments (id, cohort_id, student_id, status, enrolled_at, note, updated_by)
            VALUES (?, ?, ?, 'ACTIVE', ?, ?, ?)`
         ).run(crypto.randomUUID(), dstCohort.id, params.studentId, now, `Chuyển từ ${srcCohort.code}`, user.id);
       }
-      srcSync = syncCohortRosterToClasses(db, srcCohort.id, user);
-      dstSync = syncCohortRosterToClasses(db, dstCohort.id, user);
-      logCohortAudit(db, srcCohort.id, 'STUDENT_TRANSFERRED_OUT', params.studentId, { target_cohort_id: dstCohort.id, target_code: dstCohort.code, note }, user);
-      logCohortAudit(db, dstCohort.id, 'STUDENT_TRANSFERRED_IN', params.studentId, { source_cohort_id: srcCohort.id, source_code: srcCohort.code, note }, user);
+      srcSync = await syncCohortRosterToClasses(db, srcCohort.id, user);
+      dstSync = await syncCohortRosterToClasses(db, dstCohort.id, user);
+      await logCohortAudit(db, srcCohort.id, 'STUDENT_TRANSFERRED_OUT', params.studentId, { target_cohort_id: dstCohort.id, target_code: dstCohort.code, note }, user);
+      await logCohortAudit(db, dstCohort.id, 'STUDENT_TRANSFERRED_IN', params.studentId, { source_cohort_id: srcCohort.id, source_code: srcCohort.code, note }, user);
     });
     return {
       student_id: params.studentId,
@@ -893,25 +893,25 @@ export function registerCurriculaAndCohortRoutes(route) {
     };
   });
 
-  route('POST', '/cohorts/:id/sync-roster', ({ db, user, body, params }) => {
-    const cohort = db.prepare('SELECT * FROM program_cohorts WHERE id = ?').get(params.id);
+  route('POST', '/cohorts/:id/sync-roster', async ({ db, user, body, params }) => {
+    const cohort = await db.prepare('SELECT * FROM program_cohorts WHERE id = ?').get(params.id);
     if (!cohort) fail(404, 'COHORT_NOT_FOUND', 'Không tìm thấy lớp khóa học.');
     requireAdminOrStaff(user, cohort.department_id);
     const classIds = Array.isArray(body?.class_ids) ? body.class_ids : null;
     let res;
-    tx(db, () => {
-      res = syncCohortRosterToClasses(db, cohort.id, user, classIds);
-      logCohortAudit(db, cohort.id, 'ROSTER_SYNCED_TO_CLASSES', null, res, user);
+    await tx(db, async () => {
+      res = await syncCohortRosterToClasses(db, cohort.id, user, classIds);
+      await logCohortAudit(db, cohort.id, 'ROSTER_SYNCED_TO_CLASSES', null, res, user);
     });
     return res;
   });
 
   // Khởi tạo hàng loạt Lớp môn học từ Khung chương trình cho Lớp khóa học (gắn phiên bản Snapshot mới nhất nếu có)
-  route('POST', '/cohorts/:id/generate-classes', ({ db, user, body, params }) => {
-    const cohort = db.prepare('SELECT * FROM program_cohorts WHERE id = ?').get(params.id);
+  route('POST', '/cohorts/:id/generate-classes', async ({ db, user, body, params }) => {
+    const cohort = await db.prepare('SELECT * FROM program_cohorts WHERE id = ?').get(params.id);
     if (!cohort) fail(404, 'COHORT_NOT_FOUND', 'Không tìm thấy lớp khóa học.');
     requireAdminOrStaff(user, cohort.department_id);
-    const subjects = db
+    const subjects = await db
       .prepare(
         `SELECT cs.*, c.code AS course_code, c.title AS course_title, c.subject AS subject_name,
                 c.instructor_id, c.instructor_name, c.department_id
@@ -929,28 +929,28 @@ export function registerCurriculaAndCohortRoutes(route) {
     const skipped = [];
     const now = nowIso();
 
-    tx(db, () => {
+    await tx(db, async () => {
       for (const s of subjects) {
         if (selectedCourseIds && !selectedCourseIds.has(s.course_id)) continue;
-        const already = db
+        const already = await db
           .prepare(`SELECT id FROM subject_classes WHERE cohort_id = ? AND course_id = ? AND status NOT IN ('ARCHIVED','CANCELLED')`)
           .get(cohort.id, s.course_id);
         if (already) {
           skipped.push({ course_id: s.course_id, course_code: s.course_code, reason: 'ALREADY_LINKED' });
           continue;
         }
-        const latestVer = db
+        const latestVer = await db
           .prepare(`SELECT id, version_number FROM course_versions WHERE course_id = ? AND status = 'PUBLISHED' ORDER BY version_number DESC LIMIT 1`)
           .get(s.course_id);
         let codeCandidate = `${cohort.code.slice(0, 14)}-${s.course_code.slice(0, 14)}`.toUpperCase();
-        if (db.prepare('SELECT 1 FROM subject_classes WHERE UPPER(code) = ?').get(codeCandidate)) {
+        if (await db.prepare('SELECT 1 FROM subject_classes WHERE UPPER(code) = ?').get(codeCandidate)) {
           codeCandidate = `${codeCandidate}-${crypto.randomBytes(2).toString('hex').toUpperCase()}`.slice(0, 40);
         }
         const clsId = `sc_${crypto.randomBytes(5).toString('hex')}`;
         const instrId = body?.instructor_overrides?.[s.course_id] || s.instructor_id;
-        const instrRow = db.prepare('SELECT id, full_name FROM users WHERE id = ?').get(instrId);
+        const instrRow = await db.prepare('SELECT id, full_name FROM users WHERE id = ?').get(instrId);
 
-        db.prepare(
+        await db.prepare(
           `INSERT INTO subject_classes (
              id, course_id, cohort_id, course_version_id, course_version_number,
              code, title, subject, description, instructor_name, ta_names_json,
@@ -967,17 +967,17 @@ export function registerCurriculaAndCohortRoutes(route) {
         );
 
         if (instrRow) {
-          db.prepare(
+          await db.prepare(
             `INSERT INTO teaching_staff_assignments (id, subject_class_id, user_id, staff_role, permissions_json, is_active, assigned_by, created_at, updated_at)
              VALUES (?, ?, ?, 'PRIMARY_INSTRUCTOR', '{"can_manage_materials":true,"can_take_attendance":true}', 1, ?, ?, ?)`
           ).run(crypto.randomUUID(), clsId, instrRow.id, user.id, now, now);
         }
         created.push({ id: clsId, code: codeCandidate, course_id: s.course_id, course_version_id: latestVer?.id || null });
       }
-      const syncRes = syncCohortRosterToClasses(db, cohort.id, user);
-      logCohortAudit(db, cohort.id, 'CLASSES_GENERATED', null, { created_count: created.length, sync: syncRes }, user);
+      const syncRes = await syncCohortRosterToClasses(db, cohort.id, user);
+      await logCohortAudit(db, cohort.id, 'CLASSES_GENERATED', null, { created_count: created.length, sync: syncRes }, user);
     });
 
-    return [201, { created, skipped, sync_summary: syncCohortRosterToClasses(db, cohort.id, user) }];
+    return [201, { created, skipped, sync_summary: await syncCohortRosterToClasses(db, cohort.id, user) }];
   });
 }

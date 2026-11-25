@@ -13,7 +13,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { fail, pageParams, nowIso, text, intField, oneOf, tx } from './http.mjs';
+import { fail, pageParams, nowIso, text, intField, oneOf, tx , mapAsync} from './http.mjs';
 
 const MAX_BANK_UPLOAD_BYTES = 15 * 1024 * 1024;
 const BANK_ALLOWED_EXT = {
@@ -38,7 +38,7 @@ import { resolveLessonTreeIds } from './masterSchema.mjs';
 import { buildCourseTree } from './contentTreeAndSnapshots.mjs';
 import { normalizeQuestionSpec, QuizValidationError } from './quizEngine.mjs';
 
-function assertLeafLessonTarget(db, user, body, expectedCourseId = null) {
+async function assertLeafLessonTarget(db, user, body, expectedCourseId = null) {
   if (body?.node_level && body.node_level !== 'LESSON') {
     fail(
       400,
@@ -54,29 +54,29 @@ function assertLeafLessonTarget(db, user, body, expectedCourseId = null) {
       'Vui lòng chọn Bài học đích (nút lá cuối cùng) trước khi thêm vào ngân hàng.'
     );
   }
-  const resolved = resolveLessonTreeIds(db, lessonId);
+  const resolved = await resolveLessonTreeIds(db, lessonId);
   if (!resolved || !resolved.course) {
     fail(404, 'LESSON_NOT_FOUND', 'Không tìm thấy bài học lá tương ứng trong cây nội dung.');
   }
   if (expectedCourseId && resolved.course.id !== expectedCourseId) {
     fail(422, 'LESSON_COURSE_MISMATCH', 'Bài học được chọn không thuộc môn học đang thao tác.');
   }
-  if (!canEditCourseDraft(db, user, resolved.course)) {
+  if (!await canEditCourseDraft(db, user, resolved.course)) {
     fail(403, 'BANK_EDIT_FORBIDDEN', 'Bạn không có quyền biên tập ngân hàng cho môn học này.');
   }
   return resolved;
 }
 
-function resolveCourseFilterScope(db, user, url) {
+async function resolveCourseFilterScope(db, user, url) {
   const scope = courseScopeSql(user);
-  const courses = db
+  const courses = await db
     .prepare(`SELECT c.id, c.code, c.title, c.subject, c.status FROM courses c WHERE ${scope.sql} AND c.status <> 'ARCHIVED' ORDER BY c.title`)
     .all(...scope.params);
   const courseId = url.searchParams.get('course_id');
   if (courseId) {
-    const crs = db.prepare('SELECT * FROM courses WHERE id = ?').get(courseId);
+    const crs = await db.prepare('SELECT * FROM courses WHERE id = ?').get(courseId);
     if (!crs) fail(404, 'COURSE_NOT_FOUND', 'Không tìm thấy môn học.');
-    if (!canViewCourse(db, user, crs)) fail(403, 'COURSE_ACCESS_DENIED', 'Bạn không có quyền truy cập ngân hàng môn học này.');
+    if (!await canViewCourse(db, user, crs)) fail(403, 'COURSE_ACCESS_DENIED', 'Bạn không có quyền truy cập ngân hàng môn học này.');
     return { allowedCourses: [crs], selectedCourse: crs };
   }
   return { allowedCourses: courses, selectedCourse: null };
@@ -117,13 +117,13 @@ function buildBankScopeWhere(alias, url, allowedCourseIds) {
 
 export function registerBankRoutes(route, { uploadsDir } = {}) {
   // ---------- 1. Cây thư mục dùng chung cho cả 3 ngân hàng (100% động từ Cây nội dung)
-  route('GET', '/banks/tree', ({ db, user, url }) => {
-    const { allowedCourses } = resolveCourseFilterScope(db, user, url);
-    const tree = allowedCourses.map((c) => {
-      const topics = buildCourseTree(db, c.id);
-      const qAll = db.prepare('SELECT COUNT(*) n FROM question_bank_items WHERE course_id = ? AND deleted_at IS NULL').get(c.id).n;
-      const aAll = db.prepare('SELECT COUNT(*) n FROM assignment_bank_items WHERE course_id = ? AND deleted_at IS NULL').get(c.id).n;
-      const rAll = db.prepare('SELECT COUNT(*) n FROM learning_resources WHERE course_id = ? AND class_id IS NULL AND deleted_at IS NULL').get(c.id).n;
+  route('GET', '/banks/tree', async ({ db, user, url }) => {
+    const { allowedCourses } = await resolveCourseFilterScope(db, user, url);
+    const tree = await mapAsync(allowedCourses, async (c) => {
+      const topics = await buildCourseTree(db, c.id);
+      const qAll = (await db.prepare('SELECT COUNT(*) n FROM question_bank_items WHERE course_id = ? AND deleted_at IS NULL').get(c.id)).n;
+      const aAll = (await db.prepare('SELECT COUNT(*) n FROM assignment_bank_items WHERE course_id = ? AND deleted_at IS NULL').get(c.id)).n;
+      const rAll = (await db.prepare('SELECT COUNT(*) n FROM learning_resources WHERE course_id = ? AND class_id IS NULL AND deleted_at IS NULL').get(c.id)).n;
       return {
         id: c.id,
         code: c.code,
@@ -132,7 +132,7 @@ export function registerBankRoutes(route, { uploadsDir } = {}) {
         questions_count: qAll,
         assignments_count: aAll,
         resources_count: rAll,
-        can_edit: canEditCourseDraft(db, user, c),
+        can_edit: await canEditCourseDraft(db, user, c),
         topics,
       };
     });
@@ -140,8 +140,8 @@ export function registerBankRoutes(route, { uploadsDir } = {}) {
   });
 
   // ---------- 2. NGÂN HÀNG CÂU HỎI (QUESTION BANK)
-  route('GET', '/banks/questions', ({ db, user, url }) => {
-    const { allowedCourses } = resolveCourseFilterScope(db, user, url);
+  route('GET', '/banks/questions', async ({ db, user, url }) => {
+    const { allowedCourses } = await resolveCourseFilterScope(db, user, url);
     const { page, size, offset } = pageParams(url, 30, 200);
     const { where, params } = buildBankScopeWhere('qb', url, allowedCourses.map((c) => c.id));
     const qType = url.searchParams.get('question_type');
@@ -149,7 +149,7 @@ export function registerBankRoutes(route, { uploadsDir } = {}) {
     const diff = url.searchParams.get('difficulty');
     if (diff) { where.push('qb.difficulty = ?'); params.push(diff); }
     const q = (url.searchParams.get('q') || '').trim();
-    if (q) { where.push('(qb.prompt LIKE ? OR qb.tags_json LIKE ?)'); params.push(`%${q}%`, `%${q}%`); }
+    if (q) { where.push("(LOWER(qb.prompt) LIKE LOWER(?) OR LOWER(qb.tags_json) LIKE LOWER(?))"); params.push(`%${q}%`, `%${q}%`); }
 
     const joins = `
       FROM question_bank_items qb
@@ -159,8 +159,8 @@ export function registerBankRoutes(route, { uploadsDir } = {}) {
       LEFT JOIN course_topics t ON t.id = COALESCE(ch.topic_id, qb.topic_id)
     `;
     const whereSql = where.join(' AND ');
-    const total = db.prepare(`SELECT COUNT(*) n ${joins} WHERE ${whereSql}`).get(...params).n;
-    const rows = db
+    const total = (await db.prepare(`SELECT COUNT(*) n ${joins} WHERE ${whereSql}`).get(...params)).n;
+    const rows = await db
       .prepare(
         `SELECT qb.*, c.code AS course_code, c.title AS course_title,
                 t.id AS resolved_topic_id, t.title AS topic_title,
@@ -201,8 +201,8 @@ export function registerBankRoutes(route, { uploadsDir } = {}) {
     };
   });
 
-  route('POST', '/banks/questions', ({ db, user, body }) => {
-    const { lesson, chapter, topic, course } = assertLeafLessonTarget(db, user, body, body.course_id || null);
+  route('POST', '/banks/questions', async ({ db, user, body }) => {
+    const { lesson, chapter, topic, course } = await assertLeafLessonTarget(db, user, body, body.course_id || null);
     let spec;
     try {
       spec = normalizeQuestionSpec(body, 'Câu hỏi ngân hàng');
@@ -215,7 +215,7 @@ export function registerBankRoutes(route, { uploadsDir } = {}) {
     const id = `qb_${crypto.randomBytes(5).toString('hex')}`;
     const now = nowIso();
 
-    db.prepare(
+    await db.prepare(
       `INSERT INTO question_bank_items (
          id, course_id, topic_id, chapter_id, lesson_id, subject, question_type, prompt, options_json, answer_key_json,
          points, explanation, correct_feedback, wrong_feedback, difficulty, tags_json, created_by, created_at, updated_at
@@ -232,17 +232,17 @@ export function registerBankRoutes(route, { uploadsDir } = {}) {
     }];
   });
 
-  route('PATCH', '/banks/questions/:id', ({ db, user, body, params }) => {
-    const row = db.prepare('SELECT * FROM question_bank_items WHERE id = ? AND deleted_at IS NULL').get(params.id);
+  route('PATCH', '/banks/questions/:id', async ({ db, user, body, params }) => {
+    const row = await db.prepare('SELECT * FROM question_bank_items WHERE id = ? AND deleted_at IS NULL').get(params.id);
     if (!row) fail(404, 'QUESTION_NOT_FOUND', 'Không tìm thấy câu hỏi.');
-    const crs = db.prepare('SELECT * FROM courses WHERE id = ?').get(row.course_id);
-    if (!canEditCourseDraft(db, user, crs)) fail(403, 'BANK_EDIT_FORBIDDEN', 'Bạn không có quyền sửa câu hỏi này.');
+    const crs = await db.prepare('SELECT * FROM courses WHERE id = ?').get(row.course_id);
+    if (!await canEditCourseDraft(db, user, crs)) fail(403, 'BANK_EDIT_FORBIDDEN', 'Bạn không có quyền sửa câu hỏi này.');
 
     let lessonId = row.lesson_id;
     let chapterId = row.chapter_id;
     let topicId = row.topic_id;
     if ('lesson_id' in body && body.lesson_id !== row.lesson_id) {
-      const target = assertLeafLessonTarget(db, user, { lesson_id: body.lesson_id, node_level: body.node_level }, crs.id);
+      const target = await assertLeafLessonTarget(db, user, { lesson_id: body.lesson_id, node_level: body.node_level }, crs.id);
       lessonId = target.lesson.id;
       chapterId = target.chapter.id;
       topicId = target.topic?.id || null;
@@ -269,7 +269,7 @@ export function registerBankRoutes(route, { uploadsDir } = {}) {
     const difficulty = 'difficulty' in body ? oneOf(body, 'difficulty', ['EASY', 'MEDIUM', 'HARD'], { required: true }) : row.difficulty;
     const tags = Array.isArray(body.tags) ? body.tags.map((t) => String(t).trim()).filter(Boolean).slice(0, 12) : safeJson(row.tags_json, []);
     const now = nowIso();
-    db.prepare(
+    await db.prepare(
       `UPDATE question_bank_items SET topic_id = ?, chapter_id = ?, lesson_id = ?, question_type = ?, prompt = ?,
          options_json = ?, answer_key_json = ?, points = ?, explanation = ?, correct_feedback = ?, wrong_feedback = ?,
          difficulty = ?, tags_json = ?, updated_at = ? WHERE id = ?`
@@ -282,14 +282,14 @@ export function registerBankRoutes(route, { uploadsDir } = {}) {
     return { id: row.id, lesson_id: lessonId, chapter_id: chapterId, topic_id: topicId, ...spec, difficulty, tags, updated_at: now };
   });
 
-  route('POST', '/banks/questions/import', ({ db, user, body }) => {
-    const { lesson, chapter, topic, course } = assertLeafLessonTarget(db, user, body, body.course_id || null);
+  route('POST', '/banks/questions/import', async ({ db, user, body }) => {
+    const { lesson, chapter, topic, course } = await assertLeafLessonTarget(db, user, body, body.course_id || null);
     const items = Array.isArray(body.items) ? body.items : [];
     if (!items.length || items.length > 200) fail(422, 'VALIDATION_ERROR', 'Cần gửi từ 1 đến 200 câu hỏi để import.');
     const now = nowIso();
     const createdIds = [];
-    tx(db, () => {
-      items.forEach((raw, idx) => {
+    await tx(db, async () => {
+      for (const [idx, raw] of (items).entries()) {
         let spec;
         try {
           spec = normalizeQuestionSpec(raw, `Câu hỏi #${idx + 1}`);
@@ -300,7 +300,7 @@ export function registerBankRoutes(route, { uploadsDir } = {}) {
         const id = `qb_${crypto.randomBytes(5).toString('hex')}`;
         const diff = ['EASY', 'MEDIUM', 'HARD'].includes(raw.difficulty) ? raw.difficulty : 'MEDIUM';
         const tags = Array.isArray(raw.tags) ? raw.tags.slice(0, 12) : [];
-        db.prepare(
+        await db.prepare(
           `INSERT INTO question_bank_items (
              id, course_id, topic_id, chapter_id, lesson_id, subject, question_type, prompt, options_json, answer_key_json,
              points, explanation, correct_feedback, wrong_feedback, difficulty, tags_json, created_by, created_at, updated_at
@@ -312,15 +312,15 @@ export function registerBankRoutes(route, { uploadsDir } = {}) {
           diff, JSON.stringify(tags), user.id, now, now
         );
         createdIds.push(id);
-      });
+      }
     });
     return [201, { imported_count: createdIds.length, lesson_id: lesson.id, ids: createdIds }];
   });
 
-  route('GET', '/banks/questions/export', ({ db, user, url }) => {
-    const { allowedCourses } = resolveCourseFilterScope(db, user, url);
+  route('GET', '/banks/questions/export', async ({ db, user, url }) => {
+    const { allowedCourses } = await resolveCourseFilterScope(db, user, url);
     const { where, params } = buildBankScopeWhere('qb', url, allowedCourses.map((c) => c.id));
-    const rows = db
+    const rows = await db
       .prepare(`SELECT qb.* FROM question_bank_items qb LEFT JOIN lessons l ON l.id = qb.lesson_id LEFT JOIN chapters ch ON ch.id = COALESCE(l.chapter_id, qb.chapter_id) WHERE ${where.join(' AND ')} ORDER BY qb.created_at`)
       .all(...params);
     return {
@@ -340,22 +340,22 @@ export function registerBankRoutes(route, { uploadsDir } = {}) {
     };
   });
 
-  route('DELETE', '/banks/questions/:id', ({ db, user, params }) => {
-    const row = db.prepare('SELECT * FROM question_bank_items WHERE id = ? AND deleted_at IS NULL').get(params.id);
+  route('DELETE', '/banks/questions/:id', async ({ db, user, params }) => {
+    const row = await db.prepare('SELECT * FROM question_bank_items WHERE id = ? AND deleted_at IS NULL').get(params.id);
     if (!row) fail(404, 'QUESTION_NOT_FOUND', 'Không tìm thấy câu hỏi.');
-    const crs = db.prepare('SELECT * FROM courses WHERE id = ?').get(row.course_id);
-    if (!canEditCourseDraft(db, user, crs)) fail(403, 'BANK_EDIT_FORBIDDEN', 'Bạn không có quyền xóa câu hỏi này.');
-    db.prepare('UPDATE question_bank_items SET deleted_at = ?, updated_at = ? WHERE id = ?').run(nowIso(), nowIso(), row.id);
+    const crs = await db.prepare('SELECT * FROM courses WHERE id = ?').get(row.course_id);
+    if (!await canEditCourseDraft(db, user, crs)) fail(403, 'BANK_EDIT_FORBIDDEN', 'Bạn không có quyền xóa câu hỏi này.');
+    await db.prepare('UPDATE question_bank_items SET deleted_at = ?, updated_at = ? WHERE id = ?').run(nowIso(), nowIso(), row.id);
     return { deleted_id: row.id };
   });
 
   // ---------- 3. NGÂN HÀNG BÀI TẬP (ASSIGNMENT BANK)
-  route('GET', '/banks/assignments', ({ db, user, url }) => {
-    const { allowedCourses } = resolveCourseFilterScope(db, user, url);
+  route('GET', '/banks/assignments', async ({ db, user, url }) => {
+    const { allowedCourses } = await resolveCourseFilterScope(db, user, url);
     const { page, size, offset } = pageParams(url, 30, 200);
     const { where, params } = buildBankScopeWhere('ab', url, allowedCourses.map((c) => c.id));
     const q = (url.searchParams.get('q') || '').trim();
-    if (q) { where.push('(ab.title LIKE ? OR ab.description LIKE ?)'); params.push(`%${q}%`, `%${q}%`); }
+    if (q) { where.push("(LOWER(ab.title) LIKE LOWER(?) OR LOWER(ab.description) LIKE LOWER(?))"); params.push(`%${q}%`, `%${q}%`); }
 
     const joins = `
       FROM assignment_bank_items ab
@@ -365,8 +365,8 @@ export function registerBankRoutes(route, { uploadsDir } = {}) {
       LEFT JOIN course_topics t ON t.id = COALESCE(ch.topic_id, ab.topic_id)
     `;
     const whereSql = where.join(' AND ');
-    const total = db.prepare(`SELECT COUNT(*) n ${joins} WHERE ${whereSql}`).get(...params).n;
-    const rows = db
+    const total = (await db.prepare(`SELECT COUNT(*) n ${joins} WHERE ${whereSql}`).get(...params)).n;
+    const rows = await db
       .prepare(
         `SELECT ab.*, c.code AS course_code, c.title AS course_title,
                 t.id AS resolved_topic_id, t.title AS topic_title,
@@ -392,8 +392,8 @@ export function registerBankRoutes(route, { uploadsDir } = {}) {
     };
   });
 
-  route('POST', '/banks/assignments', ({ db, user, body }) => {
-    const { lesson, chapter, topic, course } = assertLeafLessonTarget(db, user, body, body.course_id || null);
+  route('POST', '/banks/assignments', async ({ db, user, body }) => {
+    const { lesson, chapter, topic, course } = await assertLeafLessonTarget(db, user, body, body.course_id || null);
     const title = text(body, 'title', { required: true, min: 3, max: 200, label: 'tên bài tập' });
     const description = text(body, 'description', { max: 2000, label: 'mô tả' }) || '';
     const instructions = text(body, 'instructions', { required: true, max: 10000, label: 'hướng dẫn làm bài' });
@@ -411,7 +411,7 @@ export function registerBankRoutes(route, { uploadsDir } = {}) {
     const id = `ab_${crypto.randomBytes(5).toString('hex')}`;
     const now = nowIso();
 
-    db.prepare(
+    await db.prepare(
       `INSERT INTO assignment_bank_items (
          id, course_id, topic_id, chapter_id, lesson_id, title, description, instructions,
          submission_type, max_score, max_attempts, allow_resubmit, relative_due_days, is_mandatory,
@@ -424,21 +424,21 @@ export function registerBankRoutes(route, { uploadsDir } = {}) {
       JSON.stringify(rubric), JSON.stringify(attachments), JSON.stringify(tags),
       user.id, now, now
     );
-    return [201, db.prepare('SELECT * FROM assignment_bank_items WHERE id = ?').get(id)];
+    return [201, await db.prepare('SELECT * FROM assignment_bank_items WHERE id = ?').get(id)];
   });
 
-  route('POST', '/banks/assignments/import', ({ db, user, body }) => {
-    const { lesson, chapter, topic, course } = assertLeafLessonTarget(db, user, body, body.course_id || null);
+  route('POST', '/banks/assignments/import', async ({ db, user, body }) => {
+    const { lesson, chapter, topic, course } = await assertLeafLessonTarget(db, user, body, body.course_id || null);
     const items = Array.isArray(body.items) ? body.items : [];
     if (!items.length || items.length > 100) fail(422, 'VALIDATION_ERROR', 'Cần gửi từ 1 đến 100 bài tập.');
     const now = nowIso();
     const createdIds = [];
-    tx(db, () => {
+    await tx(db, async () => {
       for (const raw of items) {
         const title = text(raw, 'title', { required: true, min: 3, max: 200, label: 'tên bài tập' });
         const instructions = text(raw, 'instructions', { required: true, max: 10000, label: 'hướng dẫn' });
         const id = `ab_${crypto.randomBytes(5).toString('hex')}`;
-        db.prepare(
+        await db.prepare(
           `INSERT INTO assignment_bank_items (
              id, course_id, topic_id, chapter_id, lesson_id, title, description, instructions,
              submission_type, max_score, max_attempts, allow_resubmit, rubric_json, attachments_json, tags_json, status,
@@ -458,17 +458,17 @@ export function registerBankRoutes(route, { uploadsDir } = {}) {
     return [201, { imported_count: createdIds.length, lesson_id: lesson.id, ids: createdIds }];
   });
 
-  route('PATCH', '/banks/assignments/:id', ({ db, user, body, params }) => {
-    const row = db.prepare('SELECT * FROM assignment_bank_items WHERE id = ? AND deleted_at IS NULL').get(params.id);
+  route('PATCH', '/banks/assignments/:id', async ({ db, user, body, params }) => {
+    const row = await db.prepare('SELECT * FROM assignment_bank_items WHERE id = ? AND deleted_at IS NULL').get(params.id);
     if (!row) fail(404, 'ASSIGNMENT_NOT_FOUND', 'Không tìm thấy bài tập mẫu.');
-    const crs = db.prepare('SELECT * FROM courses WHERE id = ?').get(row.course_id);
-    if (!canEditCourseDraft(db, user, crs)) fail(403, 'BANK_EDIT_FORBIDDEN', 'Bạn không có quyền sửa bài tập này.');
+    const crs = await db.prepare('SELECT * FROM courses WHERE id = ?').get(row.course_id);
+    if (!await canEditCourseDraft(db, user, crs)) fail(403, 'BANK_EDIT_FORBIDDEN', 'Bạn không có quyền sửa bài tập này.');
 
     let lessonId = row.lesson_id;
     let chapterId = row.chapter_id;
     let topicId = row.topic_id;
     if ('lesson_id' in body && body.lesson_id !== row.lesson_id) {
-      const target = assertLeafLessonTarget(db, user, { lesson_id: body.lesson_id, node_level: body.node_level }, crs.id);
+      const target = await assertLeafLessonTarget(db, user, { lesson_id: body.lesson_id, node_level: body.node_level }, crs.id);
       lessonId = target.lesson.id;
       chapterId = target.chapter.id;
       topicId = target.topic?.id || null;
@@ -490,30 +490,30 @@ export function registerBankRoutes(route, { uploadsDir } = {}) {
     if (Array.isArray(body.attachments)) f.attachments_json = JSON.stringify(body.attachments.slice(0, 20));
     if (Array.isArray(body.tags)) f.tags_json = JSON.stringify(body.tags.slice(0, 12));
     const keys = Object.keys(f);
-    db.prepare(`UPDATE assignment_bank_items SET ${keys.map((k) => `${k} = ?`).join(', ')}, updated_at = ? WHERE id = ?`)
+    await db.prepare(`UPDATE assignment_bank_items SET ${keys.map((k) => `${k} = ?`).join(', ')}, updated_at = ? WHERE id = ?`)
       .run(...keys.map((k) => f[k]), nowIso(), row.id);
-    return db.prepare('SELECT * FROM assignment_bank_items WHERE id = ?').get(row.id);
+    return await db.prepare('SELECT * FROM assignment_bank_items WHERE id = ?').get(row.id);
   });
 
-  route('DELETE', '/banks/assignments/:id', ({ db, user, params }) => {
-    const row = db.prepare('SELECT * FROM assignment_bank_items WHERE id = ? AND deleted_at IS NULL').get(params.id);
+  route('DELETE', '/banks/assignments/:id', async ({ db, user, params }) => {
+    const row = await db.prepare('SELECT * FROM assignment_bank_items WHERE id = ? AND deleted_at IS NULL').get(params.id);
     if (!row) fail(404, 'ASSIGNMENT_NOT_FOUND', 'Không tìm thấy bài tập mẫu.');
-    const crs = db.prepare('SELECT * FROM courses WHERE id = ?').get(row.course_id);
-    if (!canEditCourseDraft(db, user, crs)) fail(403, 'BANK_EDIT_FORBIDDEN', 'Bạn không có quyền xóa bài tập này.');
-    db.prepare('UPDATE assignment_bank_items SET deleted_at = ?, updated_at = ? WHERE id = ?').run(nowIso(), nowIso(), row.id);
+    const crs = await db.prepare('SELECT * FROM courses WHERE id = ?').get(row.course_id);
+    if (!await canEditCourseDraft(db, user, crs)) fail(403, 'BANK_EDIT_FORBIDDEN', 'Bạn không có quyền xóa bài tập này.');
+    await db.prepare('UPDATE assignment_bank_items SET deleted_at = ?, updated_at = ? WHERE id = ?').run(nowIso(), nowIso(), row.id);
     return { deleted_id: row.id };
   });
 
   // ---------- 4. NGÂN HÀNG TÀI NGUYÊN (LEARNING RESOURCES)
-  route('GET', '/banks/resources', ({ db, user, url }) => {
-    const { allowedCourses } = resolveCourseFilterScope(db, user, url);
+  route('GET', '/banks/resources', async ({ db, user, url }) => {
+    const { allowedCourses } = await resolveCourseFilterScope(db, user, url);
     const { page, size, offset } = pageParams(url, 30, 200);
     const { where, params } = buildBankScopeWhere('r', url, allowedCourses.map((c) => c.id));
     where.push('r.class_id IS NULL');
     const rType = url.searchParams.get('resource_type');
     if (rType) { where.push('r.resource_type = ?'); params.push(rType); }
     const q = (url.searchParams.get('q') || '').trim();
-    if (q) { where.push('(r.title LIKE ? OR r.description LIKE ?)'); params.push(`%${q}%`, `%${q}%`); }
+    if (q) { where.push("(LOWER(r.title) LIKE LOWER(?) OR LOWER(r.description) LIKE LOWER(?))"); params.push(`%${q}%`, `%${q}%`); }
 
     const joins = `
       FROM learning_resources r
@@ -523,8 +523,8 @@ export function registerBankRoutes(route, { uploadsDir } = {}) {
       LEFT JOIN course_topics t ON t.id = COALESCE(ch.topic_id, r.topic_id)
     `;
     const whereSql = where.join(' AND ');
-    const total = db.prepare(`SELECT COUNT(*) n ${joins} WHERE ${whereSql}`).get(...params).n;
-    const rows = db
+    const total = (await db.prepare(`SELECT COUNT(*) n ${joins} WHERE ${whereSql}`).get(...params)).n;
+    const rows = await db
       .prepare(
         `SELECT r.*, c.code AS course_code, c.title AS course_title,
                 t.id AS resolved_topic_id, t.title AS topic_title,
@@ -566,8 +566,8 @@ export function registerBankRoutes(route, { uploadsDir } = {}) {
     };
   });
 
-  route('POST', '/banks/resources', ({ db, user, body }) => {
-    const { lesson, chapter, topic, course } = assertLeafLessonTarget(db, user, body, body.course_id || null);
+  route('POST', '/banks/resources', async ({ db, user, body }) => {
+    const { lesson, chapter, topic, course } = await assertLeafLessonTarget(db, user, body, body.course_id || null);
     const title = text(body, 'title', { required: true, min: 2, max: 200, label: 'tên tài nguyên' });
     const description = text(body, 'description', { max: 2000, label: 'mô tả' }) || '';
     const visibility = oneOf(body, 'visibility', ['ENROLLED', 'INSTRUCTOR_ONLY'], { fallback: 'ENROLLED', label: 'quyền xem' });
@@ -598,7 +598,7 @@ export function registerBankRoutes(route, { uploadsDir } = {}) {
       const safeName = fileName.replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_');
       const sha256 = crypto.createHash('sha256').update(buf).digest('hex');
 
-      db.prepare(
+      await db.prepare(
         `INSERT INTO learning_resources (
            id, course_id, topic_id, chapter_id, lesson_id, title, description, visibility, usage_type, tags_json,
            resource_type, storage_provider, storage_key, file_name, mime_type, file_size_bytes,
@@ -634,7 +634,7 @@ export function registerBankRoutes(route, { uploadsDir } = {}) {
       fail(422, 'VALIDATION_ERROR', 'Đường dẫn tài nguyên không hợp lệ.');
     }
     if (!['http:', 'https:'].includes(u.protocol)) fail(422, 'VALIDATION_ERROR', 'Chỉ hỗ trợ đường dẫn http/https.');
-    db.prepare(
+    await db.prepare(
       `INSERT INTO learning_resources (
          id, course_id, topic_id, chapter_id, lesson_id, title, description, visibility, usage_type, tags_json,
          resource_type, storage_provider, storage_key, status, processing_status, created_by, created_at, updated_at
@@ -643,16 +643,16 @@ export function registerBankRoutes(route, { uploadsDir } = {}) {
     return [201, { id, course_id: course.id, topic_id: topic?.id || null, chapter_id: chapter.id, lesson_id: lesson.id, title, resource_type: resourceType, usage_type: usageType, tags, storage_provider: 'EXTERNAL_URL', url: u.toString() }];
   });
 
-  route('PATCH', '/banks/resources/:id', ({ db, user, body, params }) => {
-    const row = db.prepare('SELECT * FROM learning_resources WHERE id = ? AND deleted_at IS NULL').get(params.id);
+  route('PATCH', '/banks/resources/:id', async ({ db, user, body, params }) => {
+    const row = await db.prepare('SELECT * FROM learning_resources WHERE id = ? AND deleted_at IS NULL').get(params.id);
     if (!row) fail(404, 'RESOURCE_NOT_FOUND', 'Không tìm thấy tài nguyên.');
-    const crs = db.prepare('SELECT * FROM courses WHERE id = ?').get(row.course_id);
-    if (!canEditCourseDraft(db, user, crs)) fail(403, 'BANK_EDIT_FORBIDDEN', 'Bạn không có quyền sửa tài nguyên này.');
+    const crs = await db.prepare('SELECT * FROM courses WHERE id = ?').get(row.course_id);
+    if (!await canEditCourseDraft(db, user, crs)) fail(403, 'BANK_EDIT_FORBIDDEN', 'Bạn không có quyền sửa tài nguyên này.');
     let lessonId = row.lesson_id;
     let chapterId = row.chapter_id;
     let topicId = row.topic_id;
     if ('lesson_id' in body && body.lesson_id !== row.lesson_id) {
-      const target = assertLeafLessonTarget(db, user, { lesson_id: body.lesson_id, node_level: body.node_level }, crs.id);
+      const target = await assertLeafLessonTarget(db, user, { lesson_id: body.lesson_id, node_level: body.node_level }, crs.id);
       lessonId = target.lesson.id;
       chapterId = target.chapter.id;
       topicId = target.topic?.id || null;
@@ -678,17 +678,17 @@ export function registerBankRoutes(route, { uploadsDir } = {}) {
       f.storage_key = u.toString();
     }
     const keys = Object.keys(f);
-    db.prepare(`UPDATE learning_resources SET ${keys.map((k) => `${k} = ?`).join(', ')}, updated_at = ? WHERE id = ?`)
+    await db.prepare(`UPDATE learning_resources SET ${keys.map((k) => `${k} = ?`).join(', ')}, updated_at = ? WHERE id = ?`)
       .run(...keys.map((k) => f[k]), nowIso(), row.id);
     return { id: row.id, ...f };
   });
 
-  route('DELETE', '/banks/resources/:id', ({ db, user, params }) => {
-    const row = db.prepare('SELECT * FROM learning_resources WHERE id = ? AND deleted_at IS NULL').get(params.id);
+  route('DELETE', '/banks/resources/:id', async ({ db, user, params }) => {
+    const row = await db.prepare('SELECT * FROM learning_resources WHERE id = ? AND deleted_at IS NULL').get(params.id);
     if (!row) fail(404, 'RESOURCE_NOT_FOUND', 'Không tìm thấy tài nguyên.');
-    const crs = db.prepare('SELECT * FROM courses WHERE id = ?').get(row.course_id);
-    if (!canEditCourseDraft(db, user, crs)) fail(403, 'BANK_EDIT_FORBIDDEN', 'Bạn không có quyền xóa tài nguyên.');
-    db.prepare('UPDATE learning_resources SET deleted_at = ?, updated_at = ? WHERE id = ?').run(nowIso(), nowIso(), row.id);
+    const crs = await db.prepare('SELECT * FROM courses WHERE id = ?').get(row.course_id);
+    if (!await canEditCourseDraft(db, user, crs)) fail(403, 'BANK_EDIT_FORBIDDEN', 'Bạn không có quyền xóa tài nguyên.');
+    await db.prepare('UPDATE learning_resources SET deleted_at = ?, updated_at = ? WHERE id = ?').run(nowIso(), nowIso(), row.id);
     return { deleted_id: row.id };
   });
 }

@@ -78,14 +78,14 @@ export function mergeWatchedIntervals(intervals, durationSec = 0) {
   };
 }
 
-function logVideoEvent(db, payload) {
+async function logVideoEvent(db, payload) {
   const key = payload.idempotency_key || `vwe_${crypto.randomUUID()}`;
-  db.prepare(
-    `INSERT OR IGNORE INTO video_watch_events (
+  await db.prepare(
+    `INSERT INTO video_watch_events (
        id, idempotency_key, student_id, subject_class_id, lesson_id, block_id,
        content_version_key, event_type, segment_start_sec, segment_end_sec,
        playback_rate, is_visible, device_session_id, recorded_at
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`
   ).run(
     crypto.randomUUID(),
     key,
@@ -104,18 +104,18 @@ function logVideoEvent(db, payload) {
   );
 }
 
-export function recordStrictVideoProgress(db, { user, cls, lesson, vBlock, body }) {
+export async function recordStrictVideoProgress(db, { user, cls, lesson, vBlock, body }) {
   const blockId = vBlock.id;
   const contentVersionKey = getClassContentVersionKey(cls);
-  const existing = db
+  const existing = await db
     .prepare(
       `SELECT * FROM video_watch_progress
        WHERE student_id = ? AND subject_class_id = ? AND lesson_id = ? AND block_id = ? AND content_version_key = ?`
     )
     .get(user.id, cls.id, lesson.id, blockId, contentVersionKey);
 
-  const rejectTamper = (reason) => {
-    logVideoEvent(db, {
+  const rejectTamper = async (reason) => {
+    await logVideoEvent(db, {
       idempotency_key: `tamper:${user.id}:${cls.id}:${lesson.id}:${blockId}:${Date.now()}:${crypto.randomBytes(3).toString('hex')}`,
       student_id: user.id,
       subject_class_id: cls.id,
@@ -131,12 +131,12 @@ export function recordStrictVideoProgress(db, { user, cls, lesson, vBlock, body 
   };
 
   if (body.force_complete === true || body.is_completed === true) {
-    rejectTamper('Không chấp nhận đánh dấu hoàn thành video trực tiếp từ trình duyệt (chế độ STRICT).');
+    await rejectTamper('Không chấp nhận đánh dấu hoàn thành video trực tiếp từ trình duyệt (chế độ STRICT).');
   }
 
   const playbackRate = body.playback_rate !== undefined ? Number(body.playback_rate) : 1;
   if (!Number.isFinite(playbackRate) || playbackRate < 0 || playbackRate > 2.0) {
-    rejectTamper('Tốc độ phát video vượt quá giới hạn cho phép (tối đa 2.0x).');
+    await rejectTamper('Tốc độ phát video vượt quá giới hạn cho phép (tối đa 2.0x).');
   }
 
   const lastPosIn = Number(body.last_position_sec ?? 0);
@@ -152,7 +152,7 @@ export function recordStrictVideoProgress(db, { user, cls, lesson, vBlock, body 
 
   const durationSec = durIn > 0 ? Math.round(durIn * 10) / 10 : Number(existing?.duration_sec || 0);
   if (durationSec > 0 && lastPosIn > durationSec + 5) {
-    rejectTamper('Vị trí phát video vượt quá tổng thời lượng video.');
+    await rejectTamper('Vị trí phát video vượt quá tổng thời lượng video.');
   }
 
   const existingIntervals = safeJson(existing?.watched_intervals_json, []);
@@ -175,15 +175,15 @@ export function recordStrictVideoProgress(db, { user, cls, lesson, vBlock, body 
       ? `${user.id}:${cls.id}:${blockId}:${ev.idempotency_key.trim().slice(0, 80)}`
       : null;
     if (evKey) {
-      const seen = db.prepare('SELECT 1 FROM video_watch_events WHERE idempotency_key = ?').get(evKey);
+      const seen = await db.prepare('SELECT 1 FROM video_watch_events WHERE idempotency_key = ?').get(evKey);
       if (seen) continue;
     }
     const rate = ev.playback_rate !== undefined ? Number(ev.playback_rate) : playbackRate;
     if (!Number.isFinite(rate) || rate < 0 || rate > 2.0) {
-      rejectTamper('Phát hiện tốc độ phát bất thường trong hàng đợi đồng bộ.');
+      await rejectTamper('Phát hiện tốc độ phát bất thường trong hàng đợi đồng bộ.');
     }
     if (ev.is_visible === false) {
-      logVideoEvent(db, {
+      await logVideoEvent(db, {
         idempotency_key: evKey || undefined,
         student_id: user.id,
         subject_class_id: cls.id,
@@ -216,18 +216,18 @@ export function recordStrictVideoProgress(db, { user, cls, lesson, vBlock, body 
       const s = Array.isArray(seg) ? Number(seg[0]) : Number(seg?.start_sec ?? seg?.start);
       const e = Array.isArray(seg) ? Number(seg[1]) : Number(seg?.end_sec ?? seg?.end);
       if (Number.isFinite(s) && Number.isFinite(e) && (s < 0 || e < s || (durationSec > 0 && e > durationSec + 2))) {
-        rejectTamper('Khoảng thời gian xem video không hợp lệ.');
+        await rejectTamper('Khoảng thời gian xem video không hợp lệ.');
       }
       continue;
     }
     const [s, e] = norm;
     if (s > runningFrontier + FRONTIER_TOLERANCE_SEC) {
-      rejectTamper(`Không thể ghi nhận đoạn [${s}s - ${e}s] khi chưa xem đến mốc ${Math.round(runningFrontier)}s (chế độ STRICT).`);
+      await rejectTamper(`Không thể ghi nhận đoạn [${s}s - ${e}s] khi chưa xem đến mốc ${Math.round(runningFrontier)}s (chế độ STRICT).`);
     }
     acceptedSegments.push([s, e]);
     runningFrontier = Math.max(runningFrontier, e);
 
-    logVideoEvent(db, {
+    await logVideoEvent(db, {
       idempotency_key: seg?._event_key || undefined,
       student_id: user.id,
       subject_class_id: cls.id,
@@ -250,7 +250,7 @@ export function recordStrictVideoProgress(db, { user, cls, lesson, vBlock, body 
       // Tab ẩn: chỉ lưu vị trí an toàn, không tăng thời lượng xem
     } else if (watchedIn !== null) {
       if (lastPosIn > baseFrontier + 20 && watchedIn < lastPosIn * 0.5) {
-        rejectTamper('Phát hiện tua vượt vùng chưa xem (vị trí không khớp thời lượng thực xem).');
+        await rejectTamper('Phát hiện tua vượt vùng chưa xem (vị trí không khớp thời lượng thực xem).');
       }
       const boundedTarget = durationSec > 0 ? Math.min(durationSec, Math.max(watchedIn, Math.min(lastPosIn, baseFrontier + 60))) : watchedIn;
       if (boundedTarget > 0) {
@@ -266,10 +266,10 @@ export function recordStrictVideoProgress(db, { user, cls, lesson, vBlock, body 
   const effectiveFrontier = Math.max(runningFrontier, maxWatched);
 
   if (rawSegments.length === 0 && rawEvents.length === 0 && lastPosIn > baseFrontier + 25 && (watchedIn === null || watchedIn < lastPosIn * 0.5)) {
-    rejectTamper('Không được phép tua vượt vùng video chưa xem.');
+    await rejectTamper('Không được phép tua vượt vùng video chưa xem.');
   }
   if (lastPosIn > effectiveFrontier + FRONTIER_TOLERANCE_SEC) {
-    rejectTamper('Không được phép đặt vị trí phát vượt vùng video đã xem (chế độ STRICT).');
+    await rejectTamper('Không được phép đặt vị trí phát vượt vùng video đã xem (chế độ STRICT).');
   }
   const safeLastPos = Math.min(lastPosIn, effectiveFrontier + 2);
 
@@ -283,8 +283,8 @@ export function recordStrictVideoProgress(db, { user, cls, lesson, vBlock, body 
   const isCompleted = watchPct >= threshold ? 1 : Number(existing?.is_completed || 0);
   const now = nowIso();
 
-  tx(db, () => {
-    db.prepare(
+  await tx(db, async () => {
+    await db.prepare(
       `INSERT INTO video_watch_progress (
          id, student_id, subject_class_id, lesson_id, block_id, content_version_key,
          watched_intervals_json, unique_watched_sec, max_contiguous_watched_sec,
@@ -338,8 +338,8 @@ export function recordStrictVideoProgress(db, { user, cls, lesson, vBlock, body 
 }
 
 export function registerStrictVideoRoutes(route) {
-  route('GET', '/classes/:id/video-analytics', ({ db, user, params, url }) => {
-    const { cls } = requireClassAccess(db, user, params.id, 'can_view_roster');
+  route('GET', '/classes/:id/video-analytics', async ({ db, user, params, url }) => {
+    const { cls } = await requireClassAccess(db, user, params.id, 'can_view_roster');
     const contentVersionKey = getClassContentVersionKey(cls);
     const lessonIdFilter = text({ lesson_id: url.searchParams.get('lesson_id') || '' }, 'lesson_id', { max: 64 }) || null;
     const blockIdFilter = text({ block_id: url.searchParams.get('block_id') || '' }, 'block_id', { max: 64 }) || null;
@@ -351,7 +351,7 @@ export function registerStrictVideoRoutes(route) {
     if (blockIdFilter) { where.push('vp.block_id = ?'); qParams.push(blockIdFilter); }
     if (studentIdFilter) { where.push('vp.student_id = ?'); qParams.push(studentIdFilter); }
 
-    const rows = db
+    const rows = await db
       .prepare(
         `SELECT vp.*, u.code AS student_code, u.full_name AS student_name, l.title AS lesson_title,
                 l.min_video_watch_pct
@@ -363,7 +363,7 @@ export function registerStrictVideoRoutes(route) {
       )
       .all(...qParams);
 
-    const tamperRows = db
+    const tamperRows = await db
       .prepare(
         `SELECT student_id, lesson_id, block_id, COUNT(*) AS n
          FROM video_watch_events

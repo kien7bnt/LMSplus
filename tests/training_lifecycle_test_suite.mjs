@@ -21,7 +21,7 @@ process.env.LMSPLUS_UPLOADS_DIR = path.join(TMP_DIR, `uploads-training-${process
 process.env.LMSPLUS_DISABLE_OEMBED = '1';
 
 const { initSchemaAndSeed, invokeApi, invokeApiAsync, db } = await import('../backend/server_fallback.mjs');
-initSchemaAndSeed(true);
+await initSchemaAndSeed(true);
 
 let passed = 0;
 let failed = 0;
@@ -38,14 +38,14 @@ async function t(group, name, fn) {
   }
 }
 
-const login = (identifier) => {
-  const r = invokeApi('POST', '/api/v1/elearning/auth/login', {}, { identifier, password: '123456' });
+const login = async (identifier) => {
+  const r = await invokeApi('POST', '/api/v1/elearning/auth/login', {}, { identifier, password: '123456' });
   assert.equal(r.status, 200, `login ${identifier} failed: ${JSON.stringify(r.body)}`);
   return { authorization: `Bearer ${r.body.data.access_token}` };
 };
 
 const T = '/api/v1/teaching';
-const api = (method, url, headers, body) => invokeApiAsync(method, `${T}${url}`, headers, body);
+const api = async (method, url, headers, body) => await invokeApiAsync(method, `${T}${url}`, headers, body);
 const expectStatus = (r, status, code) => {
   assert.equal(
     r.status,
@@ -59,15 +59,15 @@ const expectStatus = (r, status, code) => {
   return r.body?.data;
 };
 
-const ADMIN = login('admin@lmsplus.edu.vn');
-const staffRow = db.prepare("SELECT * FROM users WHERE roles_json LIKE '%\"ACADEMIC_STAFF\"%' LIMIT 1").get();
-const STAFF = login(staffRow ? staffRow.email : 'admin@lmsplus.edu.vn');
-const GV1 = login('thuha.gv@lmsplus.edu.vn');
-const GV2 = login('vankhoa.gv@lmsplus.edu.vn');
-const HS1 = login('HS50101');
+const ADMIN = await login('admin@lmsplus.edu.vn');
+const staffRow = await db.prepare("SELECT * FROM users WHERE roles_json LIKE '%\"ACADEMIC_STAFF\"%' LIMIT 1").get();
+const STAFF = await login(staffRow ? staffRow.email : 'admin@lmsplus.edu.vn');
+const GV1 = await login('thuha.gv@lmsplus.edu.vn');
+const GV2 = await login('vankhoa.gv@lmsplus.edu.vn');
+const HS1 = await login('HS50101');
 
-const gv1User = db.prepare("SELECT * FROM users WHERE email = 'thuha.gv@lmsplus.edu.vn'").get();
-const gv2User = db.prepare("SELECT * FROM users WHERE email = 'vankhoa.gv@lmsplus.edu.vn'").get();
+const gv1User = await db.prepare("SELECT * FROM users WHERE email = 'thuha.gv@lmsplus.edu.vn'").get();
+const gv2User = await db.prepare("SELECT * FROM users WHERE email = 'vankhoa.gv@lmsplus.edu.vn'").get();
 
 console.log('======================================================================');
 console.log(' LMSPLUS — TRAINING LIFECYCLE, TIMETABLE & TEACHING HOURS SUITE');
@@ -526,7 +526,7 @@ await t('2.1-TIMETABLE-CONSTRAINTS', 'Kiểm tra đủ 6 Ràng buộc cứng x�
   assert.ok(pubTkb.published_sessions >= 3);
   assert.ok(pubTkb.assignments_due_resolved >= 1, 'Công bố TKB phải quy đổi hạn nộp tương đối ra ngày cụ thể');
 
-  const asgRow = db.prepare('SELECT due_at, status FROM class_assignments WHERE subject_class_id = ? LIMIT 1').get(pyClassId);
+  const asgRow = await db.prepare('SELECT due_at, status FROM class_assignments WHERE subject_class_id = ? LIMIT 1').get(pyClassId);
   assert.ok(asgRow.due_at && asgRow.due_at.startsWith('2026-12-12'), `Bài tập hạn 5 ngày sau buổi 07/12 phải có due_at 2026-12-12, nhận: ${asgRow.due_at}`);
   assert.equal(asgRow.status, 'PUBLISHED');
 
@@ -555,7 +555,7 @@ await t('2.2-TEACHING-HOURS', 'Tự mở buổi đến giờ, ghi nhận dạy t
   // Tạo 2 buổi học trong quá khứ (tháng 2026-10) cho lớp PY101 để kiểm thử đầy đủ vòng đời xác nhận & chốt tháng
   const pastSes1 = 'ses_past_oct_01';
   const pastSes2 = 'ses_past_oct_02';
-  db.prepare(
+  await db.prepare(
     `INSERT INTO sessions (
        session_id, subject_class_id, subject_class_code, subject_title, session_title,
        scheduled_start_at, scheduled_end_at, actual_start_at, actual_end_at, confirmation_deadline_at,
@@ -567,7 +567,7 @@ await t('2.2-TEACHING-HOURS', 'Tự mở buổi đến giờ, ghi nhận dạy t
        ?, ?, '', 'cp_cs1', 'rm_lab201', 'PUBLISHED', 3, 'PRACTICE', 'SCHEDULED', 'NOT_STARTED', 'CONFIRMED', 'OFFLINE')`
   ).run(pastSes1, pyClassId, gv1User.id, gv1User.full_name);
 
-  db.prepare(
+  await db.prepare(
     `INSERT INTO sessions (
        session_id, subject_class_id, subject_class_code, subject_title, session_title,
        scheduled_start_at, scheduled_end_at, actual_start_at, actual_end_at, confirmation_deadline_at,

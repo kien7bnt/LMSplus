@@ -7,7 +7,7 @@
  */
 
 import crypto from 'node:crypto';
-import { fail, nowIso, text, intField, oneOf, tx, compareVietnameseName } from './http.mjs';
+import { fail, nowIso, text, intField, oneOf, tx, compareVietnameseName , mapAsync} from './http.mjs';
 import { isAdmin, safeJson } from './scope.mjs';
 import { requireClassAccess, getClass } from './classes.mjs';
 import { getClassContentVersionKey, resolveLessonTreeIds } from './masterSchema.mjs';
@@ -18,26 +18,26 @@ import {
   QuizValidationError,
 } from './quizEngine.mjs';
 
-function requireStaffViewClass(db, user, classId) {
-  const ctx = requireClassAccess(db, user, classId);
+async function requireStaffViewClass(db, user, classId) {
+  const ctx = await requireClassAccess(db, user, classId);
   if (!ctx.caps.can_view_roster) {
     fail(403, 'CLASS_VIEW_FORBIDDEN', 'Bạn không có quyền xem dữ liệu đánh giá của lớp môn học này.');
   }
   return ctx;
 }
 
-function requireStaffManageClass(db, user, classId) {
-  const ctx = requireClassAccess(db, user, classId);
+async function requireStaffManageClass(db, user, classId) {
+  const ctx = await requireClassAccess(db, user, classId);
   if (!ctx.caps.can_manage_class) {
     fail(403, 'CLASS_MANAGE_FORBIDDEN', 'Bạn không có quyền tạo, chỉnh sửa hoặc chấm điểm trong lớp môn học này.');
   }
   return ctx;
 }
 
-function requireStudentInClass(db, user, classId) {
-  const cls = getClass(db, classId);
+async function requireStudentInClass(db, user, classId) {
+  const cls = await getClass(db, classId);
   if (!cls) fail(404, 'CLASS_NOT_FOUND', 'Không tìm thấy lớp môn học.');
-  const enrolled = db
+  const enrolled = await db
     .prepare("SELECT * FROM class_enrollments WHERE subject_class_id = ? AND student_id = ? AND status = 'ACTIVE'")
     .get(cls.id, user.id);
   if (!enrolled) {
@@ -46,26 +46,26 @@ function requireStudentInClass(db, user, classId) {
   return cls;
 }
 
-function validateScopeLinks(db, courseId, scopeType, body = {}) {
+async function validateScopeLinks(db, courseId, scopeType, body = {}) {
   const lessonId = text(body, 'lesson_id', { max: 80, label: 'bài học' }) || null;
   let chapterId = text(body, 'chapter_id', { max: 80, label: 'chương học' }) || null;
   let topicId = text(body, 'topic_id', { max: 80, label: 'chủ đề' }) || null;
 
   if (lessonId) {
-    const tree = resolveLessonTreeIds(db, lessonId);
+    const tree = await resolveLessonTreeIds(db, lessonId);
     if (!tree || tree.course.id !== courseId) {
       fail(400, 'INVALID_LESSON_SCOPE', 'Bài học được chọn không thuộc môn học của lớp này.');
     }
     chapterId = tree.chapter.id;
     topicId = tree.topic?.id || topicId;
   } else if (chapterId) {
-    const ch = db.prepare('SELECT id, course_id, topic_id FROM chapters WHERE id = ?').get(chapterId);
+    const ch = await db.prepare('SELECT id, course_id, topic_id FROM chapters WHERE id = ?').get(chapterId);
     if (!ch || ch.course_id !== courseId) {
       fail(400, 'INVALID_CHAPTER_SCOPE', 'Chương học được chọn không thuộc môn học của lớp này.');
     }
     topicId = ch.topic_id || topicId;
   } else if (topicId) {
-    const tp = db.prepare('SELECT id, course_id FROM course_topics WHERE id = ?').get(topicId);
+    const tp = await db.prepare('SELECT id, course_id FROM course_topics WHERE id = ?').get(topicId);
     if (!tp || tp.course_id !== courseId) {
       fail(400, 'INVALID_TOPIC_SCOPE', 'Chủ đề được chọn không thuộc môn học của lớp này.');
     }
@@ -88,9 +88,9 @@ function computePolicyScore(submittedAttempts, policy = 'HIGHEST') {
   return Math.max(...scores);
 }
 
-function syncGradebookEntry(db, { classId, studentId, sourceType, sourceId, title, score, maxScore, gradedBy }) {
+async function syncGradebookEntry(db, { classId, studentId, sourceType, sourceId, title, score, maxScore, gradedBy }) {
   const now = nowIso();
-  db.prepare(
+  await db.prepare(
     `INSERT INTO class_gradebook_entries
        (id, subject_class_id, student_id, source_type, source_id, title, score, max_score, weight, graded_by, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
@@ -103,8 +103,8 @@ function syncGradebookEntry(db, { classId, studentId, sourceType, sourceId, titl
   ).run(crypto.randomUUID(), classId, studentId, sourceType, sourceId, title, score, maxScore, gradedBy || null, now);
 }
 
-function syncExamGradebookForStudent(db, exam, studentId, gradedBy = null) {
-  const attempts = db
+async function syncExamGradebookForStudent(db, exam, studentId, gradedBy = null) {
+  const attempts = await db
     .prepare(
       `SELECT * FROM class_exam_attempts
        WHERE exam_id = ? AND student_id = ? AND submitted_at IS NOT NULL
@@ -114,7 +114,7 @@ function syncExamGradebookForStudent(db, exam, studentId, gradedBy = null) {
   if (attempts.length === 0) return;
   const effectiveScore = computePolicyScore(attempts, exam.scoring_policy || 'HIGHEST');
   const maxScore = Number(attempts[0].max_score || 0) || 10;
-  syncGradebookEntry(db, {
+  await syncGradebookEntry(db, {
     classId: exam.subject_class_id,
     studentId,
     sourceType: 'EXAM',
@@ -126,8 +126,8 @@ function syncExamGradebookForStudent(db, exam, studentId, gradedBy = null) {
   });
 }
 
-function pushNotification(db, userId, type, title, bodyText, linkUrl) {
-  db.prepare(
+async function pushNotification(db, userId, type, title, bodyText, linkUrl) {
+  await db.prepare(
     `INSERT INTO teaching_notifications (id, user_id, notification_type, title, body, link_url, is_read, created_at)
      VALUES (?, ?, ?, ?, ?, ?, 0, ?)`
   ).run(crypto.randomUUID(), userId, type, title, bodyText || '', linkUrl || '', nowIso());
@@ -152,7 +152,7 @@ function mapBankRowToSpec(row, overridePoints) {
   );
 }
 
-function resolveExamQuestionsInput(db, courseId, body) {
+async function resolveExamQuestionsInput(db, courseId, body) {
   const out = [];
   const bankIds = Array.isArray(body?.question_bank_ids)
     ? body.question_bank_ids
@@ -162,7 +162,7 @@ function resolveExamQuestionsInput(db, courseId, body) {
   for (const qId of bankIds) {
     const cleanId = String(qId || '').trim();
     if (!cleanId) continue;
-    const row = db
+    const row = await db
       .prepare('SELECT * FROM question_bank_items WHERE id = ? AND deleted_at IS NULL')
       .get(cleanId);
     if (!row) fail(404, 'BANK_QUESTION_NOT_FOUND', `Không tìm thấy câu hỏi ngân hàng "${cleanId}".`);
@@ -183,7 +183,7 @@ function resolveExamQuestionsInput(db, courseId, body) {
     const raw = inlineList[i];
     if (!raw || typeof raw !== 'object') continue;
     if (raw.bank_question_id && !raw.prompt) {
-      const row = db
+      const row = await db
         .prepare('SELECT * FROM question_bank_items WHERE id = ? AND deleted_at IS NULL')
         .get(String(raw.bank_question_id));
       if (!row) fail(404, 'BANK_QUESTION_NOT_FOUND', `Không tìm thấy câu hỏi ngân hàng "${raw.bank_question_id}".`);
@@ -209,12 +209,12 @@ function resolveExamQuestionsInput(db, courseId, body) {
   return out;
 }
 
-function hydrateExamDto(db, exam) {
-  const qs = db
+async function hydrateExamDto(db, exam) {
+  const qs = await db
     .prepare('SELECT * FROM class_exam_questions WHERE exam_id = ? ORDER BY sort_order, id')
     .all(exam.id);
   const totalPoints = qs.reduce((sum, q) => sum + Number(q.points || 0), 0);
-  const attemptAgg = db
+  const attemptAgg = await db
     .prepare(
       `SELECT
          COUNT(*) AS attempt_count,
@@ -223,9 +223,9 @@ function hydrateExamDto(db, exam) {
        FROM class_exam_attempts WHERE exam_id = ?`
     )
     .get(exam.id);
-  const topic = exam.topic_id ? db.prepare('SELECT id, title FROM course_topics WHERE id = ?').get(exam.topic_id) : null;
-  const chapter = exam.chapter_id ? db.prepare('SELECT id, title FROM chapters WHERE id = ?').get(exam.chapter_id) : null;
-  const lesson = exam.lesson_id ? db.prepare('SELECT id, title FROM lessons WHERE id = ?').get(exam.lesson_id) : null;
+  const topic = exam.topic_id ? await db.prepare('SELECT id, title FROM course_topics WHERE id = ?').get(exam.topic_id) : null;
+  const chapter = exam.chapter_id ? await db.prepare('SELECT id, title FROM chapters WHERE id = ?').get(exam.chapter_id) : null;
+  const lesson = exam.lesson_id ? await db.prepare('SELECT id, title FROM lessons WHERE id = ?').get(exam.lesson_id) : null;
 
   return {
     id: exam.id,
@@ -259,8 +259,8 @@ function hydrateExamDto(db, exam) {
   };
 }
 
-function hydrateAssignmentDto(db, a) {
-  const agg = db
+async function hydrateAssignmentDto(db, a) {
+  const agg = await db
     .prepare(
       `SELECT
          COUNT(DISTINCT student_id) AS students_touched,
@@ -270,9 +270,9 @@ function hydrateAssignmentDto(db, a) {
        FROM class_assignment_submissions WHERE class_assignment_id = ?`
     )
     .get(a.id);
-  const topic = a.topic_id ? db.prepare('SELECT id, title FROM course_topics WHERE id = ?').get(a.topic_id) : null;
-  const chapter = a.chapter_id ? db.prepare('SELECT id, title FROM chapters WHERE id = ?').get(a.chapter_id) : null;
-  const lesson = a.lesson_id ? db.prepare('SELECT id, title FROM lessons WHERE id = ?').get(a.lesson_id) : null;
+  const topic = a.topic_id ? await db.prepare('SELECT id, title FROM course_topics WHERE id = ?').get(a.topic_id) : null;
+  const chapter = a.chapter_id ? await db.prepare('SELECT id, title FROM chapters WHERE id = ?').get(a.chapter_id) : null;
+  const lesson = a.lesson_id ? await db.prepare('SELECT id, title FROM lessons WHERE id = ?').get(a.lesson_id) : null;
 
   return {
     id: a.id,
@@ -304,12 +304,12 @@ function hydrateAssignmentDto(db, a) {
   };
 }
 
-function finalizeExamAttempt(db, exam, attempt, rawAnswersOverride = null) {
+async function finalizeExamAttempt(db, exam, attempt, rawAnswersOverride = null) {
   const answers = rawAnswersOverride && typeof rawAnswersOverride === 'object'
     ? { ...safeJson(attempt.answers_json, {}), ...rawAnswersOverride }
     : safeJson(attempt.answers_json, {});
 
-  const qRows = db
+  const qRows = await db
     .prepare('SELECT * FROM class_exam_questions WHERE exam_id = ? ORDER BY sort_order, id')
     .all(exam.id);
 
@@ -360,7 +360,7 @@ function finalizeExamAttempt(db, exam, attempt, rawAnswersOverride = null) {
   const gradingStatus = hasManual ? 'PENDING_MANUAL' : 'AUTO_GRADED';
   const now = nowIso();
 
-  db.prepare(
+  await db.prepare(
     `UPDATE class_exam_attempts
      SET answers_json = ?, item_grades_json = ?, auto_score = ?, manual_score = 0,
          total_score = ?, max_score = ?, grading_status = ?, submitted_at = ?,
@@ -379,8 +379,8 @@ function finalizeExamAttempt(db, exam, attempt, rawAnswersOverride = null) {
     attempt.id
   );
 
-  syncExamGradebookForStudent(db, exam, attempt.student_id, null);
-  return db.prepare('SELECT * FROM class_exam_attempts WHERE id = ?').get(attempt.id);
+  await syncExamGradebookForStudent(db, exam, attempt.student_id, null);
+  return await db.prepare('SELECT * FROM class_exam_attempts WHERE id = ?').get(attempt.id);
 }
 
 function shuffleArray(list) {
@@ -452,22 +452,22 @@ export function registerAssessmentAndAssignmentRoutes(route) {
   // 1. BÀI KIỂM TRA THEO LỚP MÔN HỌC (STAFF / INSTRUCTOR)
   // =========================================================================
 
-  route('GET', '/classes/:id/exams', ({ db, user, params }) => {
-    const { cls } = requireStaffViewClass(db, user, params.id);
-    const rows = db
+  route('GET', '/classes/:id/exams', async ({ db, user, params }) => {
+    const { cls } = await requireStaffViewClass(db, user, params.id);
+    const rows = await db
       .prepare('SELECT * FROM class_exams WHERE subject_class_id = ? ORDER BY created_at DESC')
       .all(cls.id);
-    return { items: rows.map((r) => hydrateExamDto(db, r)) };
+    return { items: await mapAsync(rows, async (r) => await hydrateExamDto(db, r)) };
   });
 
-  route('POST', '/classes/:id/exams', ({ db, user, body, params }) => {
-    const { cls } = requireStaffManageClass(db, user, params.id);
+  route('POST', '/classes/:id/exams', async ({ db, user, body, params }) => {
+    const { cls } = await requireStaffManageClass(db, user, params.id);
     if (!cls.course_id) fail(400, 'CLASS_NO_COURSE', 'Lớp môn học chưa liên kết môn học.');
 
     const title = text(body, 'title', { required: true, max: 200, label: 'tên bài kiểm tra' });
     const description = text(body, 'description', { max: 2000, label: 'mô tả' });
     const scopeType = oneOf(body, 'scope_type', ['COURSE', 'TOPIC', 'CHAPTER', 'LESSON'], { fallback: 'CHAPTER', label: 'phạm vi' });
-    const scopeLinks = validateScopeLinks(db, cls.course_id, scopeType, body);
+    const scopeLinks = await validateScopeLinks(db, cls.course_id, scopeType, body);
 
     const timeLimitMinutes = intField(body, 'time_limit_minutes', { min: 1, max: 300, fallback: 20, label: 'thời gian làm bài (phút)' });
     const maxAttempts = intField(body, 'max_attempts', { min: 1, max: 20, fallback: 1, label: 'số lượt làm tối đa' });
@@ -479,15 +479,15 @@ export function registerAssessmentAndAssignmentRoutes(route) {
     const openAt = text(body, 'open_at', { max: 40, label: 'thời điểm mở' }) || null;
     const closeAt = text(body, 'close_at', { max: 40, label: 'thời điểm đóng' }) || null;
 
-    const resolvedQuestions = resolveExamQuestionsInput(db, cls.course_id, body);
+    const resolvedQuestions = await resolveExamQuestionsInput(db, cls.course_id, body);
     if (status === 'PUBLISHED' && resolvedQuestions.length === 0) {
       fail(400, 'EXAM_QUESTIONS_REQUIRED', 'Bài kiểm tra phát hành cần ít nhất 1 câu hỏi (chọn từ Ngân hàng hoặc nhập trực tiếp).');
     }
 
     const id = `ex_${crypto.randomBytes(5).toString('hex')}`;
     const now = nowIso();
-    tx(db, () => {
-      db.prepare(
+    await tx(db, async () => {
+      await db.prepare(
         `INSERT INTO class_exams
            (id, subject_class_id, course_id, scope_type, topic_id, chapter_id, lesson_id,
             title, description, time_limit_minutes, max_attempts, shuffle_questions, scoring_policy,
@@ -516,8 +516,8 @@ export function registerAssessmentAndAssignmentRoutes(route) {
         now
       );
 
-      resolvedQuestions.forEach((item, idx) => {
-        db.prepare(
+      for (const [idx, item] of (resolvedQuestions).entries()) {
+        await db.prepare(
           `INSERT INTO class_exam_questions (id, exam_id, bank_question_id, question_snapshot_json, points, sort_order)
            VALUES (?, ?, ?, ?, ?, ?)`
         ).run(
@@ -528,29 +528,29 @@ export function registerAssessmentAndAssignmentRoutes(route) {
           item.points,
           (idx + 1) * 10
         );
-      });
+      }
     });
 
     if (status === 'PUBLISHED') {
-      const students = db
+      const students = await db
         .prepare("SELECT student_id FROM class_enrollments WHERE subject_class_id = ? AND status = 'ACTIVE'")
         .all(cls.id);
       for (const s of students) {
-        pushNotification(db, s.student_id, 'NEW_EXAM', `Bài kiểm tra mới: ${title}`, `Lớp ${cls.code} vừa mở bài kiểm tra "${title}".`, '/learn/exams');
+        await pushNotification(db, s.student_id, 'NEW_EXAM', `Bài kiểm tra mới: ${title}`, `Lớp ${cls.code} vừa mở bài kiểm tra "${title}".`, '/learn/exams');
       }
     }
 
-    const created = db.prepare('SELECT * FROM class_exams WHERE id = ?').get(id);
-    return [201, hydrateExamDto(db, created)];
+    const created = await db.prepare('SELECT * FROM class_exams WHERE id = ?').get(id);
+    return [201, await hydrateExamDto(db, created)];
   });
 
-  route('GET', '/exams/:examId', ({ db, user, params }) => {
-    const exam = db.prepare('SELECT * FROM class_exams WHERE id = ?').get(params.examId);
+  route('GET', '/exams/:examId', async ({ db, user, params }) => {
+    const exam = await db.prepare('SELECT * FROM class_exams WHERE id = ?').get(params.examId);
     if (!exam) fail(404, 'EXAM_NOT_FOUND', 'Không tìm thấy bài kiểm tra.');
-    requireStaffViewClass(db, user, exam.subject_class_id);
-    const questions = db
+    await requireStaffViewClass(db, user, exam.subject_class_id);
+    const questions = (await db
       .prepare('SELECT * FROM class_exam_questions WHERE exam_id = ? ORDER BY sort_order, id')
-      .all(exam.id)
+      .all(exam.id))
       .map((q) => ({
         id: q.id,
         bank_question_id: q.bank_question_id,
@@ -558,16 +558,16 @@ export function registerAssessmentAndAssignmentRoutes(route) {
         sort_order: Number(q.sort_order || 10),
         question: safeJson(q.question_snapshot_json, {}),
       }));
-    return { ...hydrateExamDto(db, exam), questions };
+    return { ...await hydrateExamDto(db, exam), questions };
   });
 
-  route('PATCH', '/exams/:examId', ({ db, user, body, params }) => {
-    const exam = db.prepare('SELECT * FROM class_exams WHERE id = ?').get(params.examId);
+  route('PATCH', '/exams/:examId', async ({ db, user, body, params }) => {
+    const exam = await db.prepare('SELECT * FROM class_exams WHERE id = ?').get(params.examId);
     if (!exam) fail(404, 'EXAM_NOT_FOUND', 'Không tìm thấy bài kiểm tra.');
-    requireStaffManageClass(db, user, exam.subject_class_id);
+    await requireStaffManageClass(db, user, exam.subject_class_id);
 
     const hasReplacingQuestions = Array.isArray(body?.question_bank_ids) || Array.isArray(body?.questions);
-    const attemptCount = db.prepare('SELECT COUNT(*) n FROM class_exam_attempts WHERE exam_id = ?').get(exam.id).n;
+    const attemptCount = (await db.prepare('SELECT COUNT(*) n FROM class_exam_attempts WHERE exam_id = ?').get(exam.id)).n;
     if (hasReplacingQuestions && attemptCount > 0) {
       fail(409, 'EXAM_HAS_ATTEMPTS', 'Không thể thay đổi bộ câu hỏi sau khi đã có học viên làm bài.');
     }
@@ -579,7 +579,7 @@ export function registerAssessmentAndAssignmentRoutes(route) {
       ? oneOf(body, 'scope_type', ['COURSE', 'TOPIC', 'CHAPTER', 'LESSON'], { label: 'phạm vi' })
       : exam.scope_type;
     const scopeLinks = (body?.scope_type !== undefined || body?.topic_id !== undefined || body?.chapter_id !== undefined || body?.lesson_id !== undefined)
-      ? validateScopeLinks(db, exam.course_id, scopeType, {
+      ? await validateScopeLinks(db, exam.course_id, scopeType, {
           topic_id: body?.topic_id !== undefined ? body.topic_id : exam.topic_id,
           chapter_id: body?.chapter_id !== undefined ? body.chapter_id : exam.chapter_id,
           lesson_id: body?.lesson_id !== undefined ? body.lesson_id : exam.lesson_id,
@@ -602,15 +602,15 @@ export function registerAssessmentAndAssignmentRoutes(route) {
     const openAt = body?.open_at !== undefined ? text(body, 'open_at', { max: 40 }) || null : exam.open_at;
     const closeAt = body?.close_at !== undefined ? text(body, 'close_at', { max: 40 }) || null : exam.close_at;
 
-    const resolvedQuestions = hasReplacingQuestions ? resolveExamQuestionsInput(db, exam.course_id, body) : null;
-    const currentQCount = db.prepare('SELECT COUNT(*) n FROM class_exam_questions WHERE exam_id = ?').get(exam.id).n;
+    const resolvedQuestions = hasReplacingQuestions ? await resolveExamQuestionsInput(db, exam.course_id, body) : null;
+    const currentQCount = (await db.prepare('SELECT COUNT(*) n FROM class_exam_questions WHERE exam_id = ?').get(exam.id)).n;
     const targetQCount = resolvedQuestions ? resolvedQuestions.length : currentQCount;
     if (status === 'PUBLISHED' && targetQCount === 0) {
       fail(400, 'EXAM_QUESTIONS_REQUIRED', 'Bài kiểm tra phát hành cần ít nhất 1 câu hỏi.');
     }
 
-    tx(db, () => {
-      db.prepare(
+    await tx(db, async () => {
+      await db.prepare(
         `UPDATE class_exams
          SET scope_type = ?, topic_id = ?, chapter_id = ?, lesson_id = ?,
              title = ?, description = ?, time_limit_minutes = ?, max_attempts = ?,
@@ -637,9 +637,9 @@ export function registerAssessmentAndAssignmentRoutes(route) {
       );
 
       if (resolvedQuestions) {
-        db.prepare('DELETE FROM class_exam_questions WHERE exam_id = ?').run(exam.id);
-        resolvedQuestions.forEach((item, idx) => {
-          db.prepare(
+        await db.prepare('DELETE FROM class_exam_questions WHERE exam_id = ?').run(exam.id);
+        for (const [idx, item] of (resolvedQuestions).entries()) {
+          await db.prepare(
             `INSERT INTO class_exam_questions (id, exam_id, bank_question_id, question_snapshot_json, points, sort_order)
              VALUES (?, ?, ?, ?, ?, ?)`
           ).run(
@@ -650,36 +650,36 @@ export function registerAssessmentAndAssignmentRoutes(route) {
             item.points,
             (idx + 1) * 10
           );
-        });
+        }
       }
     });
 
-    return hydrateExamDto(db, db.prepare('SELECT * FROM class_exams WHERE id = ?').get(exam.id));
+    return await hydrateExamDto(db, await db.prepare('SELECT * FROM class_exams WHERE id = ?').get(exam.id));
   });
 
-  route('DELETE', '/exams/:examId', ({ db, user, params }) => {
-    const exam = db.prepare('SELECT * FROM class_exams WHERE id = ?').get(params.examId);
+  route('DELETE', '/exams/:examId', async ({ db, user, params }) => {
+    const exam = await db.prepare('SELECT * FROM class_exams WHERE id = ?').get(params.examId);
     if (!exam) fail(404, 'EXAM_NOT_FOUND', 'Không tìm thấy bài kiểm tra.');
-    requireStaffManageClass(db, user, exam.subject_class_id);
+    await requireStaffManageClass(db, user, exam.subject_class_id);
 
-    tx(db, () => {
-      db.prepare("DELETE FROM class_gradebook_entries WHERE subject_class_id = ? AND source_type = 'EXAM' AND source_id = ?").run(
+    await tx(db, async () => {
+      await db.prepare("DELETE FROM class_gradebook_entries WHERE subject_class_id = ? AND source_type = 'EXAM' AND source_id = ?").run(
         exam.subject_class_id,
         exam.id
       );
-      db.prepare('DELETE FROM class_exams WHERE id = ?').run(exam.id);
+      await db.prepare('DELETE FROM class_exams WHERE id = ?').run(exam.id);
     });
     return { deleted: true, id: exam.id };
   });
 
-  route('GET', '/exams/:examId/attempts', ({ db, user, params }) => {
-    const exam = db.prepare('SELECT * FROM class_exams WHERE id = ?').get(params.examId);
+  route('GET', '/exams/:examId/attempts', async ({ db, user, params }) => {
+    const exam = await db.prepare('SELECT * FROM class_exams WHERE id = ?').get(params.examId);
     if (!exam) fail(404, 'EXAM_NOT_FOUND', 'Không tìm thấy bài kiểm tra.');
-    requireStaffViewClass(db, user, exam.subject_class_id);
+    await requireStaffViewClass(db, user, exam.subject_class_id);
 
-    const questions = db
+    const questions = (await db
       .prepare('SELECT * FROM class_exam_questions WHERE exam_id = ? ORDER BY sort_order, id')
-      .all(exam.id)
+      .all(exam.id))
       .map((q) => ({
         id: q.id,
         bank_question_id: q.bank_question_id,
@@ -687,7 +687,7 @@ export function registerAssessmentAndAssignmentRoutes(route) {
         question: safeJson(q.question_snapshot_json, {}),
       }));
 
-    const rows = db
+    const rows = await db
       .prepare(
         `SELECT a.*, u.code AS student_code, u.full_name AS student_name, u.email AS student_email
          FROM class_exam_attempts a
@@ -720,24 +720,24 @@ export function registerAssessmentAndAssignmentRoutes(route) {
     }));
 
     return {
-      exam: hydrateExamDto(db, exam),
+      exam: await hydrateExamDto(db, exam),
       questions,
       attempts,
     };
   });
 
-  route('POST', '/exam-attempts/:attemptId/grade', ({ db, user, body, params }) => {
-    const attempt = db.prepare('SELECT * FROM class_exam_attempts WHERE id = ?').get(params.attemptId);
+  route('POST', '/exam-attempts/:attemptId/grade', async ({ db, user, body, params }) => {
+    const attempt = await db.prepare('SELECT * FROM class_exam_attempts WHERE id = ?').get(params.attemptId);
     if (!attempt) fail(404, 'ATTEMPT_NOT_FOUND', 'Không tìm thấy lượt làm bài.');
-    const exam = db.prepare('SELECT * FROM class_exams WHERE id = ?').get(attempt.exam_id);
+    const exam = await db.prepare('SELECT * FROM class_exams WHERE id = ?').get(attempt.exam_id);
     if (!exam) fail(404, 'EXAM_NOT_FOUND', 'Không tìm thấy bài kiểm tra.');
-    requireStaffManageClass(db, user, exam.subject_class_id);
+    await requireStaffManageClass(db, user, exam.subject_class_id);
 
     if (!attempt.submitted_at) {
       fail(400, 'ATTEMPT_NOT_SUBMITTED', 'Học viên chưa nộp bài kiểm tra.');
     }
 
-    const qRows = db.prepare('SELECT * FROM class_exam_questions WHERE exam_id = ?').all(exam.id);
+    const qRows = await db.prepare('SELECT * FROM class_exam_questions WHERE exam_id = ?').all(exam.id);
     const qById = new Map(qRows.map((q) => [q.id, q]));
     const itemGrades = { ...safeJson(attempt.item_grades_json, {}) };
     const itemScores = body?.item_scores && typeof body.item_scores === 'object' ? body.item_scores : null;
@@ -789,16 +789,16 @@ export function registerAssessmentAndAssignmentRoutes(route) {
     const feedback = text(body, 'teacher_feedback', { max: 2000, fallback: attempt.teacher_feedback || '', label: 'nhận xét giảng viên' });
     const now = nowIso();
 
-    tx(db, () => {
-      db.prepare(
+    await tx(db, async () => {
+      await db.prepare(
         `UPDATE class_exam_attempts
          SET item_grades_json = ?, auto_score = ?, manual_score = ?, total_score = ?,
              grading_status = 'GRADED', teacher_feedback = ?, graded_by = ?, graded_at = ?
          WHERE id = ?`
       ).run(JSON.stringify(itemGrades), autoScore, manualScore, totalScore, feedback, user.id, now, attempt.id);
 
-      syncExamGradebookForStudent(db, exam, attempt.student_id, user.id);
-      pushNotification(
+      await syncExamGradebookForStudent(db, exam, attempt.student_id, user.id);
+      await pushNotification(
         db,
         attempt.student_id,
         'EXAM_GRADED',
@@ -808,7 +808,7 @@ export function registerAssessmentAndAssignmentRoutes(route) {
       );
     });
 
-    const updated = db.prepare('SELECT * FROM class_exam_attempts WHERE id = ?').get(attempt.id);
+    const updated = await db.prepare('SELECT * FROM class_exam_attempts WHERE id = ?').get(attempt.id);
     return {
       ...updated,
       item_grades: safeJson(updated.item_grades_json, {}),
@@ -820,11 +820,11 @@ export function registerAssessmentAndAssignmentRoutes(route) {
   // 2. BÀI KIỂM TRA HỌC VIÊN (/learn/exams...)
   // =========================================================================
 
-  route('GET', '/learn/exams', ({ db, user, query }) => {
+  route('GET', '/learn/exams', async ({ db, user, query }) => {
     const classId = query.get('class_id');
-    if (classId) requireStudentInClass(db, user, classId);
+    if (classId) await requireStudentInClass(db, user, classId);
 
-    const enrolledClasses = db
+    const enrolledClasses = await db
       .prepare(
         `SELECT sc.id, sc.code, sc.title, sc.course_id, c.title AS course_title
          FROM class_enrollments e
@@ -837,7 +837,7 @@ export function registerAssessmentAndAssignmentRoutes(route) {
     if (enrolledClasses.length === 0) return { items: [] };
     const clsMap = new Map(enrolledClasses.map((c) => [c.id, c]));
     const placeholders = enrolledClasses.map(() => '?').join(',');
-    const exams = db
+    const exams = await db
       .prepare(
         `SELECT * FROM class_exams
          WHERE subject_class_id IN (${placeholders}) AND status IN ('PUBLISHED','CLOSED')
@@ -846,10 +846,10 @@ export function registerAssessmentAndAssignmentRoutes(route) {
       .all(...enrolledClasses.map((c) => c.id));
 
     const nowMs = Date.now();
-    const items = exams.map((ex) => {
-      const dto = hydrateExamDto(db, ex);
+    const items = await mapAsync(exams, async (ex) => {
+      const dto = await hydrateExamDto(db, ex);
       const clsInfo = clsMap.get(ex.subject_class_id);
-      const myAttempts = db
+      const myAttempts = await db
         .prepare(
           `SELECT id, attempt_number, grading_status, auto_score, manual_score, total_score, max_score,
                   teacher_feedback, started_at, submitted_at, graded_at
@@ -884,10 +884,10 @@ export function registerAssessmentAndAssignmentRoutes(route) {
     return { items };
   });
 
-  route('POST', '/learn/exams/:examId/start', ({ db, user, params }) => {
-    const exam = db.prepare('SELECT * FROM class_exams WHERE id = ?').get(params.examId);
+  route('POST', '/learn/exams/:examId/start', async ({ db, user, params }) => {
+    const exam = await db.prepare('SELECT * FROM class_exams WHERE id = ?').get(params.examId);
     if (!exam) fail(404, 'EXAM_NOT_FOUND', 'Không tìm thấy bài kiểm tra.');
-    const cls = requireStudentInClass(db, user, exam.subject_class_id);
+    const cls = await requireStudentInClass(db, user, exam.subject_class_id);
 
     if (exam.status !== 'PUBLISHED') {
       fail(400, 'EXAM_NOT_OPEN', 'Bài kiểm tra hiện không mở để làm bài.');
@@ -900,33 +900,33 @@ export function registerAssessmentAndAssignmentRoutes(route) {
       fail(400, 'EXAM_WINDOW_CLOSED', 'Đã hết thời gian mở bài kiểm tra.');
     }
 
-    const qRows = db
+    const qRows = await db
       .prepare('SELECT * FROM class_exam_questions WHERE exam_id = ? ORDER BY sort_order, id')
       .all(exam.id);
     if (qRows.length === 0) {
       fail(400, 'EXAM_EMPTY', 'Bài kiểm tra chưa có câu hỏi.');
     }
 
-    const existingAttempts = db
+    const existingAttempts = await db
       .prepare('SELECT * FROM class_exam_attempts WHERE exam_id = ? AND student_id = ? ORDER BY attempt_number ASC')
       .all(exam.id, user.id);
 
     let inProgress = existingAttempts.find((a) => a.grading_status === 'IN_PROGRESS' && !a.submitted_at);
     if (inProgress) {
       if (checkAttemptWindowExpired(exam, inProgress)) {
-        finalizeExamAttempt(db, exam, inProgress);
+        await finalizeExamAttempt(db, exam, inProgress);
         inProgress = null;
       } else {
         return {
-          exam: hydrateExamDto(db, exam),
+          exam: await hydrateExamDto(db, exam),
           attempt: studentAttemptDto(inProgress, exam, qRows, false),
         };
       }
     }
 
-    const currentCount = db
+    const currentCount = (await db
       .prepare('SELECT COUNT(*) n FROM class_exam_attempts WHERE exam_id = ? AND student_id = ?')
-      .get(exam.id, user.id).n;
+      .get(exam.id, user.id)).n;
     if (currentCount >= Number(exam.max_attempts || 1)) {
       fail(409, 'MAX_ATTEMPTS_REACHED', `Bạn đã dùng hết ${exam.max_attempts} lượt làm bài kiểm tra này.`);
     }
@@ -937,7 +937,7 @@ export function registerAssessmentAndAssignmentRoutes(route) {
     const verKey = getClassContentVersionKey(cls);
     const now = nowIso();
 
-    db.prepare(
+    await db.prepare(
       `INSERT INTO class_exam_attempts
          (id, exam_id, subject_class_id, student_id, content_version_key, attempt_number,
           question_order_json, answers_json, item_grades_json, auto_score, manual_score,
@@ -945,18 +945,18 @@ export function registerAssessmentAndAssignmentRoutes(route) {
        VALUES (?, ?, ?, ?, ?, ?, ?, '{}', '{}', 0, 0, 0, ?, 'IN_PROGRESS', ?)`
     ).run(attemptId, exam.id, cls.id, user.id, verKey, currentCount + 1, JSON.stringify(orderedIds), maxScore, now);
 
-    const created = db.prepare('SELECT * FROM class_exam_attempts WHERE id = ?').get(attemptId);
+    const created = await db.prepare('SELECT * FROM class_exam_attempts WHERE id = ?').get(attemptId);
     return [
       201,
       {
-        exam: hydrateExamDto(db, exam),
+        exam: await hydrateExamDto(db, exam),
         attempt: studentAttemptDto(created, exam, qRows, false),
       },
     ];
   });
 
-  route('PUT', '/learn/exam-attempts/:attemptId/save', ({ db, user, body, params }) => {
-    const attempt = db.prepare('SELECT * FROM class_exam_attempts WHERE id = ?').get(params.attemptId);
+  route('PUT', '/learn/exam-attempts/:attemptId/save', async ({ db, user, body, params }) => {
+    const attempt = await db.prepare('SELECT * FROM class_exam_attempts WHERE id = ?').get(params.attemptId);
     if (!attempt) fail(404, 'ATTEMPT_NOT_FOUND', 'Không tìm thấy lượt làm bài.');
     if (attempt.student_id !== user.id) fail(403, 'ATTEMPT_FORBIDDEN', 'Bạn không có quyền truy cập lượt làm bài này.');
     if (attempt.submitted_at || attempt.grading_status !== 'IN_PROGRESS') {
@@ -965,32 +965,32 @@ export function registerAssessmentAndAssignmentRoutes(route) {
 
     const incoming = body?.answers && typeof body.answers === 'object' ? body.answers : {};
     const merged = { ...safeJson(attempt.answers_json, {}), ...incoming };
-    db.prepare('UPDATE class_exam_attempts SET answers_json = ? WHERE id = ?').run(JSON.stringify(merged), attempt.id);
+    await db.prepare('UPDATE class_exam_attempts SET answers_json = ? WHERE id = ?').run(JSON.stringify(merged), attempt.id);
     return { attempt_id: attempt.id, saved_at: nowIso(), answers_count: Object.keys(merged).length };
   });
 
-  route('POST', '/learn/exam-attempts/:attemptId/submit', ({ db, user, body, params }) => {
-    const attempt = db.prepare('SELECT * FROM class_exam_attempts WHERE id = ?').get(params.attemptId);
+  route('POST', '/learn/exam-attempts/:attemptId/submit', async ({ db, user, body, params }) => {
+    const attempt = await db.prepare('SELECT * FROM class_exam_attempts WHERE id = ?').get(params.attemptId);
     if (!attempt) fail(404, 'ATTEMPT_NOT_FOUND', 'Không tìm thấy lượt làm bài.');
     if (attempt.student_id !== user.id) fail(403, 'ATTEMPT_FORBIDDEN', 'Bạn không có quyền nộp lượt làm bài này.');
 
-    const exam = db.prepare('SELECT * FROM class_exams WHERE id = ?').get(attempt.exam_id);
+    const exam = await db.prepare('SELECT * FROM class_exams WHERE id = ?').get(attempt.exam_id);
     if (!exam) fail(404, 'EXAM_NOT_FOUND', 'Không tìm thấy bài kiểm tra.');
-    requireStudentInClass(db, user, exam.subject_class_id);
+    await requireStudentInClass(db, user, exam.subject_class_id);
 
-    const qRows = db
+    const qRows = await db
       .prepare('SELECT * FROM class_exam_questions WHERE exam_id = ? ORDER BY sort_order, id')
       .all(exam.id);
 
     if (attempt.submitted_at && attempt.grading_status !== 'IN_PROGRESS') {
       const reveal = attempt.grading_status !== 'PENDING_MANUAL' || exam.status === 'CLOSED';
-      return { exam: hydrateExamDto(db, exam), attempt: studentAttemptDto(attempt, exam, qRows, reveal) };
+      return { exam: await hydrateExamDto(db, exam), attempt: studentAttemptDto(attempt, exam, qRows, reveal) };
     }
 
-    const finalAttempt = tx(db, () => finalizeExamAttempt(db, exam, attempt, body?.answers || null));
+    const finalAttempt = await tx(db, async () => await finalizeExamAttempt(db, exam, attempt, body?.answers || null));
     const reveal = finalAttempt.grading_status !== 'PENDING_MANUAL' || exam.status === 'CLOSED';
     return {
-      exam: hydrateExamDto(db, exam),
+      exam: await hydrateExamDto(db, exam),
       attempt: studentAttemptDto(finalAttempt, exam, qRows, reveal),
     };
   });
@@ -999,22 +999,22 @@ export function registerAssessmentAndAssignmentRoutes(route) {
   // 3. BÀI TẬP GIAO THEO LỚP (STAFF / INSTRUCTOR)
   // =========================================================================
 
-  route('GET', '/classes/:id/assignments', ({ db, user, params }) => {
-    const { cls } = requireStaffViewClass(db, user, params.id);
-    const rows = db
+  route('GET', '/classes/:id/assignments', async ({ db, user, params }) => {
+    const { cls } = await requireStaffViewClass(db, user, params.id);
+    const rows = await db
       .prepare('SELECT * FROM class_assignments WHERE subject_class_id = ? ORDER BY COALESCE(due_at, \'9999\'), created_at DESC')
       .all(cls.id);
-    return { items: rows.map((r) => hydrateAssignmentDto(db, r)) };
+    return { items: await mapAsync(rows, async (r) => await hydrateAssignmentDto(db, r)) };
   });
 
-  route('POST', '/classes/:id/assignments', ({ db, user, body, params }) => {
-    const { cls } = requireStaffManageClass(db, user, params.id);
+  route('POST', '/classes/:id/assignments', async ({ db, user, body, params }) => {
+    const { cls } = await requireStaffManageClass(db, user, params.id);
     if (!cls.course_id) fail(400, 'CLASS_NO_COURSE', 'Lớp môn học chưa liên kết môn học.');
 
     let bankItem = null;
     const bankItemId = text(body, 'assignment_bank_item_id', { max: 80, label: 'bài tập ngân hàng' }) || null;
     if (bankItemId) {
-      bankItem = db
+      bankItem = await db
         .prepare('SELECT * FROM assignment_bank_items WHERE id = ? AND deleted_at IS NULL')
         .get(bankItemId);
       if (!bankItem) fail(404, 'BANK_ASSIGNMENT_NOT_FOUND', 'Không tìm thấy bài tập mẫu trong Ngân hàng.');
@@ -1050,7 +1050,7 @@ export function registerAssessmentAndAssignmentRoutes(route) {
       ? body.attachments
       : bankItem ? safeJson(bankItem.attachments_json, []) : [];
 
-    const scopeLinks = validateScopeLinks(db, cls.course_id, 'LESSON', {
+    const scopeLinks = await validateScopeLinks(db, cls.course_id, 'LESSON', {
       lesson_id: body?.lesson_id ?? bankItem?.lesson_id,
       chapter_id: body?.chapter_id ?? bankItem?.chapter_id,
       topic_id: body?.topic_id ?? bankItem?.topic_id,
@@ -1058,7 +1058,7 @@ export function registerAssessmentAndAssignmentRoutes(route) {
 
     const id = `ca_${crypto.randomBytes(5).toString('hex')}`;
     const now = nowIso();
-    db.prepare(
+    await db.prepare(
       `INSERT INTO class_assignments
          (id, subject_class_id, course_id, assignment_bank_item_id, topic_id, chapter_id, lesson_id,
           title, instructions, submission_type, max_score, max_attempts, allow_resubmit, due_at,
@@ -1087,22 +1087,22 @@ export function registerAssessmentAndAssignmentRoutes(route) {
     );
 
     if (status === 'PUBLISHED') {
-      const students = db
+      const students = await db
         .prepare("SELECT student_id FROM class_enrollments WHERE subject_class_id = ? AND status = 'ACTIVE'")
         .all(cls.id);
       for (const s of students) {
-        pushNotification(db, s.student_id, 'NEW_ASSIGNMENT', `Bài tập mới: ${title}`, `Lớp ${cls.code} vừa giao bài tập "${title}".`, '/learn/assignments');
+        await pushNotification(db, s.student_id, 'NEW_ASSIGNMENT', `Bài tập mới: ${title}`, `Lớp ${cls.code} vừa giao bài tập "${title}".`, '/learn/assignments');
       }
     }
 
-    const created = db.prepare('SELECT * FROM class_assignments WHERE id = ?').get(id);
-    return [201, hydrateAssignmentDto(db, created)];
+    const created = await db.prepare('SELECT * FROM class_assignments WHERE id = ?').get(id);
+    return [201, await hydrateAssignmentDto(db, created)];
   });
 
-  route('PATCH', '/assignments/:assignmentId', ({ db, user, body, params }) => {
-    const a = db.prepare('SELECT * FROM class_assignments WHERE id = ?').get(params.assignmentId);
+  route('PATCH', '/assignments/:assignmentId', async ({ db, user, body, params }) => {
+    const a = await db.prepare('SELECT * FROM class_assignments WHERE id = ?').get(params.assignmentId);
     if (!a) fail(404, 'ASSIGNMENT_NOT_FOUND', 'Không tìm thấy bài tập.');
-    requireStaffManageClass(db, user, a.subject_class_id);
+    await requireStaffManageClass(db, user, a.subject_class_id);
 
     const title = body?.title !== undefined ? text(body, 'title', { required: true, max: 200 }) : a.title;
     const instructions = body?.instructions !== undefined ? text(body, 'instructions', { required: true, max: 8000 }) : a.instructions;
@@ -1117,7 +1117,7 @@ export function registerAssessmentAndAssignmentRoutes(route) {
     const status = body?.status !== undefined ? oneOf(body, 'status', ['DRAFT', 'PUBLISHED', 'CLOSED']) : a.status;
     const attachments = Array.isArray(body?.attachments) ? body.attachments : safeJson(a.attachments_json, []);
 
-    db.prepare(
+    await db.prepare(
       `UPDATE class_assignments
        SET title = ?, instructions = ?, submission_type = ?, max_score = ?, max_attempts = ?,
            allow_resubmit = ?, due_at = ?, attachments_json = ?, status = ?, updated_at = ?
@@ -1136,39 +1136,39 @@ export function registerAssessmentAndAssignmentRoutes(route) {
       a.id
     );
 
-    return hydrateAssignmentDto(db, db.prepare('SELECT * FROM class_assignments WHERE id = ?').get(a.id));
+    return await hydrateAssignmentDto(db, await db.prepare('SELECT * FROM class_assignments WHERE id = ?').get(a.id));
   });
 
-  route('DELETE', '/assignments/:assignmentId', ({ db, user, params }) => {
-    const a = db.prepare('SELECT * FROM class_assignments WHERE id = ?').get(params.assignmentId);
+  route('DELETE', '/assignments/:assignmentId', async ({ db, user, params }) => {
+    const a = await db.prepare('SELECT * FROM class_assignments WHERE id = ?').get(params.assignmentId);
     if (!a) fail(404, 'ASSIGNMENT_NOT_FOUND', 'Không tìm thấy bài tập.');
-    requireStaffManageClass(db, user, a.subject_class_id);
+    await requireStaffManageClass(db, user, a.subject_class_id);
 
-    tx(db, () => {
-      db.prepare("DELETE FROM class_gradebook_entries WHERE subject_class_id = ? AND source_type = 'ASSIGNMENT' AND source_id = ?").run(
+    await tx(db, async () => {
+      await db.prepare("DELETE FROM class_gradebook_entries WHERE subject_class_id = ? AND source_type = 'ASSIGNMENT' AND source_id = ?").run(
         a.subject_class_id,
         a.id
       );
-      db.prepare('DELETE FROM class_assignments WHERE id = ?').run(a.id);
+      await db.prepare('DELETE FROM class_assignments WHERE id = ?').run(a.id);
     });
     return { deleted: true, id: a.id };
   });
 
-  route('GET', '/assignments/:assignmentId/submissions', ({ db, user, params }) => {
-    const a = db.prepare('SELECT * FROM class_assignments WHERE id = ?').get(params.assignmentId);
+  route('GET', '/assignments/:assignmentId/submissions', async ({ db, user, params }) => {
+    const a = await db.prepare('SELECT * FROM class_assignments WHERE id = ?').get(params.assignmentId);
     if (!a) fail(404, 'ASSIGNMENT_NOT_FOUND', 'Không tìm thấy bài tập.');
-    requireStaffViewClass(db, user, a.subject_class_id);
+    await requireStaffViewClass(db, user, a.subject_class_id);
 
-    const roster = db
+    const roster = (await db
       .prepare(
         `SELECT e.student_id, u.code AS student_code, u.full_name AS student_name, u.email AS student_email
          FROM class_enrollments e JOIN users u ON u.id = e.student_id
          WHERE e.subject_class_id = ? AND e.status = 'ACTIVE'`
       )
-      .all(a.subject_class_id)
+      .all(a.subject_class_id))
       .sort((x, y) => compareVietnameseName(x.student_name, y.student_name));
 
-    const allSubs = db
+    const allSubs = await db
       .prepare(
         `SELECT s.*, u.code AS student_code, u.full_name AS student_name
          FROM class_assignment_submissions s
@@ -1196,18 +1196,18 @@ export function registerAssessmentAndAssignmentRoutes(route) {
     });
 
     return {
-      assignment: hydrateAssignmentDto(db, a),
+      assignment: await hydrateAssignmentDto(db, a),
       submissions: allSubs.map((s) => ({ ...s, attachments: safeJson(s.attachments_json, []) })),
       roster_status: rosterStatus,
     };
   });
 
-  route('POST', '/assignment-submissions/:subId/grade', ({ db, user, body, params }) => {
-    const sub = db.prepare('SELECT * FROM class_assignment_submissions WHERE id = ?').get(params.subId);
+  route('POST', '/assignment-submissions/:subId/grade', async ({ db, user, body, params }) => {
+    const sub = await db.prepare('SELECT * FROM class_assignment_submissions WHERE id = ?').get(params.subId);
     if (!sub) fail(404, 'SUBMISSION_NOT_FOUND', 'Không tìm thấy bài nộp.');
-    const a = db.prepare('SELECT * FROM class_assignments WHERE id = ?').get(sub.class_assignment_id);
+    const a = await db.prepare('SELECT * FROM class_assignments WHERE id = ?').get(sub.class_assignment_id);
     if (!a) fail(404, 'ASSIGNMENT_NOT_FOUND', 'Không tìm thấy bài tập.');
-    requireStaffManageClass(db, user, a.subject_class_id);
+    await requireStaffManageClass(db, user, a.subject_class_id);
 
     if (sub.status === 'DRAFT') {
       fail(400, 'SUBMISSION_IS_DRAFT', 'Học viên chưa nộp chính thức bài làm này.');
@@ -1231,15 +1231,15 @@ export function registerAssessmentAndAssignmentRoutes(route) {
     const feedback = text(body, 'teacher_feedback', { max: 4000, fallback: sub.teacher_feedback || '', label: 'nhận xét giảng viên' });
     const now = nowIso();
 
-    tx(db, () => {
-      db.prepare(
+    await tx(db, async () => {
+      await db.prepare(
         `UPDATE class_assignment_submissions
          SET score = ?, status = ?, teacher_feedback = ?, graded_by = ?, graded_at = ?, updated_at = ?
          WHERE id = ?`
       ).run(score, targetStatus, feedback, user.id, now, now, sub.id);
 
       if (targetStatus === 'GRADED' && score !== null) {
-        syncGradebookEntry(db, {
+        await syncGradebookEntry(db, {
           classId: a.subject_class_id,
           studentId: sub.student_id,
           sourceType: 'ASSIGNMENT',
@@ -1249,7 +1249,7 @@ export function registerAssessmentAndAssignmentRoutes(route) {
           maxScore,
           gradedBy: user.id,
         });
-        pushNotification(
+        await pushNotification(
           db,
           sub.student_id,
           'ASSIGNMENT_GRADED',
@@ -1258,7 +1258,7 @@ export function registerAssessmentAndAssignmentRoutes(route) {
           '/learn/assignments'
         );
       } else if (targetStatus === 'RETURNED') {
-        pushNotification(
+        await pushNotification(
           db,
           sub.student_id,
           'ASSIGNMENT_RETURNED',
@@ -1269,7 +1269,7 @@ export function registerAssessmentAndAssignmentRoutes(route) {
       }
     });
 
-    const updated = db.prepare('SELECT * FROM class_assignment_submissions WHERE id = ?').get(sub.id);
+    const updated = await db.prepare('SELECT * FROM class_assignment_submissions WHERE id = ?').get(sub.id);
     return { ...updated, attachments: safeJson(updated.attachments_json, []) };
   });
 
@@ -1277,11 +1277,11 @@ export function registerAssessmentAndAssignmentRoutes(route) {
   // 4. BÀI TẬP HỌC VIÊN (/learn/assignments...)
   // =========================================================================
 
-  route('GET', '/learn/assignments', ({ db, user, query }) => {
+  route('GET', '/learn/assignments', async ({ db, user, query }) => {
     const classId = query.get('class_id');
-    if (classId) requireStudentInClass(db, user, classId);
+    if (classId) await requireStudentInClass(db, user, classId);
 
-    const enrolledClasses = db
+    const enrolledClasses = await db
       .prepare(
         `SELECT sc.id, sc.code, sc.title, sc.course_id, c.title AS course_title
          FROM class_enrollments e
@@ -1294,7 +1294,7 @@ export function registerAssessmentAndAssignmentRoutes(route) {
     if (enrolledClasses.length === 0) return { items: [] };
     const clsMap = new Map(enrolledClasses.map((c) => [c.id, c]));
     const placeholders = enrolledClasses.map(() => '?').join(',');
-    const rows = db
+    const rows = await db
       .prepare(
         `SELECT * FROM class_assignments
          WHERE subject_class_id IN (${placeholders}) AND status IN ('PUBLISHED','CLOSED')
@@ -1303,16 +1303,16 @@ export function registerAssessmentAndAssignmentRoutes(route) {
       .all(...enrolledClasses.map((c) => c.id));
 
     const nowMs = Date.now();
-    const items = rows.map((a) => {
-      const dto = hydrateAssignmentDto(db, a);
+    const items = await mapAsync(rows, async (a) => {
+      const dto = await hydrateAssignmentDto(db, a);
       const clsInfo = clsMap.get(a.subject_class_id);
-      const subs = db
+      const subs = (await db
         .prepare(
           `SELECT * FROM class_assignment_submissions
            WHERE class_assignment_id = ? AND student_id = ?
            ORDER BY attempt_number DESC`
         )
-        .all(a.id, user.id)
+        .all(a.id, user.id))
         .map((s) => ({ ...s, attachments: safeJson(s.attachments_json, []) }));
 
       const latest = subs[0] || null;
@@ -1340,7 +1340,7 @@ export function registerAssessmentAndAssignmentRoutes(route) {
     return { items };
   });
 
-  function upsertStudentAssignmentSubmission(db, user, a, cls, body, targetState) {
+  async function upsertStudentAssignmentSubmission(db, user, a, cls, body, targetState) {
     if (a.status !== 'PUBLISHED') {
       fail(400, 'ASSIGNMENT_NOT_OPEN', 'Bài tập hiện không còn mở để nộp bài.');
     }
@@ -1361,7 +1361,7 @@ export function registerAssessmentAndAssignmentRoutes(route) {
       }
     }
 
-    const existing = db
+    const existing = await db
       .prepare(
         `SELECT * FROM class_assignment_submissions
          WHERE class_assignment_id = ? AND student_id = ?
@@ -1375,7 +1375,7 @@ export function registerAssessmentAndAssignmentRoutes(route) {
     const now = nowIso();
 
     if (latest && latest.status === 'DRAFT') {
-      db.prepare(
+      await db.prepare(
         `UPDATE class_assignment_submissions
          SET submission_text = ?, submission_link = ?, attachments_json = ?,
              status = ?, submitted_at = ?, updated_at = ?
@@ -1389,7 +1389,7 @@ export function registerAssessmentAndAssignmentRoutes(route) {
         now,
         latest.id
       );
-      const updated = db.prepare('SELECT * FROM class_assignment_submissions WHERE id = ?').get(latest.id);
+      const updated = await db.prepare('SELECT * FROM class_assignment_submissions WHERE id = ?').get(latest.id);
       return { ...updated, attachments: safeJson(updated.attachments_json, []) };
     }
 
@@ -1402,7 +1402,7 @@ export function registerAssessmentAndAssignmentRoutes(route) {
 
     const subId = `sub_${crypto.randomBytes(5).toString('hex')}`;
     const nextNum = existing.length + 1;
-    db.prepare(
+    await db.prepare(
       `INSERT INTO class_assignment_submissions
          (id, class_assignment_id, subject_class_id, student_id, content_version_key, attempt_number,
           submission_text, submission_link, attachments_json, status, max_score, submitted_at, updated_at)
@@ -1424,54 +1424,54 @@ export function registerAssessmentAndAssignmentRoutes(route) {
     );
 
     if (targetState === 'SUBMITTED') {
-      const teachers = db
+      const teachers = await db
         .prepare("SELECT user_id FROM teaching_staff_assignments WHERE subject_class_id = ? AND is_active = 1 AND staff_role IN ('PRIMARY_INSTRUCTOR','CO_INSTRUCTOR')")
         .all(cls.id);
       for (const t of teachers) {
-        pushNotification(db, t.user_id, 'ASSIGNMENT_SUBMITTED', `Học viên nộp bài: ${a.title}`, `${user.full_name} vừa nộp bài tập trong lớp ${cls.code}.`, `/classes/${cls.id}`);
+        await pushNotification(db, t.user_id, 'ASSIGNMENT_SUBMITTED', `Học viên nộp bài: ${a.title}`, `${user.full_name} vừa nộp bài tập trong lớp ${cls.code}.`, `/classes/${cls.id}`);
       }
     }
 
-    const created = db.prepare('SELECT * FROM class_assignment_submissions WHERE id = ?').get(subId);
+    const created = await db.prepare('SELECT * FROM class_assignment_submissions WHERE id = ?').get(subId);
     return { ...created, attachments: safeJson(created.attachments_json, []) };
   }
 
-  route('PUT', '/learn/assignments/:assignmentId/draft', ({ db, user, body, params }) => {
-    const a = db.prepare('SELECT * FROM class_assignments WHERE id = ?').get(params.assignmentId);
+  route('PUT', '/learn/assignments/:assignmentId/draft', async ({ db, user, body, params }) => {
+    const a = await db.prepare('SELECT * FROM class_assignments WHERE id = ?').get(params.assignmentId);
     if (!a) fail(404, 'ASSIGNMENT_NOT_FOUND', 'Không tìm thấy bài tập.');
-    const cls = requireStudentInClass(db, user, a.subject_class_id);
-    return upsertStudentAssignmentSubmission(db, user, a, cls, body, 'DRAFT');
+    const cls = await requireStudentInClass(db, user, a.subject_class_id);
+    return await upsertStudentAssignmentSubmission(db, user, a, cls, body, 'DRAFT');
   });
 
-  route('POST', '/learn/assignments/:assignmentId/submit', ({ db, user, body, params }) => {
-    const a = db.prepare('SELECT * FROM class_assignments WHERE id = ?').get(params.assignmentId);
+  route('POST', '/learn/assignments/:assignmentId/submit', async ({ db, user, body, params }) => {
+    const a = await db.prepare('SELECT * FROM class_assignments WHERE id = ?').get(params.assignmentId);
     if (!a) fail(404, 'ASSIGNMENT_NOT_FOUND', 'Không tìm thấy bài tập.');
-    const cls = requireStudentInClass(db, user, a.subject_class_id);
-    return upsertStudentAssignmentSubmission(db, user, a, cls, body, 'SUBMITTED');
+    const cls = await requireStudentInClass(db, user, a.subject_class_id);
+    return await upsertStudentAssignmentSubmission(db, user, a, cls, body, 'SUBMITTED');
   });
 
   // =========================================================================
   // 5. SỔ ĐIỂM TỔNG HỢP THEO LỚP MÔN HỌC (GRADEBOOK)
   // =========================================================================
 
-  route('GET', '/classes/:id/gradebook', ({ db, user, params }) => {
-    const { cls } = requireStaffViewClass(db, user, params.id);
-    const exams = db
+  route('GET', '/classes/:id/gradebook', async ({ db, user, params }) => {
+    const { cls } = await requireStaffViewClass(db, user, params.id);
+    const exams = await db
       .prepare('SELECT id, title, scoring_policy, max_attempts FROM class_exams WHERE subject_class_id = ? ORDER BY created_at')
       .all(cls.id);
-    const assignments = db
+    const assignments = await db
       .prepare('SELECT id, title, max_score FROM class_assignments WHERE subject_class_id = ? ORDER BY created_at')
       .all(cls.id);
-    const roster = db
+    const roster = (await db
       .prepare(
         `SELECT e.student_id, e.enrollment_source, u.code AS student_code, u.full_name AS student_name, u.email AS student_email
          FROM class_enrollments e JOIN users u ON u.id = e.student_id
          WHERE e.subject_class_id = ? AND e.status = 'ACTIVE'`
       )
-      .all(cls.id)
+      .all(cls.id))
       .sort((a, b) => compareVietnameseName(a.student_name, b.student_name));
 
-    const entries = db
+    const entries = await db
       .prepare('SELECT * FROM class_gradebook_entries WHERE subject_class_id = ?')
       .all(cls.id);
     const entryMap = new Map(entries.map((e) => [`${e.student_id}|${e.source_type}|${e.source_id}`, e]));
@@ -1520,13 +1520,13 @@ export function registerAssessmentAndAssignmentRoutes(route) {
     };
   });
 
-  route('GET', '/learn/classes/:id/grades', ({ db, user, params }) => {
-    const cls = requireStudentInClass(db, user, params.id);
-    const entries = db
+  route('GET', '/learn/classes/:id/grades', async ({ db, user, params }) => {
+    const cls = await requireStudentInClass(db, user, params.id);
+    const entries = await db
       .prepare('SELECT * FROM class_gradebook_entries WHERE subject_class_id = ? AND student_id = ? ORDER BY updated_at DESC')
       .all(cls.id, user.id);
 
-    const examAttempts = db
+    const examAttempts = await db
       .prepare(
         `SELECT a.*, e.title AS exam_title, e.scoring_policy
          FROM class_exam_attempts a
@@ -1536,7 +1536,7 @@ export function registerAssessmentAndAssignmentRoutes(route) {
       )
       .all(cls.id, user.id);
 
-    const assignmentSubs = db
+    const assignmentSubs = await db
       .prepare(
         `SELECT s.*, a.title AS assignment_title
          FROM class_assignment_submissions s

@@ -23,7 +23,7 @@ process.env.LMSPLUS_UPLOADS_DIR = path.join(TMP_DIR, `uploads-master-${process.p
 process.env.LMSPLUS_DISABLE_OEMBED = '1';
 
 const { initSchemaAndSeed, invokeApi, invokeApiAsync, db } = await import('../backend/server_fallback.mjs');
-initSchemaAndSeed(true);
+await initSchemaAndSeed(true);
 
 let passed = 0;
 let failed = 0;
@@ -40,14 +40,14 @@ async function t(group, name, fn) {
   }
 }
 
-const login = (identifier) => {
-  const r = invokeApi('POST', '/api/v1/elearning/auth/login', {}, { identifier, password: '123456' });
+const login = async (identifier) => {
+  const r = await invokeApi('POST', '/api/v1/elearning/auth/login', {}, { identifier, password: '123456' });
   assert.equal(r.status, 200, `login ${identifier} failed: ${JSON.stringify(r.body)}`);
   return { authorization: `Bearer ${r.body.data.access_token}` };
 };
 
 const T = '/api/v1/teaching';
-const api = (method, url, headers, body) => invokeApiAsync(method, `${T}${url}`, headers, body);
+const api = async (method, url, headers, body) => await invokeApiAsync(method, `${T}${url}`, headers, body);
 const expectStatus = (r, status, code) => {
   assert.equal(
     r.status,
@@ -62,17 +62,17 @@ const expectStatus = (r, status, code) => {
 };
 
 // Lấy tài khoản có sẵn từ DB seed
-const staffUser = db.prepare("SELECT * FROM users WHERE roles_json LIKE '%\"ACADEMIC_STAFF\"%' LIMIT 1").get();
-const STAFF = login(staffUser ? staffUser.email : 'admin@lmsplus.edu.vn');
-const ADMIN = login('admin@lmsplus.edu.vn');
-const GV = login('thuha.gv@lmsplus.edu.vn');
-const GV2 = login('vankhoa.gv@lmsplus.edu.vn');
-const HS1 = login('HS50101');
-const HS2 = login('HS50102');
-const HS_OTHER = login('HS50201');
-const hs1Row = db.prepare("SELECT * FROM users WHERE code = 'HS50101'").get();
-const hs2Row = db.prepare("SELECT * FROM users WHERE code = 'HS50102'").get();
-const hsOtherRow = db.prepare("SELECT * FROM users WHERE code = 'HS50201'").get();
+const staffUser = await db.prepare("SELECT * FROM users WHERE roles_json LIKE '%\"ACADEMIC_STAFF\"%' LIMIT 1").get();
+const STAFF = await login(staffUser ? staffUser.email : 'admin@lmsplus.edu.vn');
+const ADMIN = await login('admin@lmsplus.edu.vn');
+const GV = await login('thuha.gv@lmsplus.edu.vn');
+const GV2 = await login('vankhoa.gv@lmsplus.edu.vn');
+const HS1 = await login('HS50101');
+const HS2 = await login('HS50102');
+const HS_OTHER = await login('HS50201');
+const hs1Row = await db.prepare("SELECT * FROM users WHERE code = 'HS50101'").get();
+const hs2Row = await db.prepare("SELECT * FROM users WHERE code = 'HS50102'").get();
+const hsOtherRow = await db.prepare("SELECT * FROM users WHERE code = 'HS50201'").get();
 
 console.log('======================================================================');
 console.log(' LMSPLUS — MASTER LMS ARCHITECTURE INTEGRATION SUITE');
@@ -205,14 +205,14 @@ await t('SNAPSHOT', 'Lớp ghim Snapshot v1 không bị ảnh hưởng khi môn 
       code: `SNAP_CRS_${Date.now()}`,
       title: 'Môn Kiểm thử Snapshot',
       subject: 'Tin học',
-      instructor_id: db.prepare("SELECT id FROM users WHERE email = 'thuha.gv@lmsplus.edu.vn'").get().id,
+      instructor_id: (await db.prepare("SELECT id FROM users WHERE email = 'thuha.gv@lmsplus.edu.vn'").get()).id,
     }),
     201
   );
   expectStatus(await api('POST', `/courses/${crs.id}/status`, ADMIN, { status: 'PUBLISHED' }), 200);
   const ch = expectStatus(await api('POST', `/courses/${crs.id}/chapters`, ADMIN, { title: 'Chương 1' }), 201);
   const lesson = expectStatus(await api('POST', `/chapters/${ch.id}/lessons`, ADMIN, { title: 'Bài học Phiên bản V1' }), 201);
-  const revV1 = db.prepare('SELECT working_draft_revision FROM lessons WHERE id = ?').get(lesson.id).working_draft_revision;
+  const revV1 = (await db.prepare('SELECT working_draft_revision FROM lessons WHERE id = ?').get(lesson.id)).working_draft_revision;
   expectStatus(
     await api('PUT', `/lessons/${lesson.id}/content`, ADMIN, {
       base_revision: revV1,
@@ -234,7 +234,7 @@ await t('SNAPSHOT', 'Lớp ghim Snapshot v1 không bị ảnh hưởng khi môn 
       title: 'Lớp chạy Snapshot v1',
       course_id: crs.id,
       course_version_id: v1.id,
-      instructor_id: db.prepare("SELECT id FROM users WHERE email = 'thuha.gv@lmsplus.edu.vn'").get().id,
+      instructor_id: (await db.prepare("SELECT id FROM users WHERE email = 'thuha.gv@lmsplus.edu.vn'").get()).id,
     }),
     201
   );
@@ -242,7 +242,7 @@ await t('SNAPSHOT', 'Lớp ghim Snapshot v1 không bị ảnh hưởng khi môn 
 
   // Chỉnh sửa tiêu đề bài học & phát hành v2
   expectStatus(await api('PATCH', `/lessons/${lesson.id}`, ADMIN, { title: 'Bài học Phiên bản V2 Cập nhật' }), 200);
-  const currentRev = db.prepare('SELECT working_draft_revision FROM lessons WHERE id = ?').get(lesson.id).working_draft_revision;
+  const currentRev = (await db.prepare('SELECT working_draft_revision FROM lessons WHERE id = ?').get(lesson.id)).working_draft_revision;
   expectStatus(
     await api('PUT', `/lessons/${lesson.id}/content`, ADMIN, {
       base_revision: currentRev,
@@ -427,7 +427,7 @@ await t('STRICT-VIDEO', 'Interval Union [0,30]+[20,50]=50, tua lùi giữ nguyê
     await api('POST', '/courses', ADMIN, {
       code: `VID_CRS_${Date.now()}`,
       title: 'Môn Kiểm thử Video STRICT',
-      instructor_id: db.prepare("SELECT id FROM users WHERE email = 'thuha.gv@lmsplus.edu.vn'").get().id,
+      instructor_id: (await db.prepare("SELECT id FROM users WHERE email = 'thuha.gv@lmsplus.edu.vn'").get()).id,
     }),
     201
   );
@@ -437,7 +437,7 @@ await t('STRICT-VIDEO', 'Interval Union [0,30]+[20,50]=50, tua lùi giữ nguyê
     await api('POST', `/chapters/${ch.id}/lessons`, ADMIN, { title: 'Bài Video STRICT', completion_rule: 'VIDEO_AND_QUIZ' }),
     201
   );
-  const revStrict = db.prepare('SELECT working_draft_revision FROM lessons WHERE id = ?').get(les.id).working_draft_revision;
+  const revStrict = (await db.prepare('SELECT working_draft_revision FROM lessons WHERE id = ?').get(les.id)).working_draft_revision;
   expectStatus(
     await api('PUT', `/lessons/${les.id}/content`, ADMIN, {
       base_revision: revStrict,
@@ -464,7 +464,7 @@ await t('STRICT-VIDEO', 'Interval Union [0,30]+[20,50]=50, tua lùi giữ nguyê
       code: `CLS_VID_${Date.now()}`,
       title: 'Lớp kiểm thử STRICT Video',
       course_id: crs.id,
-      instructor_id: db.prepare("SELECT id FROM users WHERE email = 'thuha.gv@lmsplus.edu.vn'").get().id,
+      instructor_id: (await db.prepare("SELECT id FROM users WHERE email = 'thuha.gv@lmsplus.edu.vn'").get()).id,
     }),
     201
   );
@@ -607,7 +607,7 @@ await t('ASSESSMENT', 'Tạo bài kiểm tra hỗn hợp (trắc nghiệm + tự
   const qEssay = started.attempt.questions.find((q) => q.question_type === 'SHORT_ANSWER');
 
   // Lấy đáp án đúng từ ngân hàng
-  const bankOpts = JSON.parse(db.prepare('SELECT options_json FROM question_bank_items WHERE id = ?').get(pickedBankQ.id).options_json || '[]');
+  const bankOpts = JSON.parse((await db.prepare('SELECT options_json FROM question_bank_items WHERE id = ?').get(pickedBankQ.id)).options_json || '[]');
   const rightOpt = bankOpts.find((o) => o.is_correct) || bankOpts[0];
 
   const answers = {
@@ -769,7 +769,7 @@ await t('LEAVE-ATT', 'Duyệt đơn nghỉ sync EXCUSED_ABSENCE nhưng tuyệt �
     200
   );
   assert.equal(rev1.attendance_sync_result, 'CREATED_EXCUSED');
-  const att1 = db.prepare('SELECT attendance_status FROM attendance_records WHERE class_session_id = ? AND student_id = ?').get(sess1.id, hs1Row.id);
+  const att1 = await db.prepare('SELECT attendance_status FROM attendance_records WHERE class_session_id = ? AND student_id = ?').get(sess1.id, hs1Row.id);
   assert.equal(att1.attendance_status, 'EXCUSED_ABSENCE');
 
   // Duyệt lr2 -> KHÔNG được ghi đè PRESENT!
@@ -777,7 +777,7 @@ await t('LEAVE-ATT', 'Duyệt đơn nghỉ sync EXCUSED_ABSENCE nhưng tuyệt �
     await api('POST', `/leave-requests/${lr2.id}/review`, GV, { decision: 'APPROVED', review_note: 'Duyệt lưu vết' }),
     200
   );
-  const att2 = db.prepare('SELECT attendance_status FROM attendance_records WHERE class_session_id = ? AND student_id = ?').get(sess2.id, hs1Row.id);
+  const att2 = await db.prepare('SELECT attendance_status FROM attendance_records WHERE class_session_id = ? AND student_id = ?').get(sess2.id, hs1Row.id);
   assert.equal(att2.attendance_status, 'PRESENT', 'APPROVED leave must NEVER overwrite PRESENT attendance');
 
   // Học viên tự hủy đơn lr3

@@ -149,8 +149,8 @@ export class ZoomProviderAdapter {
     this.log = log || (() => {});
   }
 
-  getConfig() {
-    const row = this.db.prepare("SELECT * FROM virtual_provider_configs WHERE provider = 'ZOOM'").get();
+  async getConfig() {
+    const row = await this.db.prepare("SELECT * FROM virtual_provider_configs WHERE provider = 'ZOOM'").get();
     const creds = row ? decryptJsonCredentials(row.encrypted_credentials_json, this.jwtSecret) : {};
     const accountId = row?.account_id || process.env.ZOOM_ACCOUNT_ID || '';
     const clientId = row?.client_id || process.env.ZOOM_CLIENT_ID || '';
@@ -172,7 +172,7 @@ export class ZoomProviderAdapter {
   }
 
   async getAccessToken() {
-    const cfg = this.getConfig();
+    const cfg = await this.getConfig();
     if (!cfg.hasLiveApiCreds) return null;
     const cached = zoomTokenCache.get(cfg.accountId);
     if (cached && cached.expiresAtMs > Date.now() + 30_000) {
@@ -199,12 +199,12 @@ export class ZoomProviderAdapter {
   }
 
   async validateMeetingConnection() {
-    const cfg = this.getConfig();
+    const cfg = await this.getConfig();
     const now = nowIso();
     if (cfg.hasLiveApiCreds) {
       try {
         await this.getAccessToken();
-        this.db
+        await this.db
           .prepare(
             "UPDATE virtual_provider_configs SET connection_status = 'CONNECTED', last_verified_at = ?, status_message = ? WHERE provider = 'ZOOM'"
           )
@@ -219,7 +219,7 @@ export class ZoomProviderAdapter {
         };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        this.db
+        await this.db
           .prepare(
             "UPDATE virtual_provider_configs SET connection_status = 'ERROR', last_verified_at = ?, status_message = ? WHERE provider = 'ZOOM'"
           )
@@ -238,7 +238,7 @@ export class ZoomProviderAdapter {
     const statusMsg = cfg.clientId
       ? 'Đã lưu thông tin ứng dụng Zoom. Hệ thống sẵn sàng nhận Webhook HMAC-SHA256 và tạo phòng học trong chế độ Zoom Adapter.'
       : 'Chế độ Zoom Sandbox & Webhook HMAC-SHA256 đang bật. Nhập Account ID / Client ID / Client Secret của tài khoản Zoom Pro/Education để gọi trực tiếp Zoom Cloud API.';
-    this.db
+    await this.db
       .prepare(
         "UPDATE virtual_provider_configs SET connection_status = 'SANDBOX_READY', last_verified_at = ?, status_message = ? WHERE provider = 'ZOOM'"
       )
@@ -254,7 +254,7 @@ export class ZoomProviderAdapter {
   }
 
   async createMeeting({ topic, startTimeIso, durationMinutes = 90, passcode, isRecurring = false }) {
-    const cfg = this.getConfig();
+    const cfg = await this.getConfig();
     const cleanPasscode =
       passcode ||
       String(100000 + (crypto.randomBytes(3).readUIntBE(0, 3) % 900000));
@@ -333,7 +333,7 @@ export class ZoomProviderAdapter {
   }
 
   async updateMeeting({ externalMeetingId, topic, startTimeIso, durationMinutes }) {
-    const cfg = this.getConfig();
+    const cfg = await this.getConfig();
     if (cfg.hasLiveApiCreds && externalMeetingId) {
       const token = await this.getAccessToken();
       await fetchWithRetry(`https://api.zoom.us/v2/meetings/${encodeURIComponent(externalMeetingId)}`, {
@@ -353,7 +353,7 @@ export class ZoomProviderAdapter {
   }
 
   async deleteMeeting({ externalMeetingId }) {
-    const cfg = this.getConfig();
+    const cfg = await this.getConfig();
     if (cfg.hasLiveApiCreds && externalMeetingId) {
       const token = await this.getAccessToken();
       await fetchWithRetry(`https://api.zoom.us/v2/meetings/${encodeURIComponent(externalMeetingId)}`, {
@@ -376,7 +376,7 @@ export class ZoomProviderAdapter {
   }
 
   async getMeetingParticipants({ room, session }) {
-    const rows = this.db
+    const rows = await this.db
       .prepare(
         `SELECT * FROM virtual_participant_sessions
          WHERE session_id = ? AND virtual_room_id = ?
@@ -387,11 +387,11 @@ export class ZoomProviderAdapter {
   }
 
   async getParticipantSessions({ room, session }) {
-    return this.getMeetingParticipants({ room, session });
+    return await this.getMeetingParticipants({ room, session });
   }
 
   async getMeetingReport({ room, session }) {
-    const cfg = this.getConfig();
+    const cfg = await this.getConfig();
     if (cfg.hasLiveApiCreds && room.external_meeting_uuid) {
       try {
         const token = await this.getAccessToken();
@@ -441,8 +441,8 @@ export class ZoomProviderAdapter {
    * Xác thực chữ ký Webhook Zoom chuẩn `v0=HMAC_SHA256(secret, "v0:timestamp:rawBody")`
    * và chống tấn công phát lại (replay attack > 5 phút).
    */
-  verifyWebhookSignature({ headers, rawBody }) {
-    const cfg = this.getConfig();
+  async verifyWebhookSignature({ headers, rawBody }) {
+    const cfg = await this.getConfig();
     const signature = String(headers['x-zm-signature'] || '').trim();
     const timestamp = String(headers['x-zm-request-timestamp'] || '').trim();
     if (!signature || !timestamp) {
@@ -467,8 +467,8 @@ export class ZoomProviderAdapter {
     return true;
   }
 
-  createValidationChallengeResponse(plainToken) {
-    const cfg = this.getConfig();
+  async createValidationChallengeResponse(plainToken) {
+    const cfg = await this.getConfig();
     const encryptedToken = crypto
       .createHmac('sha256', cfg.webhookSecret)
       .update(String(plainToken || ''))
@@ -477,8 +477,8 @@ export class ZoomProviderAdapter {
   }
 
   /** Tạo chữ ký hợp lệ cho bộ mô phỏng Webhook nội bộ (phục vụ giảng viên kiểm thử & bộ test tự động). */
-  signWebhookPayload(rawBody, timestampSec = Math.floor(Date.now() / 1000)) {
-    const cfg = this.getConfig();
+  async signWebhookPayload(rawBody, timestampSec = Math.floor(Date.now() / 1000)) {
+    const cfg = await this.getConfig();
     const ts = String(timestampSec);
     const sig = `v0=${crypto.createHmac('sha256', cfg.webhookSecret).update(`v0:${ts}:${rawBody}`).digest('hex')}`;
     return {
@@ -498,8 +498,8 @@ export class GoogleMeetProviderAdapter {
     this.log = log || (() => {});
   }
 
-  getConfig() {
-    const row = this.db.prepare("SELECT * FROM virtual_provider_configs WHERE provider = 'GOOGLE_MEET'").get();
+  async getConfig() {
+    const row = await this.db.prepare("SELECT * FROM virtual_provider_configs WHERE provider = 'GOOGLE_MEET'").get();
     const creds = row ? decryptJsonCredentials(row.encrypted_credentials_json, this.jwtSecret) : {};
     const clientId = row?.client_id || process.env.GOOGLE_MEET_CLIENT_ID || '';
     const clientSecret = creds.client_secret || process.env.GOOGLE_MEET_CLIENT_SECRET || '';
@@ -520,12 +520,12 @@ export class GoogleMeetProviderAdapter {
   }
 
   async validateMeetingConnection() {
-    const cfg = this.getConfig();
+    const cfg = await this.getConfig();
     const now = nowIso();
     const msg = cfg.hasLiveApiCreds
       ? 'Đã kết nối Google Meet REST API v2 (Spaces & ConferenceRecords).'
       : 'Adapter Google Meet sẵn sàng ở chế độ Sandbox. Lưu ý: Để lấy báo cáo ParticipantSessions tự động từ Google Cloud thực tế, cần tài khoản Google Workspace (Teaching & Learning Upgrade / Education Plus / Business Standard trở lên) và quyền OAuth scope meetings.space.readonly.';
-    this.db
+    await this.db
       .prepare(
         "UPDATE virtual_provider_configs SET connection_status = ?, last_verified_at = ?, status_message = ? WHERE provider = 'GOOGLE_MEET'"
       )
@@ -580,7 +580,7 @@ export class GoogleMeetProviderAdapter {
   }
 
   async getMeetingParticipants({ room, session }) {
-    return this.db
+    return await this.db
       .prepare(
         `SELECT * FROM virtual_participant_sessions
          WHERE session_id = ? AND virtual_room_id = ?
@@ -590,7 +590,7 @@ export class GoogleMeetProviderAdapter {
   }
 
   async getParticipantSessions({ room, session }) {
-    return this.getMeetingParticipants({ room, session });
+    return await this.getMeetingParticipants({ room, session });
   }
 
   async getMeetingReport({ room, session }) {

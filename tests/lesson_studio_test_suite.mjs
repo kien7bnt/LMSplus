@@ -27,10 +27,10 @@ process.env.LMSPLUS_DISABLE_OEMBED = '1';
 
 const { invokeApi, invokeApiAsync, createJwtToken, initSchemaAndSeed, db } = await import('../backend/server_fallback.mjs');
 
-initSchemaAndSeed(true);
+await initSchemaAndSeed(true);
 
-function tokenForCode(code) {
-  const r = db.prepare('SELECT * FROM users WHERE code = ?').get(code);
+async function tokenForCode(code) {
+  const r = await db.prepare('SELECT * FROM users WHERE code = ?').get(code);
   assert.ok(r, `Thiếu người dùng seed ${code}`);
   return createJwtToken({
     id: r.id,
@@ -42,18 +42,18 @@ function tokenForCode(code) {
   });
 }
 
-const GV = tokenForCode('GV5001'); // Cô Lê Thu Hà — phụ trách TOAN5-2026 & lớp 5A1
-const GV2 = tokenForCode('GV5002'); // Thầy Đỗ Văn Khoa — phụ trách lớp 5A2 (không có quyền sửa khóa gốc / lớp 5A1)
-const TA = tokenForCode('TG5001'); // Trợ giảng lớp 5A1
-const STAFF = tokenForCode('GVU001'); // Giáo vụ khối 5
-const HS5A1 = tokenForCode('HS50101'); // Học viên lớp 5A1
-const HS5A2 = tokenForCode('HS50201'); // Học viên lớp 5A2 (cùng khóa TOAN5-2026 nhưng khác lớp!)
+const GV = await tokenForCode('GV5001'); // Cô Lê Thu Hà — phụ trách TOAN5-2026 & lớp 5A1
+const GV2 = await tokenForCode('GV5002'); // Thầy Đỗ Văn Khoa — phụ trách lớp 5A2 (không có quyền sửa khóa gốc / lớp 5A1)
+const TA = await tokenForCode('TG5001'); // Trợ giảng lớp 5A1
+const STAFF = await tokenForCode('GVU001'); // Giáo vụ khối 5
+const HS5A1 = await tokenForCode('HS50101'); // Học viên lớp 5A1
+const HS5A2 = await tokenForCode('HS50201'); // Học viên lớp 5A2 (cùng khóa TOAN5-2026 nhưng khác lớp!)
 
 const P = '/api/v1/teaching';
-const api = (m, u, tok, body, extraHeaders = {}) =>
-  invokeApi(m, `${P}${u}`, { ...(tok ? { Authorization: `Bearer ${tok}` } : {}), ...extraHeaders }, body);
-const apiAsync = (m, u, tok, body, extraHeaders = {}) =>
-  invokeApiAsync(m, `${P}${u}`, { ...(tok ? { Authorization: `Bearer ${tok}` } : {}), ...extraHeaders }, body);
+const api = async (m, u, tok, body, extraHeaders = {}) =>
+  await invokeApi(m, `${P}${u}`, { ...(tok ? { Authorization: `Bearer ${tok}` } : {}), ...extraHeaders }, body);
+const apiAsync = async (m, u, tok, body, extraHeaders = {}) =>
+  await invokeApiAsync(m, `${P}${u}`, { ...(tok ? { Authorization: `Bearer ${tok}` } : {}), ...extraHeaders }, body);
 
 let passed = 0;
 let failed = 0;
@@ -80,8 +80,8 @@ console.log(' LMSPLUS — LESSON STUDIO & VIDEO QUIZ INTEGRATION TEST SUITE');
 console.log('======================================================================');
 
 // ---------------------------------------------------------------- 1. Mode A Bootstrap & Duplication
-await t('STUDIO MODE A', 'Tải dữ liệu Lesson Studio khóa học gốc kèm đa lớp & cảnh báo hoàn thiện', () => {
-  const d = expectStatus(api('GET', '/studio/courses/crs_toan5', GV), 200);
+await t('STUDIO MODE A', 'Tải dữ liệu Lesson Studio khóa học gốc kèm đa lớp & cảnh báo hoàn thiện', async () => {
+  const d = expectStatus(await api('GET', '/studio/courses/crs_toan5', GV), 200);
   assert.equal(d.mode, 'COURSE');
   assert.equal(d.course.code, 'TOAN5-2026');
   assert.ok(d.question_bank_count >= 4, 'Seed ngân hàng câu hỏi Toán 5 phải có ít nhất 4 câu');
@@ -91,14 +91,14 @@ await t('STUDIO MODE A', 'Tải dữ liệu Lesson Studio khóa học gốc kèm
   assert.ok(les101.video_markers_count >= 3, 'les_101 seed phải có sẵn 3 mốc câu hỏi tương tác trên video');
 });
 
-await t('STUDIO MODE A', 'Chặn giảng viên ngoài phạm vi, kiểm soát quyền xuất bản khóa gốc & chặn học viên mở Studio', () => {
+await t('STUDIO MODE A', 'Chặn giảng viên ngoài phạm vi, kiểm soát quyền xuất bản khóa gốc & chặn học viên mở Studio', async () => {
   // GV2 phụ trách lớp 5A2 (dùng crs_toan5) nên KHÔNG phải chủ khóa học gốc -> không có quyền xuất bản / nhân bản chương của khóa gốc
-  const gv2Studio = expectStatus(api('GET', '/studio/courses/crs_toan5', GV2), 200);
+  const gv2Studio = expectStatus(await api('GET', '/studio/courses/crs_toan5', GV2), 200);
   assert.equal(gv2Studio.capabilities.can_manage, false);
   assert.equal(gv2Studio.capabilities.can_publish, false);
-  expectStatus(api('POST', '/lessons/les_101/publish', GV2, {}), 403, 'PUBLISH_FORBIDDEN');
+  expectStatus(await api('POST', '/lessons/les_101/publish', GV2, {}), 403, 'PUBLISH_FORBIDDEN');
   // GV2 không được mở Lesson Studio của lớp 5A1 (thuộc GV1)
-  expectStatus(api('GET', '/studio/classes/sc_toan5_5a1', GV2), 403, 'CLASS_ACCESS_DENIED');
+  expectStatus(await api('GET', '/studio/classes/sc_toan5_5a1', GV2), 403, 'CLASS_ACCESS_DENIED');
   // Một giảng viên hoàn toàn ngoài phạm vi (chưa được phân công lớp nào của crs_toan5) bị chặn 403 COURSE_ACCESS_DENIED
   const outsiderToken = createJwtToken({
     id: 'gv_outsider_999',
@@ -108,19 +108,19 @@ await t('STUDIO MODE A', 'Chặn giảng viên ngoài phạm vi, kiểm soát qu
     roles: ['INSTRUCTOR'],
     department_id: 'khoi_9',
   });
-  expectStatus(api('GET', '/studio/courses/crs_toan5', outsiderToken), 403, 'COURSE_ACCESS_DENIED');
+  expectStatus(await api('GET', '/studio/courses/crs_toan5', outsiderToken), 403, 'COURSE_ACCESS_DENIED');
   // Học viên bị chặn hoàn toàn khỏi Lesson Studio
-  expectStatus(api('GET', '/studio/courses/crs_toan5', HS5A1), 403, 'COURSE_ACCESS_DENIED');
-  expectStatus(api('GET', '/studio/classes/sc_toan5_5a1', HS5A1), 403, 'CLASS_ACCESS_DENIED');
+  expectStatus(await api('GET', '/studio/courses/crs_toan5', HS5A1), 403, 'COURSE_ACCESS_DENIED');
+  expectStatus(await api('GET', '/studio/classes/sc_toan5_5a1', HS5A1), 403, 'CLASS_ACCESS_DENIED');
 });
 
 let studioCourseId;
 let studioChapterId;
 let studioLessonId;
 
-await t('STUDIO MODE A', 'Tạo khóa học mới, thêm chương/bài và nhân bản chương + bài học (deep copy)', () => {
+await t('STUDIO MODE A', 'Tạo khóa học mới, thêm chương/bài và nhân bản chương + bài học (deep copy)', async () => {
   studioCourseId = expectStatus(
-    api('POST', '/courses', GV, {
+    await api('POST', '/courses', GV, {
       code: 'STUDIO-2026',
       title: 'Khóa học Kiểm thử Lesson Studio',
       subject: 'Toán học',
@@ -130,12 +130,12 @@ await t('STUDIO MODE A', 'Tạo khóa học mới, thêm chương/bài và nhân
   ).id;
 
   studioChapterId = expectStatus(
-    api('POST', `/courses/${studioCourseId}/chapters`, GV, { title: 'Chương 1: Khái niệm nền tảng' }),
+    await api('POST', `/courses/${studioCourseId}/chapters`, GV, { title: 'Chương 1: Khái niệm nền tảng' }),
     201
   ).id;
 
   studioLessonId = expectStatus(
-    api('POST', `/chapters/${studioChapterId}/lessons`, GV, {
+    await api('POST', `/chapters/${studioChapterId}/lessons`, GV, {
       title: 'Bài 1.1: Bài giảng tương tác toàn diện',
       duration_minutes: 25,
       completion_rule: 'VIDEO_AND_QUIZ',
@@ -148,7 +148,7 @@ await t('STUDIO MODE A', 'Tạo khóa học mới, thêm chương/bài và nhân
   // Lưu thử 1 khối và 1 mốc quiz rồi nhân bản bài học & chương
   const vidBlkId = 'blk_studio_vid_main';
   const put1 = expectStatus(
-    api('PUT', `/lessons/${studioLessonId}/content`, GV, {
+    await api('PUT', `/lessons/${studioLessonId}/content`, GV, {
       base_revision: 1,
       blocks: [
         {
@@ -168,7 +168,7 @@ await t('STUDIO MODE A', 'Tạo khóa học mới, thêm chương/bài và nhân
   assert.equal(put1.revision, 2);
 
   expectStatus(
-    api('PUT', `/lessons/${studioLessonId}/video-markers`, GV, {
+    await api('PUT', `/lessons/${studioLessonId}/video-markers`, GV, {
       markers: [
         {
           block_id: vidBlkId,
@@ -187,8 +187,8 @@ await t('STUDIO MODE A', 'Tạo khóa học mới, thêm chương/bài và nhân
     200
   );
 
-  const dupLesson = expectStatus(api('POST', `/lessons/${studioLessonId}/duplicate`, GV), 201);
-  const dupLessonDetail = expectStatus(api('GET', `/lessons/${dupLesson.id}`, GV), 200);
+  const dupLesson = expectStatus(await api('POST', `/lessons/${studioLessonId}/duplicate`, GV), 201);
+  const dupLessonDetail = expectStatus(await api('GET', `/lessons/${dupLesson.id}`, GV), 200);
   assert.equal(dupLessonDetail.blocks.length, 1);
   assert.notEqual(dupLessonDetail.blocks[0].id, vidBlkId, 'Khối nhân bản phải mang ID mới');
   assert.equal(dupLessonDetail.video_markers.length, 1);
@@ -198,7 +198,7 @@ await t('STUDIO MODE A', 'Tạo khóa học mới, thêm chương/bài và nhân
     'Mốc quiz nhân bản phải trỏ sang ID khối video mới'
   );
 
-  const dupChapter = expectStatus(api('POST', `/chapters/${studioChapterId}/duplicate`, GV), 201);
+  const dupChapter = expectStatus(await api('POST', `/chapters/${studioChapterId}/duplicate`, GV), 201);
   assert.equal(dupChapter.outline.length, 2, 'Nhân bản chương tạo chương thứ 2 trong khóa học');
 });
 
@@ -207,10 +207,10 @@ let uploadedVideoResId;
 let uploadedVideoStreamUrl;
 let uploadedPdfResId;
 
-await t('VIDEO UPLOAD', 'Tải video theo mảnh (chunked) + Hủy tải lên giữa chừng xóa sạch tệp tạm .part', () => {
+await t('VIDEO UPLOAD', 'Tải video theo mảnh (chunked) + Hủy tải lên giữa chừng xóa sạch tệp tạm .part', async () => {
   const fakeBytes = crypto.randomBytes(1500);
   const initRes = expectStatus(
-    api('POST', '/media/videos/init', GV, {
+    await api('POST', '/media/videos/init', GV, {
       course_id: studioCourseId,
       title: 'Video sẽ bị hủy',
       file_name: 'bai-giang-nhap.mp4',
@@ -222,7 +222,7 @@ await t('VIDEO UPLOAD', 'Tải video theo mảnh (chunked) + Hủy tải lên gi
   );
 
   const ch0 = expectStatus(
-    api('PUT', `/media/videos/${initRes.upload_id}/chunk`, GV, {
+    await api('PUT', `/media/videos/${initRes.upload_id}/chunk`, GV, {
       chunk_index: 0,
       data_base64: fakeBytes.toString('base64'),
     }),
@@ -231,26 +231,26 @@ await t('VIDEO UPLOAD', 'Tải video theo mảnh (chunked) + Hủy tải lên gi
   assert.equal(ch0.progress_pct, 50);
 
   // Kiểm tra tệp tạm tồn tại trước khi hủy và bị xóa sau khi hủy
-  const sessionRow = db.prepare('SELECT temp_path FROM video_upload_sessions WHERE id = ?').get(initRes.upload_id);
+  const sessionRow = await db.prepare('SELECT temp_path FROM video_upload_sessions WHERE id = ?').get(initRes.upload_id);
   const partFullPath = sessionRow.temp_path;
   assert.equal(fs.existsSync(partFullPath), true, 'Tệp .part phải tồn tại khi đang tải lên');
 
-  const cancelled = expectStatus(api('DELETE', `/media/videos/${initRes.upload_id}`, GV), 200);
+  const cancelled = expectStatus(await api('DELETE', `/media/videos/${initRes.upload_id}`, GV), 200);
   assert.equal(cancelled.status, 'CANCELLED');
   assert.equal(fs.existsSync(partFullPath), false, 'Hủy tải lên phải dọn sạch tệp .part trên ổ đĩa');
 
   // Cố hoàn tất phiên đã hủy phải bị từ chối 409
-  expectStatus(api('POST', `/media/videos/${initRes.upload_id}/complete`, GV, {}), 409, 'UPLOAD_NOT_ACTIVE');
+  expectStatus(await api('POST', `/media/videos/${initRes.upload_id}/complete`, GV, {}), 409, 'UPLOAD_NOT_ACTIVE');
 });
 
-await t('VIDEO UPLOAD & RANGE', 'Hoàn tất tải video nhiều mảnh & phát qua HTTP Range (206 Partial Content + signed st)', () => {
+await t('VIDEO UPLOAD & RANGE', 'Hoàn tất tải video nhiều mảnh & phát qua HTTP Range (206 Partial Content + signed st)', async () => {
   // Tạo buffer giả lập tệp MP4 2048 bytes (có ftyp header chuẩn)
   const totalBuf = Buffer.alloc(2048);
   Buffer.from([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x6d, 0x70, 0x34, 0x32]).copy(totalBuf, 0);
   for (let i = 12; i < totalBuf.length; i++) totalBuf[i] = i % 251;
 
   const init = expectStatus(
-    api('POST', '/media/videos/init', GV, {
+    await api('POST', '/media/videos/init', GV, {
       course_id: studioCourseId,
       title: 'Video bài giảng Toán tải lên máy chủ',
       file_name: 'toan5-phan-so.mp4',
@@ -262,14 +262,14 @@ await t('VIDEO UPLOAD & RANGE', 'Hoàn tất tải video nhiều mảnh & phát 
   );
 
   expectStatus(
-    api('PUT', `/media/videos/${init.upload_id}/chunk`, GV, {
+    await api('PUT', `/media/videos/${init.upload_id}/chunk`, GV, {
       chunk_index: 0,
       data_base64: totalBuf.subarray(0, 1024).toString('base64'),
     }),
     200
   );
   expectStatus(
-    api('PUT', `/media/videos/${init.upload_id}/chunk`, GV, {
+    await api('PUT', `/media/videos/${init.upload_id}/chunk`, GV, {
       chunk_index: 1,
       data_base64: totalBuf.subarray(1024, 2048).toString('base64'),
     }),
@@ -277,7 +277,7 @@ await t('VIDEO UPLOAD & RANGE', 'Hoàn tất tải video nhiều mảnh & phát 
   );
 
   const done = expectStatus(
-    api('POST', `/media/videos/${init.upload_id}/complete`, GV, { duration_seconds: 180 }),
+    await api('POST', `/media/videos/${init.upload_id}/complete`, GV, { duration_seconds: 180 }),
     201
   );
   assert.equal(done.resource_type, 'VIDEO');
@@ -288,7 +288,7 @@ await t('VIDEO UPLOAD & RANGE', 'Hoàn tất tải video nhiều mảnh & phát 
   uploadedVideoStreamUrl = done.stream_url;
 
   // Thẻ <video> trình duyệt gửi GET kèm Range header mà KHÔNG có Authorization header (chỉ có ?st=...)
-  const rangeRes = invokeApi('GET', uploadedVideoStreamUrl, { Range: 'bytes=0-511' });
+  const rangeRes = await invokeApi('GET', uploadedVideoStreamUrl, { Range: 'bytes=0-511' });
   assert.equal(rangeRes.status, 206, 'Phải phản hồi 206 Partial Content khi có Range header');
   assert.equal(rangeRes.headers['Accept-Ranges'], 'bytes');
   assert.equal(rangeRes.headers['Content-Range'], 'bytes 0-511/2048');
@@ -297,19 +297,19 @@ await t('VIDEO UPLOAD & RANGE', 'Hoàn tất tải video nhiều mảnh & phát 
   assert.equal(Buffer.compare(rangeRes.rawBuffer, totalBuf.subarray(0, 512)), 0, 'Dữ liệu nhị phân mảnh 0-511 phải khớp tuyệt đối');
 
   // Tua tới giữa video (bytes=1000-1499)
-  const seekRes = invokeApi('GET', uploadedVideoStreamUrl, { Range: 'bytes=1000-1499' });
+  const seekRes = await invokeApi('GET', uploadedVideoStreamUrl, { Range: 'bytes=1000-1499' });
   assert.equal(seekRes.status, 206);
   assert.equal(seekRes.headers['Content-Range'], 'bytes 1000-1499/2048');
   assert.equal(Buffer.compare(seekRes.rawBuffer, totalBuf.subarray(1000, 1500)), 0);
 
   // Chữ ký st bị giả mạo -> 401
-  const tampered = invokeApi('GET', `${uploadedVideoStreamUrl}tampered`, { Range: 'bytes=0-127' });
+  const tampered = await invokeApi('GET', `${uploadedVideoStreamUrl}tampered`, { Range: 'bytes=0-127' });
   assert.equal(tampered.status, 401);
 });
 
 await t('PDF & VIDEO LINK', 'Tải tài liệu PDF có kiểm tra magic header %PDF- và xác thực nguồn link video', async () => {
   expectStatus(
-    api('POST', '/media/pdfs', GV, {
+    await api('POST', '/media/pdfs', GV, {
       course_id: studioCourseId,
       title: 'Tệp giả mạo PDF',
       file_name: 'fake.pdf',
@@ -321,7 +321,7 @@ await t('PDF & VIDEO LINK', 'Tải tài liệu PDF có kiểm tra magic header %
 
   const validPdf = Buffer.from('%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\n%%EOF\n', 'utf8');
   const pdfDone = expectStatus(
-    api('POST', '/media/pdfs', GV, {
+    await api('POST', '/media/pdfs', GV, {
       course_id: studioCourseId,
       title: 'Phiếu bài tập Toán 5 (PDF)',
       file_name: 'phieu-bai-tap.pdf',
@@ -357,9 +357,9 @@ await t('PDF & VIDEO LINK', 'Tải tài liệu PDF có kiểm tra magic header %
 let qbSingleId;
 let qbMultiId;
 
-await t('QUESTION BANK', 'CRUD Ngân hàng câu hỏi với đủ 5 loại câu hỏi chuẩn', () => {
+await t('QUESTION BANK', 'CRUD Ngân hàng câu hỏi với đủ 5 loại câu hỏi chuẩn', async () => {
   qbSingleId = expectStatus(
-    api('POST', `/courses/${studioCourseId}/question-bank`, GV, {
+    await api('POST', `/courses/${studioCourseId}/question-bank`, GV, {
       question_type: 'SINGLE_CHOICE',
       prompt: 'Kết quả của 3/4 + 1/4 là bao nhiêu?',
       options: [
@@ -377,7 +377,7 @@ await t('QUESTION BANK', 'CRUD Ngân hàng câu hỏi với đủ 5 loại câu 
   ).id;
 
   qbMultiId = expectStatus(
-    api('POST', `/courses/${studioCourseId}/question-bank`, GV, {
+    await api('POST', `/courses/${studioCourseId}/question-bank`, GV, {
       question_type: 'MULTIPLE_CHOICE',
       prompt: 'Chọn tất cả các phân số bằng 1/2:',
       options: [
@@ -393,7 +393,7 @@ await t('QUESTION BANK', 'CRUD Ngân hàng câu hỏi với đủ 5 loại câu 
   ).id;
 
   const tfId = expectStatus(
-    api('POST', `/courses/${studioCourseId}/question-bank`, GV, {
+    await api('POST', `/courses/${studioCourseId}/question-bank`, GV, {
       question_type: 'TRUE_FALSE',
       prompt: 'Mọi phân số có tử số nhỏ hơn mẫu số đều nhỏ hơn 1.',
       answer_key: { value: true },
@@ -403,7 +403,7 @@ await t('QUESTION BANK', 'CRUD Ngân hàng câu hỏi với đủ 5 loại câu 
   ).id;
 
   expectStatus(
-    api('POST', `/courses/${studioCourseId}/question-bank`, GV, {
+    await api('POST', `/courses/${studioCourseId}/question-bank`, GV, {
       question_type: 'FILL_BLANK',
       prompt: 'Điền số thích hợp: 0,25 viết dưới dạng phân số tối giản là ___',
       answer_key: { accepted: ['1/4', '1 / 4'], case_sensitive: false },
@@ -413,7 +413,7 @@ await t('QUESTION BANK', 'CRUD Ngân hàng câu hỏi với đủ 5 loại câu 
   );
 
   expectStatus(
-    api('POST', `/courses/${studioCourseId}/question-bank`, GV, {
+    await api('POST', `/courses/${studioCourseId}/question-bank`, GV, {
       question_type: 'SHORT_ANSWER',
       prompt: 'Nêu quy tắc cộng hai phân số khác mẫu số.',
       answer_key: { keywords: ['quy đồng', 'mẫu số'], sample_answer: 'Quy đồng mẫu số hai phân số rồi cộng tử số.' },
@@ -424,13 +424,13 @@ await t('QUESTION BANK', 'CRUD Ngân hàng câu hỏi với đủ 5 loại câu 
 
   // Cập nhật và xóa mềm 1 câu
   const patched = expectStatus(
-    api('PATCH', `/question-bank/${tfId}`, GV, { points: 1.5, difficulty: 'HARD' }),
+    await api('PATCH', `/question-bank/${tfId}`, GV, { points: 1.5, difficulty: 'HARD' }),
     200
   );
   assert.equal(patched.points, 1.5);
-  expectStatus(api('DELETE', `/question-bank/${tfId}`, GV), 200);
+  expectStatus(await api('DELETE', `/question-bank/${tfId}`, GV), 200);
 
-  const list = expectStatus(api('GET', `/courses/${studioCourseId}/question-bank`, GV), 200);
+  const list = expectStatus(await api('GET', `/courses/${studioCourseId}/question-bank`, GV), 200);
   assert.equal(list.items.length, 4, 'Còn 4 câu hỏi hoạt động sau khi xóa mềm 1 câu');
 });
 
@@ -438,10 +438,10 @@ await t('QUESTION BANK', 'CRUD Ngân hàng câu hỏi với đủ 5 loại câu 
 const mainVideoBlockId = 'blk_uploaded_video_01';
 const mainQuizBlockId = 'blk_standalone_quiz_01';
 
-await t('15 BLOCK TYPES & SECURITY', 'Lưu trọn vẹn 15 loại khối chuẩn + chặn nhúng domain lạ + khôi phục phiên bản', () => {
+await t('15 BLOCK TYPES & SECURITY', 'Lưu trọn vẹn 15 loại khối chuẩn + chặn nhúng domain lạ + khôi phục phiên bản', async () => {
   // Đính kèm thêm 1 tệp tài liệu thường cho khối file
   const fileResId = expectStatus(
-    api('POST', `/courses/${studioCourseId}/resources`, GV, {
+    await api('POST', `/courses/${studioCourseId}/resources`, GV, {
       title: 'Bảng công thức tóm tắt',
       resource_type: 'FILE',
       file_name: 'cong-thuc.txt',
@@ -450,11 +450,11 @@ await t('15 BLOCK TYPES & SECURITY', 'Lưu trọn vẹn 15 loại khối chuẩn
     201
   ).id;
 
-  const cur = expectStatus(api('GET', `/lessons/${studioLessonId}`, GV), 200);
+  const cur = expectStatus(await api('GET', `/lessons/${studioLessonId}`, GV), 200);
 
   // Thử nhúng domain không nằm trong allowlist -> phải bị chặn 422
   expectStatus(
-    api('PUT', `/lessons/${studioLessonId}/content`, GV, {
+    await api('PUT', `/lessons/${studioLessonId}/content`, GV, {
       base_revision: cur.revision,
       blocks: [
         {
@@ -520,14 +520,14 @@ await t('15 BLOCK TYPES & SECURITY', 'Lưu trọn vẹn 15 loại khối chuẩn
   ];
 
   const saved = expectStatus(
-    api('PUT', `/lessons/${studioLessonId}/content`, GV, { base_revision: cur.revision, blocks: blocks15 }),
+    await api('PUT', `/lessons/${studioLessonId}/content`, GV, { base_revision: cur.revision, blocks: blocks15 }),
     200
   );
   assert.equal(saved.blocks.length, 15, 'Phải lưu thành công trọn vẹn 15 khối nội dung chuẩn');
 
   // Gắn 5 mốc tương tác trên video (cố tình truyền không theo thứ tự thời gian để kiểm tra sắp xếp)
   const savedMarkers = expectStatus(
-    api('PUT', `/lessons/${studioLessonId}/video-markers`, GV, {
+    await api('PUT', `/lessons/${studioLessonId}/video-markers`, GV, {
       block_id: mainVideoBlockId,
       markers: [
         {
@@ -605,39 +605,39 @@ await t('15 BLOCK TYPES & SECURITY', 'Lưu trọn vẹn 15 loại khối chuẩn
 
   // Xuất bản v1 kèm ghi chú phiên bản -> sửa nháp tạm -> khôi phục lại v1
   const pub1 = expectStatus(
-    api('POST', `/lessons/${studioLessonId}/publish`, GV, { change_note: 'Bản xuất bản chuẩn đủ 15 khối và 5 mốc video' }),
+    await api('POST', `/lessons/${studioLessonId}/publish`, GV, { change_note: 'Bản xuất bản chuẩn đủ 15 khối và 5 mốc video' }),
     200
   );
   assert.equal(pub1.published_version, 1);
 
   expectStatus(
-    api('PUT', `/lessons/${studioLessonId}/content`, GV, {
+    await api('PUT', `/lessons/${studioLessonId}/content`, GV, {
       base_revision: saved.revision,
       blocks: [{ block_type: 'heading', content: { level: 2, text: 'Bản nháp tạm thời' } }],
     }),
     200
   );
 
-  const versions = expectStatus(api('GET', `/lessons/${studioLessonId}/versions`, GV), 200);
+  const versions = expectStatus(await api('GET', `/lessons/${studioLessonId}/versions`, GV), 200);
   assert.equal(versions.items.length, 1);
   assert.equal(versions.items[0].blocks_count, 15);
   assert.equal(versions.items[0].markers_count, 5);
 
-  const restored = expectStatus(api('POST', `/lessons/${studioLessonId}/versions/1/restore`, GV), 200);
+  const restored = expectStatus(await api('POST', `/lessons/${studioLessonId}/versions/1/restore`, GV), 200);
   assert.equal(restored.blocks.length, 15, 'Khôi phục phiên bản v1 phải trả lại đúng 15 khối nội dung');
   assert.equal(restored.video_markers.length, 5, 'Khôi phục phiên bản v1 phải trả lại đúng 5 mốc quiz video');
 
   // Xuất bản khóa học để mở cho lớp học
-  expectStatus(api('POST', `/courses/${studioCourseId}/status`, GV, { status: 'PUBLISHED' }), 200);
+  expectStatus(await api('POST', `/courses/${studioCourseId}/status`, GV, { status: 'PUBLISHED' }), 200);
 });
 
 // ---------------------------------------------------------------- 5. Interactive Video Quiz Learner Flow & Edge Cases
 let testClassId;
 
-await t('VIDEO QUIZ LEARNER', 'Ẩn tuyệt đối đáp án phía học viên, lưu Resume Playback, chống gửi trùng idempotency_key & giới hạn số lần thử', () => {
+await t('VIDEO QUIZ LEARNER', 'Ẩn tuyệt đối đáp án phía học viên, lưu Resume Playback, chống gửi trùng idempotency_key & giới hạn số lần thử', async () => {
   const GA = STAFF; // Giáo vụ khoa
   testClassId = expectStatus(
-    api('POST', '/classes', GV, {
+    await api('POST', '/classes', GV, {
       code: 'STUDIO-5A1',
       title: 'Lớp Thực nghiệm Video Quiz 5A1',
       course_id: studioCourseId,
@@ -646,10 +646,10 @@ await t('VIDEO QUIZ LEARNER', 'Ẩn tuyệt đối đáp án phía học viên, 
     201
   ).id;
 
-  expectStatus(api('POST', `/classes/${testClassId}/students`, GA, { students: ['HS50101'] }), 200);
+  expectStatus(await api('POST', `/classes/${testClassId}/students`, GA, { students: ['HS50101'] }), 200);
 
   // 1. Học viên mở bài học: kiểm tra KHÔNG lộ bất kỳ answer_key hay đáp án đúng nào!
-  const view1 = expectStatus(api('GET', `/learn/classes/${testClassId}/lessons/${studioLessonId}`, HS5A1), 200);
+  const view1 = expectStatus(await api('GET', `/learn/classes/${testClassId}/lessons/${studioLessonId}`, HS5A1), 200);
   assert.equal(view1.blocks.length, 15);
   assert.equal(view1.video_markers.length, 5);
   for (const m of view1.video_markers) {
@@ -664,7 +664,7 @@ await t('VIDEO QUIZ LEARNER', 'Ẩn tuyệt đối đáp án phía học viên, 
 
   // 2. Lưu tiến độ xem video (Resume Playback) & kiểm tra tải lại vẫn giữ nguyên vị trí
   const vp1 = expectStatus(
-    api('PUT', `/learn/classes/${testClassId}/lessons/${studioLessonId}/video-progress`, HS5A1, {
+    await api('PUT', `/learn/classes/${testClassId}/lessons/${studioLessonId}/video-progress`, HS5A1, {
       block_id: mainVideoBlockId,
       last_position_sec: 48.5,
       watched_seconds: 50,
@@ -675,12 +675,12 @@ await t('VIDEO QUIZ LEARNER', 'Ẩn tuyệt đối đáp án phía học viên, 
   assert.equal(vp1.last_position_sec, 48.5);
   assert.equal(vp1.watch_pct, 28);
 
-  const viewReload = expectStatus(api('GET', `/learn/classes/${testClassId}/lessons/${studioLessonId}`, HS5A1), 200);
+  const viewReload = expectStatus(await api('GET', `/learn/classes/${testClassId}/lessons/${studioLessonId}`, HS5A1), 200);
   assert.equal(viewReload.video_progress[mainVideoBlockId].last_position_sec, 48.5, 'Tải lại trang phải nhớ vị trí video 48.5s');
 
   // 3. Thử hoàn thành bài học khi mới xem 28% (< 80%) -> bị chặn 422
   expectStatus(
-    api('POST', `/learn/classes/${testClassId}/lessons/${studioLessonId}/complete`, HS5A1, {}),
+    await api('POST', `/learn/classes/${testClassId}/lessons/${studioLessonId}/complete`, HS5A1, {}),
     422,
     'COMPLETION_CRITERIA_NOT_MET'
   );
@@ -688,7 +688,7 @@ await t('VIDEO QUIZ LEARNER', 'Ẩn tuyệt đối đáp án phía học viên, 
   // 4. Nộp sai lần 1 ở mốc mkr_sc (max_attempts = 2) -> can_retry = true, chưa lộ correct_answer
   const idem1 = 'idem-mkr-sc-attempt-1';
   const subWrong1 = expectStatus(
-    api('POST', `/learn/classes/${testClassId}/lessons/${studioLessonId}/video-markers/mkr_sc/submit`, HS5A1, {
+    await api('POST', `/learn/classes/${testClassId}/lessons/${studioLessonId}/video-markers/mkr_sc/submit`, HS5A1, {
       idempotency_key: idem1,
       response: { option_id: 'b' },
     }),
@@ -702,7 +702,7 @@ await t('VIDEO QUIZ LEARNER', 'Ẩn tuyệt đối đáp án phía học viên, 
 
   // 5. Gửi trùng cùng idempotency_key (mô phỏng sự kiện timeupdate/click kép) -> deduplicated = true, không tốn lượt 2!
   const subDup = expectStatus(
-    api('POST', `/learn/classes/${testClassId}/lessons/${studioLessonId}/video-markers/mkr_sc/submit`, HS5A1, {
+    await api('POST', `/learn/classes/${testClassId}/lessons/${studioLessonId}/video-markers/mkr_sc/submit`, HS5A1, {
       idempotency_key: idem1,
       response: { option_id: 'b' },
     }),
@@ -713,7 +713,7 @@ await t('VIDEO QUIZ LEARNER', 'Ẩn tuyệt đối đáp án phía học viên, 
 
   // 6. Nộp sai lần 2 (hết lượt thử max_attempts = 2) -> can_retry = false, tiết lộ correct_answer, mở khóa can_continue = true; nộp lần 3 -> 409!
   const subWrong2 = expectStatus(
-    api('POST', `/learn/classes/${testClassId}/lessons/${studioLessonId}/video-markers/mkr_sc/submit`, HS5A1, {
+    await api('POST', `/learn/classes/${testClassId}/lessons/${studioLessonId}/video-markers/mkr_sc/submit`, HS5A1, {
       idempotency_key: 'idem-mkr-sc-attempt-2',
       response: { option_id: 'c' },
     }),
@@ -725,7 +725,7 @@ await t('VIDEO QUIZ LEARNER', 'Ẩn tuyệt đối đáp án phía học viên, 
   assert.deepEqual(subWrong2.correct_answer, { correct_option_ids: ['a'] });
 
   expectStatus(
-    api('POST', `/learn/classes/${testClassId}/lessons/${studioLessonId}/video-markers/mkr_sc/submit`, HS5A1, {
+    await api('POST', `/learn/classes/${testClassId}/lessons/${studioLessonId}/video-markers/mkr_sc/submit`, HS5A1, {
       response: { option_id: 'a' },
     }),
     409,
@@ -734,7 +734,7 @@ await t('VIDEO QUIZ LEARNER', 'Ẩn tuyệt đối đáp án phía học viên, 
 
   // 7. Chấm điểm MULTIPLE_CHOICE, FILL_BLANK và SHORT_ANSWER
   const mcOk = expectStatus(
-    api('POST', `/learn/classes/${testClassId}/lessons/${studioLessonId}/video-markers/mkr_mc/submit`, HS5A1, {
+    await api('POST', `/learn/classes/${testClassId}/lessons/${studioLessonId}/video-markers/mkr_mc/submit`, HS5A1, {
       response: { option_ids: ['c', 'a'] },
     }),
     200
@@ -743,7 +743,7 @@ await t('VIDEO QUIZ LEARNER', 'Ẩn tuyệt đối đáp án phía học viên, 
   assert.equal(mcOk.earned_points, 2);
 
   const fillOk = expectStatus(
-    api('POST', `/learn/classes/${testClassId}/lessons/${studioLessonId}/video-markers/mkr_fill/submit`, HS5A1, {
+    await api('POST', `/learn/classes/${testClassId}/lessons/${studioLessonId}/video-markers/mkr_fill/submit`, HS5A1, {
       response: { text: ' 2/2 ' },
     }),
     200
@@ -751,7 +751,7 @@ await t('VIDEO QUIZ LEARNER', 'Ẩn tuyệt đối đáp án phía học viên, 
   assert.equal(fillOk.is_correct, true);
 
   const shortOk = expectStatus(
-    api('POST', `/learn/classes/${testClassId}/lessons/${studioLessonId}/video-markers/mkr_short/submit`, HS5A1, {
+    await api('POST', `/learn/classes/${testClassId}/lessons/${studioLessonId}/video-markers/mkr_short/submit`, HS5A1, {
       response: { text: 'Ta chia cả tử và mẫu cho ước chung lớn nhất mà chúng cùng chia hết.' },
     }),
     200
@@ -760,7 +760,7 @@ await t('VIDEO QUIZ LEARNER', 'Ẩn tuyệt đối đáp án phía học viên, 
 
   // 8. Cập nhật xem video đạt 90% (>= 80%), thử hoàn thành khi chưa nộp Quiz độc lập bắt buộc -> 422; nộp Quiz -> Hoàn thành 200!
   expectStatus(
-    api('PUT', `/learn/classes/${testClassId}/lessons/${studioLessonId}/video-progress`, HS5A1, {
+    await api('PUT', `/learn/classes/${testClassId}/lessons/${studioLessonId}/video-progress`, HS5A1, {
       block_id: mainVideoBlockId,
       last_position_sec: 165,
       watched_seconds: 165,
@@ -770,13 +770,13 @@ await t('VIDEO QUIZ LEARNER', 'Ẩn tuyệt đối đáp án phía học viên, 
   );
 
   expectStatus(
-    api('POST', `/learn/classes/${testClassId}/lessons/${studioLessonId}/complete`, HS5A1, {}),
+    await api('POST', `/learn/classes/${testClassId}/lessons/${studioLessonId}/complete`, HS5A1, {}),
     422,
     'COMPLETION_CRITERIA_NOT_MET'
   );
 
   const quizSub = expectStatus(
-    api('POST', `/learn/classes/${testClassId}/lessons/${studioLessonId}/quizzes/${mainQuizBlockId}/submit`, HS5A1, {
+    await api('POST', `/learn/classes/${testClassId}/lessons/${studioLessonId}/quizzes/${mainQuizBlockId}/submit`, HS5A1, {
       responses: { sq_1: { option_id: 'a' } },
     }),
     200
@@ -785,14 +785,14 @@ await t('VIDEO QUIZ LEARNER', 'Ẩn tuyệt đối đáp án phía học viên, 
   assert.equal(quizSub.score_pct, 100);
 
   const completed = expectStatus(
-    api('POST', `/learn/classes/${testClassId}/lessons/${studioLessonId}/complete`, HS5A1, {}),
+    await api('POST', `/learn/classes/${testClassId}/lessons/${studioLessonId}/complete`, HS5A1, {}),
     200
   );
   assert.equal(completed.progress_status, 'COMPLETED');
 
   // 9. Giảng viên xem bảng thống kê tiến độ video & điểm quiz theo lớp
   const analytics = expectStatus(
-    api('GET', `/classes/${testClassId}/lessons/${studioLessonId}/quiz-analytics`, GV),
+    await api('GET', `/classes/${testClassId}/lessons/${studioLessonId}/quiz-analytics`, GV),
     200
   );
   assert.equal(analytics.students.length, 1);
@@ -802,35 +802,35 @@ await t('VIDEO QUIZ LEARNER', 'Ẩn tuyệt đối đáp án phía học viên, 
 });
 
 // ---------------------------------------------------------------- 6. Mode B — Class Teaching Content Isolation
-await t('STUDIO MODE B', 'Tùy biến giáo án & video quiz riêng cho lớp 5A1 KHÔNG ảnh hưởng khóa học gốc hay lớp 5A2', () => {
+await t('STUDIO MODE B', 'Tùy biến giáo án & video quiz riêng cho lớp 5A1 KHÔNG ảnh hưởng khóa học gốc hay lớp 5A2', async () => {
   // Đếm số khối gốc của les_101 trước khi tùy biến lớp 5A1
-  const origCourseLesson = expectStatus(api('GET', '/lessons/les_101', GV), 200);
+  const origCourseLesson = expectStatus(await api('GET', '/lessons/les_101', GV), 200);
   const origBlockCount = origCourseLesson.blocks.length;
   const origMarkerCount = origCourseLesson.video_markers.length;
 
   // Khi chưa được cấp can_manage_materials, trợ giảng không có quyền sửa nội dung riêng của lớp
-  const clsStudioBefore = expectStatus(api('GET', '/studio/classes/sc_toan5_5a1/lessons/les_101', TA), 200);
+  const clsStudioBefore = expectStatus(await api('GET', '/studio/classes/sc_toan5_5a1/lessons/les_101', TA), 200);
   assert.equal(clsStudioBefore.capabilities.can_edit, false);
   expectStatus(
-    api('PUT', '/studio/classes/sc_toan5_5a1/lessons/les_101/content', TA, { base_revision: 1, custom_blocks: [] }),
+    await api('PUT', '/studio/classes/sc_toan5_5a1/lessons/les_101/content', TA, { base_revision: 1, custom_blocks: [] }),
     403,
     'CLASS_CONTENT_FORBIDDEN'
   );
 
   // Giảng viên / Giáo vụ cấp quyền quản lý học liệu (can_manage_materials = true) cho trợ giảng trên lớp 5A1
-  db.prepare(
+  await db.prepare(
     `UPDATE teaching_staff_assignments
      SET permissions_json = '{"can_manage_materials":true,"can_take_attendance":true}'
      WHERE subject_class_id = 'sc_toan5_5a1' AND staff_role = 'TEACHING_ASSISTANT'`
   ).run();
 
   // Trợ giảng (có quyền can_manage_materials) được phép lưu bản nháp tùy biến cho lớp 5A1 nhưng không được xuất bản
-  const clsStudio = expectStatus(api('GET', '/studio/classes/sc_toan5_5a1/lessons/les_101', TA), 200);
+  const clsStudio = expectStatus(await api('GET', '/studio/classes/sc_toan5_5a1/lessons/les_101', TA), 200);
   assert.equal(clsStudio.capabilities.can_edit, true);
   assert.equal(clsStudio.capabilities.can_publish, false);
 
   const savedCustom = expectStatus(
-    api('PUT', '/studio/classes/sc_toan5_5a1/lessons/les_101/content', TA, {
+    await api('PUT', '/studio/classes/sc_toan5_5a1/lessons/les_101/content', TA, {
       base_revision: clsStudio.custom.revision,
       instructor_note: 'Lưu ý riêng cho lớp 5A1: Ôn kỹ bài tập nâng cao số 4 trước buổi kiểm tra thứ Sáu.',
       custom_objectives: 'Giải thành thạo bài toán tổng-tỉ mở rộng cho lớp 5A1.',
@@ -853,7 +853,7 @@ await t('STUDIO MODE B', 'Tùy biến giáo án & video quiz riêng cho lớp 5A
 
   // Gắn thêm 1 mốc câu hỏi tương tác riêng cho lớp 5A1 trên chính khối video kế thừa blk_101_vid1
   expectStatus(
-    api('PUT', '/studio/classes/sc_toan5_5a1/lessons/les_101/video-markers', TA, {
+    await api('PUT', '/studio/classes/sc_toan5_5a1/lessons/les_101/video-markers', TA, {
       markers: [
         {
           id: 'vqm_5a1_only',
@@ -874,39 +874,39 @@ await t('STUDIO MODE B', 'Tùy biến giáo án & video quiz riêng cho lớp 5A
   );
 
   // Trợ giảng cố xuất bản -> 403
-  expectStatus(api('POST', '/studio/classes/sc_toan5_5a1/lessons/les_101/publish', TA), 403, 'CLASS_PUBLISH_FORBIDDEN');
+  expectStatus(await api('POST', '/studio/classes/sc_toan5_5a1/lessons/les_101/publish', TA), 403, 'CLASS_PUBLISH_FORBIDDEN');
 
   // Khi chưa xuất bản, học viên 5A1 chưa thấy khối nháp của lớp
-  const beforePub5A1 = expectStatus(api('GET', '/learn/classes/sc_toan5_5a1/lessons/les_101', HS5A1), 200);
+  const beforePub5A1 = expectStatus(await api('GET', '/learn/classes/sc_toan5_5a1/lessons/les_101', HS5A1), 200);
   assert.equal(beforePub5A1.blocks.some((b) => b.id === 'cblk_5a1_extra_note'), false);
 
   // Giảng viên chính Cô Lê Thu Hà xuất bản nội dung riêng của lớp 5A1
-  expectStatus(api('POST', '/studio/classes/sc_toan5_5a1/lessons/les_101/publish', GV), 200);
+  expectStatus(await api('POST', '/studio/classes/sc_toan5_5a1/lessons/les_101/publish', GV), 200);
 
   // Học viên lớp 5A1 thấy đầy đủ nội dung kế thừa + khối bổ sung 5A1 + mốc quiz 01:15 riêng 5A1!
-  const afterPub5A1 = expectStatus(api('GET', '/learn/classes/sc_toan5_5a1/lessons/les_101', HS5A1), 200);
+  const afterPub5A1 = expectStatus(await api('GET', '/learn/classes/sc_toan5_5a1/lessons/les_101', HS5A1), 200);
   assert.equal(afterPub5A1.blocks.some((b) => b.id === 'cblk_5a1_extra_note' && b.origin === 'CLASS_CUSTOM'), true);
   assert.equal(afterPub5A1.video_markers.some((m) => m.id === 'vqm_5a1_only' && m.origin === 'CLASS_CUSTOM'), true);
   assert.ok(afterPub5A1.class_custom_note?.instructor_note.includes('5A1'));
 
   // Học viên lớp 5A2 (cùng học khóa TOAN5-2026!) TUYỆT ĐỐI KHÔNG thấy nội dung riêng của lớp 5A1!
-  const view5A2 = expectStatus(api('GET', '/learn/classes/sc_toan5_5a2/lessons/les_101', HS5A2), 200);
+  const view5A2 = expectStatus(await api('GET', '/learn/classes/sc_toan5_5a2/lessons/les_101', HS5A2), 200);
   assert.equal(view5A2.blocks.some((b) => b.id === 'cblk_5a1_extra_note'), false, 'Lớp 5A2 không bị ảnh hưởng bởi nội dung riêng lớp 5A1');
   assert.equal(view5A2.video_markers.some((m) => m.id === 'vqm_5a1_only'), false, 'Lớp 5A2 không thấy mốc quiz riêng lớp 5A1');
 
   // Khóa học gốc TOAN5-2026 giữ nguyên 100% số khối và số mốc gốc!
-  const afterCourseLesson = expectStatus(api('GET', '/lessons/les_101', GV), 200);
+  const afterCourseLesson = expectStatus(await api('GET', '/lessons/les_101', GV), 200);
   assert.equal(afterCourseLesson.blocks.length, origBlockCount, 'Khóa học gốc không bị thay đổi số khối');
   assert.equal(afterCourseLesson.video_markers.length, origMarkerCount, 'Khóa học gốc không bị thay đổi mốc video');
 });
 
 // ---------------------------------------------------------------- 7. Regression Audit — Thumbnail Data URL, Idempotent Chunk, HEAD/GET Stream, TA Metadata, Mode B Snapshot Isolation
-await t('REGRESSION AUDIT', 'Ảnh bìa base64 khi tải video, gửi lại chunk idempotent, HEAD/GET stream, quyền trợ giảng sửa metadata & cô lập bản nháp Mode B sau xuất bản', () => {
+await t('REGRESSION AUDIT', 'Ảnh bìa base64 khi tải video, gửi lại chunk idempotent, HEAD/GET stream, quyền trợ giảng sửa metadata & cô lập bản nháp Mode B sau xuất bản', async () => {
   // 1. Idempotent chunk retry + thumbnail_data_url + lưu khối video có data:image/... không gây lỗi 422
   const miniMp4 = Buffer.alloc(1024);
   Buffer.from([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x6d, 0x70, 0x34, 0x32]).copy(miniMp4, 0);
   const initThumb = expectStatus(
-    api('POST', '/media/videos/init', GV, {
+    await api('POST', '/media/videos/init', GV, {
       course_id: studioCourseId,
       title: 'Video kiểm thử ảnh bìa tự động',
       file_name: 'thumb-check.mp4',
@@ -918,14 +918,14 @@ await t('REGRESSION AUDIT', 'Ảnh bìa base64 khi tải video, gửi lại chun
   );
   // Gửi lặp cùng chunk_index = 0 hai lần (mô phỏng mạng chập chờn retry)
   expectStatus(
-    api('PUT', `/media/videos/${initThumb.upload_id}/chunk`, GV, {
+    await api('PUT', `/media/videos/${initThumb.upload_id}/chunk`, GV, {
       chunk_index: 0,
       data_base64: miniMp4.toString('base64'),
     }),
     200
   );
   expectStatus(
-    api('PUT', `/media/videos/${initThumb.upload_id}/chunk`, GV, {
+    await api('PUT', `/media/videos/${initThumb.upload_id}/chunk`, GV, {
       chunk_index: 0,
       data_base64: miniMp4.toString('base64'),
     }),
@@ -934,7 +934,7 @@ await t('REGRESSION AUDIT', 'Ảnh bìa base64 khi tải video, gửi lại chun
   const sampleDataUrl =
     'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
   const doneThumb = expectStatus(
-    api('POST', `/media/videos/${initThumb.upload_id}/complete`, GV, {
+    await api('POST', `/media/videos/${initThumb.upload_id}/complete`, GV, {
       duration_seconds: 45,
       thumbnail_data_url: sampleDataUrl,
     }),
@@ -942,7 +942,7 @@ await t('REGRESSION AUDIT', 'Ảnh bìa base64 khi tải video, gửi lại chun
   );
   assert.equal(doneThumb.thumbnail_url, sampleDataUrl, 'complete phải lưu thumbnail_data_url vào learning_resources');
 
-  const curLes = expectStatus(api('GET', `/lessons/${studioLessonId}`, GV), 200);
+  const curLes = expectStatus(await api('GET', `/lessons/${studioLessonId}`, GV), 200);
   const blocksWithThumb = curLes.blocks.map((b) =>
     b.id === mainVideoBlockId
       ? {
@@ -957,7 +957,7 @@ await t('REGRESSION AUDIT', 'Ảnh bìa base64 khi tải video, gửi lại chun
       : { id: b.id, block_type: b.block_type, content: b.content }
   );
   const savedWithThumb = expectStatus(
-    api('PUT', `/lessons/${studioLessonId}/content`, GV, {
+    await api('PUT', `/lessons/${studioLessonId}/content`, GV, {
       base_revision: curLes.revision,
       blocks: blocksWithThumb,
     }),
@@ -967,36 +967,36 @@ await t('REGRESSION AUDIT', 'Ảnh bìa base64 khi tải video, gửi lại chun
   assert.ok(!updatedVidBlk.content.thumbnail_url, 'Không nhân bản chuỗi base64 ảnh bìa trong content_json của khối');
 
   // 2. Non-Range GET và HEAD trên /media/:id/stream?st=...
-  const fullGet = invokeApi('GET', uploadedVideoStreamUrl, {});
+  const fullGet = await invokeApi('GET', uploadedVideoStreamUrl, {});
   assert.equal(fullGet.status, 200);
   assert.equal(fullGet.headers['Accept-Ranges'], 'bytes');
   assert.equal(fullGet.headers['Content-Length'], '2048');
   assert.equal(fullGet.rawBuffer.length, 2048);
 
-  const headRes = invokeApi('HEAD', uploadedVideoStreamUrl, {});
+  const headRes = await invokeApi('HEAD', uploadedVideoStreamUrl, {});
   assert.equal(headRes.status, 200);
   assert.equal(headRes.headers['Accept-Ranges'], 'bytes');
   assert.equal(headRes.headers['Content-Length'], '2048');
 
   // 3. PATCH /question-bank/:id phải lưu lại tags mới
   const patchedQb = expectStatus(
-    api('PATCH', `/question-bank/${qbSingleId}`, GV, { tags: ['phân số', 'ôn tập học kỳ'] }),
+    await api('PATCH', `/question-bank/${qbSingleId}`, GV, { tags: ['phân số', 'ôn tập học kỳ'] }),
     200
   );
   assert.deepEqual(patchedQb.tags, ['phân số', 'ôn tập học kỳ']);
 
   // 4. Trợ giảng có can_manage_materials = true được phép cập nhật thông tin bài học nháp (PATCH /lessons/:id)
-  const les101Before = expectStatus(api('GET', '/lessons/les_101', TA), 200);
+  const les101Before = expectStatus(await api('GET', '/lessons/les_101', TA), 200);
   const patchedByTa = expectStatus(
-    api('PATCH', '/lessons/les_101', TA, { summary: les101Before.summary || 'Tóm tắt bài học cập nhật bởi trợ giảng' }),
+    await api('PATCH', '/lessons/les_101', TA, { summary: les101Before.summary || 'Tóm tắt bài học cập nhật bởi trợ giảng' }),
     200
   );
   assert.ok(patchedByTa.id === 'les_101');
 
   // 5. Cô lập bản nháp Mode B sau khi đã xuất bản v1: sửa nháp v2 chưa xuất bản KHÔNG được lộ sang học viên
-  const studio5A1Cur = expectStatus(api('GET', '/studio/classes/sc_toan5_5a1/lessons/les_101', TA), 200);
+  const studio5A1Cur = expectStatus(await api('GET', '/studio/classes/sc_toan5_5a1/lessons/les_101', TA), 200);
   expectStatus(
-    api('PUT', '/studio/classes/sc_toan5_5a1/lessons/les_101/content', TA, {
+    await api('PUT', '/studio/classes/sc_toan5_5a1/lessons/les_101/content', TA, {
       base_revision: studio5A1Cur.custom.revision,
       instructor_note: 'BẢN NHÁP CHƯA XUẤT BẢN V2',
       custom_objectives: studio5A1Cur.custom.custom_objectives,
@@ -1012,7 +1012,7 @@ await t('REGRESSION AUDIT', 'Ảnh bìa base64 khi tải video, gửi lại chun
     200
   );
   expectStatus(
-    api('PUT', '/studio/classes/sc_toan5_5a1/lessons/les_101/video-markers', TA, {
+    await api('PUT', '/studio/classes/sc_toan5_5a1/lessons/les_101/video-markers', TA, {
       markers: [
         ...studio5A1Cur.custom_markers,
         {
@@ -1034,22 +1034,22 @@ await t('REGRESSION AUDIT', 'Ảnh bìa base64 khi tải video, gửi lại chun
     200
   );
 
-  const studentViewDuringDraft = expectStatus(api('GET', '/learn/classes/sc_toan5_5a1/lessons/les_101', HS5A1), 200);
+  const studentViewDuringDraft = expectStatus(await api('GET', '/learn/classes/sc_toan5_5a1/lessons/les_101', HS5A1), 200);
   assert.equal(studentViewDuringDraft.blocks.some((b) => b.id === 'cblk_5a1_extra_note'), true, 'Học viên vẫn thấy bản xuất bản v1');
   assert.equal(studentViewDuringDraft.blocks.some((b) => b.id === 'cblk_5a1_unpub_v2'), false, 'Không được lộ khối nháp v2 chưa xuất bản');
   assert.equal(studentViewDuringDraft.video_markers.some((m) => m.id === 'vqm_5a1_unpub_v2'), false, 'Không được lộ mốc nháp v2 chưa xuất bản');
   assert.notEqual(studentViewDuringDraft.class_custom_note?.instructor_note, 'BẢN NHÁP CHƯA XUẤT BẢN V2');
 
   // Sau khi GV xuất bản v2 -> học viên mới thấy đầy đủ bản mới
-  expectStatus(api('POST', '/studio/classes/sc_toan5_5a1/lessons/les_101/publish', GV), 200);
-  const studentViewAfterPub2 = expectStatus(api('GET', '/learn/classes/sc_toan5_5a1/lessons/les_101', HS5A1), 200);
+  expectStatus(await api('POST', '/studio/classes/sc_toan5_5a1/lessons/les_101/publish', GV), 200);
+  const studentViewAfterPub2 = expectStatus(await api('GET', '/learn/classes/sc_toan5_5a1/lessons/les_101', HS5A1), 200);
   assert.equal(studentViewAfterPub2.blocks.some((b) => b.id === 'cblk_5a1_unpub_v2'), true, 'Sau khi xuất bản v2 học viên thấy khối mới');
   assert.equal(studentViewAfterPub2.video_markers.some((m) => m.id === 'vqm_5a1_unpub_v2'), true, 'Sau khi xuất bản v2 học viên thấy mốc mới');
 });
 
 // Dọn tệp tạm của phiên kiểm thử
 try {
-  db.close();
+  await db.close();
   fs.rmSync(TMP_DB, { force: true });
   fs.rmSync(`${TMP_DB}-wal`, { force: true });
   fs.rmSync(`${TMP_DB}-shm`, { force: true });

@@ -126,33 +126,34 @@ export function imageUrlField(body, field, { label = field } = {}) {
   return normalized.url;
 }
 
-/** Thực thi trong transaction; hỗ trợ gọi lồng nhau an toàn và tự rollback nếu lỗi. */
-export function tx(db, fn) {
-  const depth = Number(db.__txDepth || 0);
-  if (depth > 0) {
-    db.__txDepth = depth + 1;
-    try {
-      return fn();
-    } finally {
-      db.__txDepth = depth;
-    }
+/** Thực thi trong transaction (hỗ trợ lồng nhau via SAVEPOINT trên PostgreSQL 18 và SQLite). */
+export async function tx(db, fn) {
+  return await db.tx(fn);
+}
+
+/** Lặp tuần tự có await (an toàn trong transaction PostgreSQL, không gây lỗi song song trên một client). */
+export async function mapAsync(arr, fn) {
+  const out = [];
+  for (let i = 0; i < arr.length; i++) {
+    out.push(await fn(arr[i], i, arr));
   }
-  db.exec('BEGIN');
-  db.__txDepth = 1;
-  try {
-    const result = fn();
-    db.exec('COMMIT');
-    return result;
-  } catch (err) {
-    try {
-      db.exec('ROLLBACK');
-    } catch {
-      // ignore if already rolled back
-    }
-    throw err;
-  } finally {
-    db.__txDepth = 0;
+  return out;
+}
+
+/** Kiểm tra điều kiện bất đồng bộ theo thứ tự tuần tự. */
+export async function someAsync(arr, fn) {
+  for (let i = 0; i < arr.length; i++) {
+    if (await fn(arr[i], i, arr)) return true;
   }
+  return false;
+}
+
+export async function filterAsync(arr, fn) {
+  const out = [];
+  for (let i = 0; i < arr.length; i++) {
+    if (await fn(arr[i], i, arr)) out.push(arr[i]);
+  }
+  return out;
 }
 
 export function publicUser(row) {

@@ -53,8 +53,8 @@ export const DEFAULT_VIRTUAL_ATTENDANCE_RULES = {
 /**
  * Lấy quy tắc điểm danh tự động áp dụng cho buổi học (ưu tiên cấu hình buổi học -> cấu hình lớp học -> mặc định).
  */
-export function getSessionAttendanceRules(db, session, cls = null) {
-  const classRow = cls || db.prepare('SELECT * FROM subject_classes WHERE id = ?').get(session.subject_class_id);
+export async function getSessionAttendanceRules(db, session, cls = null) {
+  const classRow = cls || await db.prepare('SELECT * FROM subject_classes WHERE id = ?').get(session.subject_class_id);
   const classRules = safeJson(classRow?.attendance_rules_json, {});
   const sessionRules = safeJson(session?.attendance_rules_json, {});
 
@@ -166,7 +166,7 @@ export function clipIntervalsToWindow(mergedIntervals, windowStartMs, windowEndM
  *
  * TUYỆT ĐỐI KHÔNG tự động khớp học viên chỉ dựa vào tên hiển thị (`display_name`).
  */
-export function matchParticipantIdentity(
+export async function matchParticipantIdentity(
   db,
   {
     subjectClassId,
@@ -186,7 +186,7 @@ export function matchParticipantIdentity(
 
   // Kiểm tra có phải là Giảng viên / Trợ giảng của lớp không (để không liệt kê nhầm giảng viên vào danh sách UNKNOWN của học viên)
   if (normEmail) {
-    const staffHit = db
+    const staffHit = await db
       .prepare(
         `SELECT u.id FROM teaching_staff_assignments t
          JOIN users u ON u.id = t.user_id
@@ -207,7 +207,7 @@ export function matchParticipantIdentity(
   }
 
   // 2. Bảng đối chiếu định danh (virtual_identity_mappings): LMS_JOIN_TOKEN, REGISTRATION_ID, LINKED_PROVIDER_ACCOUNT, INSTRUCTOR_MANUAL_MAP
-  const mappings = db
+  const mappings = await db
     .prepare(
       `SELECT * FROM virtual_identity_mappings
        WHERE subject_class_id = ? AND (provider = ? OR provider = 'ANY')
@@ -277,13 +277,13 @@ export function matchParticipantIdentity(
  *  - Không tính người chỉ vào phòng vài giây (< min_valid_seconds) là tham gia hợp lệ.
  *  - Không tự động đánh dấu ABSENT khi đang WAITING_PROVIDER_DATA / SYNCING hoặc khi còn người tham gia UNKNOWN chưa đối chiếu.
  */
-export function calculateSessionVirtualAttendance(db, session, { referenceTimeIso = null, preserveManualAdjustments = true } = {}) {
-  const cls = db.prepare('SELECT * FROM subject_classes WHERE id = ?').get(session.subject_class_id);
-  const roster = sessionRoster(db, session);
-  const rules = getSessionAttendanceRules(db, session, cls);
+export async function calculateSessionVirtualAttendance(db, session, { referenceTimeIso = null, preserveManualAdjustments = true } = {}) {
+  const cls = await db.prepare('SELECT * FROM subject_classes WHERE id = ?').get(session.subject_class_id);
+  const roster = await sessionRoster(db, session);
+  const rules = await getSessionAttendanceRules(db, session, cls);
   const room = session.virtual_room_id
-    ? db.prepare('SELECT * FROM virtual_meeting_rooms WHERE id = ?').get(session.virtual_room_id)
-    : db.prepare('SELECT * FROM virtual_meeting_rooms WHERE session_id = ? ORDER BY created_at DESC LIMIT 1').get(session.session_id);
+    ? await db.prepare('SELECT * FROM virtual_meeting_rooms WHERE id = ?').get(session.virtual_room_id)
+    : await db.prepare('SELECT * FROM virtual_meeting_rooms WHERE session_id = ? ORDER BY created_at DESC LIMIT 1').get(session.session_id);
 
   if (!room || !room.supports_auto_sync) {
     return {
@@ -301,7 +301,7 @@ export function calculateSessionVirtualAttendance(db, session, { referenceTimeIs
     ? Date.parse(session.live_ended_at)
     : Date.now();
 
-  const rawSessions = db
+  const rawSessions = await db
     .prepare(
       `SELECT * FROM virtual_participant_sessions
        WHERE session_id = ? AND virtual_room_id = ?
@@ -318,7 +318,7 @@ export function calculateSessionVirtualAttendance(db, session, { referenceTimeIs
   const now = nowIso();
   for (const ps of rawSessions) {
     if (!ps.matched_student_id && ps.identity_match_method !== 'HOST_STAFF') {
-      const m = matchParticipantIdentity(db, {
+      const m = await matchParticipantIdentity(db, {
         subjectClassId: session.subject_class_id,
         roster,
         provider: room.provider,
@@ -330,7 +330,7 @@ export function calculateSessionVirtualAttendance(db, session, { referenceTimeIs
       if (m.student_id || m.is_staff) {
         ps.matched_student_id = m.student_id;
         ps.identity_match_method = m.method;
-        updateMatchStmt.run(m.student_id, m.method, now, ps.id);
+        await updateMatchStmt.run(m.student_id, m.method, now, ps.id);
       }
     }
   }
@@ -344,15 +344,15 @@ export function calculateSessionVirtualAttendance(db, session, { referenceTimeIs
 
   // Các bản ghi điểm danh hiện có (ví dụ nghỉ có phép EXCUSED_ABSENCE đã duyệt trước)
   const existingAtt = Object.fromEntries(
-    db
+    (await db
       .prepare('SELECT * FROM attendance_records WHERE class_session_id = ?')
-      .all(session.session_id)
+      .all(session.session_id))
       .map((r) => [r.student_id, r])
   );
   const existingCalcs = Object.fromEntries(
-    db
+    (await db
       .prepare('SELECT * FROM virtual_attendance_calculations WHERE session_id = ?')
-      .all(session.session_id)
+      .all(session.session_id))
       .map((r) => [r.student_id, r])
   );
 
@@ -391,7 +391,7 @@ export function calculateSessionVirtualAttendance(db, session, { referenceTimeIs
 
   let needsReviewCount = unknownParticipants.length;
 
-  tx(db, () => {
+  await tx(db, async () => {
     for (const student of roster) {
       const stuSessions = rawSessions.filter((ps) => ps.matched_student_id === student.student_id);
       const rawIntervals = stuSessions.map((ps) => {
@@ -464,7 +464,7 @@ export function calculateSessionVirtualAttendance(db, session, { referenceTimeIs
         stuSessions.find((s) => s.identity_match_method && s.identity_match_method !== 'UNKNOWN')?.identity_match_method ||
         'NONE';
 
-      upsertCalcStmt.run(
+      await upsertCalcStmt.run(
         prevCalc ? prevCalc.id : `vac_${crypto.randomBytes(6).toString('hex')}`,
         session.session_id,
         session.subject_class_id,
@@ -490,14 +490,14 @@ export function calculateSessionVirtualAttendance(db, session, { referenceTimeIs
     }
 
     // Cập nhật trạng thái xử lý đồng bộ trên buổi học (nếu chưa CONFIRMED và không đang WAITING_PROVIDER_DATA)
-    const freshSession = db.prepare('SELECT attendance_sync_status, live_status FROM sessions WHERE session_id = ?').get(session.session_id);
+    const freshSession = await db.prepare('SELECT attendance_sync_status, live_status FROM sessions WHERE session_id = ?').get(session.session_id);
     if (
       freshSession &&
       freshSession.attendance_sync_status !== 'CONFIRMED' &&
       freshSession.attendance_sync_status !== 'WAITING_PROVIDER_DATA'
     ) {
       const nextSyncStatus = needsReviewCount > 0 ? 'NEEDS_REVIEW' : 'ATTENDANCE_CALCULATED';
-      db.prepare('UPDATE sessions SET attendance_sync_status = ? WHERE session_id = ?').run(nextSyncStatus, session.session_id);
+      await db.prepare('UPDATE sessions SET attendance_sync_status = ? WHERE session_id = ?').run(nextSyncStatus, session.session_id);
     }
   });
 
@@ -511,7 +511,7 @@ export function calculateSessionVirtualAttendance(db, session, { referenceTimeIs
 
 // ------------------------------------------------------------------ Xử lý sự kiện Webhook & Đồng bộ phiên tham gia
 
-export function recordParticipantJoinEvent(
+export async function recordParticipantJoinEvent(
   db,
   {
     session,
@@ -527,8 +527,8 @@ export function recordParticipantJoinEvent(
     sessionKey = null,
   }
 ) {
-  const roster = sessionRoster(db, session);
-  const match = matchParticipantIdentity(db, {
+  const roster = await sessionRoster(db, session);
+  const match = await matchParticipantIdentity(db, {
     subjectClassId: session.subject_class_id,
     roster,
     provider: room.provider,
@@ -546,7 +546,7 @@ export function recordParticipantJoinEvent(
 
   // Kiểm tra xem sự kiện leave có đến trước sự kiện join không (Out-of-order webhook event)
   const outOfOrderRow = externalParticipantId
-    ? db
+    ? await db
         .prepare(
           `SELECT * FROM virtual_participant_sessions
            WHERE session_id = ? AND virtual_room_id = ? AND external_participant_id = ?
@@ -558,7 +558,7 @@ export function recordParticipantJoinEvent(
 
   if (outOfOrderRow && outOfOrderRow.leave_at && Date.parse(outOfOrderRow.leave_at) >= Date.parse(joinIso)) {
     const durSec = Math.max(0, Math.round((Date.parse(outOfOrderRow.leave_at) - Date.parse(joinIso)) / 1000));
-    db.prepare(
+    await db.prepare(
       `UPDATE virtual_participant_sessions
        SET join_at = ?, duration_sec = ?, matched_student_id = COALESCE(matched_student_id, ?),
            identity_match_method = CASE WHEN identity_match_method = 'UNKNOWN' THEN ? ELSE identity_match_method END,
@@ -577,13 +577,13 @@ export function recordParticipantJoinEvent(
   }
 
   // Chống tạo trùng nếu cùng session_key hoặc người đó đang có phiên mở trong vòng 5 giây
-  const existingByKey = db.prepare('SELECT * FROM virtual_participant_sessions WHERE session_key = ?').get(key);
+  const existingByKey = await db.prepare('SELECT * FROM virtual_participant_sessions WHERE session_key = ?').get(key);
   if (existingByKey) {
     return { id: existingByKey.id, deduplicated: true, match };
   }
 
   const id = `vps_${crypto.randomBytes(6).toString('hex')}`;
-  db.prepare(
+  await db.prepare(
     `INSERT INTO virtual_participant_sessions (
        id, session_key, session_id, virtual_room_id, provider,
        external_participant_id, registrant_id, lms_join_token, participant_email, display_name,
@@ -613,7 +613,7 @@ export function recordParticipantJoinEvent(
   return { id, deduplicated: false, match };
 }
 
-export function recordParticipantLeaveEvent(
+export async function recordParticipantLeaveEvent(
   db,
   {
     session,
@@ -632,7 +632,7 @@ export function recordParticipantLeaveEvent(
   // Tìm phiên đang mở của người tham gia này
   let openRow = null;
   if (externalParticipantId) {
-    openRow = db
+    openRow = await db
       .prepare(
         `SELECT * FROM virtual_participant_sessions
          WHERE session_id = ? AND virtual_room_id = ? AND external_participant_id = ? AND is_currently_in_room = 1
@@ -641,7 +641,7 @@ export function recordParticipantLeaveEvent(
       .get(session.session_id, room.id, String(externalParticipantId));
   }
   if (!openRow && participantEmail) {
-    openRow = db
+    openRow = await db
       .prepare(
         `SELECT * FROM virtual_participant_sessions
          WHERE session_id = ? AND virtual_room_id = ? AND LOWER(participant_email) = LOWER(?) AND is_currently_in_room = 1
@@ -650,7 +650,7 @@ export function recordParticipantLeaveEvent(
       .get(session.session_id, room.id, String(participantEmail));
   }
   if (!openRow && displayName) {
-    openRow = db
+    openRow = await db
       .prepare(
         `SELECT * FROM virtual_participant_sessions
          WHERE session_id = ? AND virtual_room_id = ? AND display_name = ? AND is_currently_in_room = 1
@@ -661,7 +661,7 @@ export function recordParticipantLeaveEvent(
 
   if (openRow) {
     const durSec = Math.max(0, Math.round((Date.parse(leaveIso) - Date.parse(openRow.join_at)) / 1000));
-    db.prepare(
+    await db.prepare(
       `UPDATE virtual_participant_sessions
        SET leave_at = ?, duration_sec = ?, is_currently_in_room = 0, updated_at = ?
        WHERE id = ?`
@@ -672,8 +672,8 @@ export function recordParticipantLeaveEvent(
   // Trường hợp sự kiện participant_left đến trước participant_joined (Out-of-order webhook)
   const fallbackJoinIso = joinAtIso ? vnIso(new Date(joinAtIso)) : leaveIso;
   const durSec = Math.max(0, Math.round((Date.parse(leaveIso) - Date.parse(fallbackJoinIso)) / 1000));
-  const roster = sessionRoster(db, session);
-  const match = matchParticipantIdentity(db, {
+  const roster = await sessionRoster(db, session);
+  const match = await matchParticipantIdentity(db, {
     subjectClassId: session.subject_class_id,
     roster,
     provider: room.provider,
@@ -684,11 +684,11 @@ export function recordParticipantLeaveEvent(
   const key =
     sessionKey ||
     `ps_ooo_${room.id}_${externalParticipantId || displayName}_${new Date(leaveIso).getTime()}`;
-  const existing = db.prepare('SELECT * FROM virtual_participant_sessions WHERE session_key = ?').get(key);
+  const existing = await db.prepare('SELECT * FROM virtual_participant_sessions WHERE session_key = ?').get(key);
   if (existing) return { id: existing.id, deduplicated: true };
 
   const id = `vps_${crypto.randomBytes(6).toString('hex')}`;
-  db.prepare(
+  await db.prepare(
     `INSERT INTO virtual_participant_sessions (
        id, session_key, session_id, virtual_room_id, provider,
        external_participant_id, participant_email, display_name,
@@ -718,14 +718,14 @@ export function recordParticipantLeaveEvent(
 
 // ------------------------------------------------------------------ Định dạng dữ liệu trả về cho Frontend (DTO)
 
-export function virtualRoomSummaryDto(db, session) {
+export async function virtualRoomSummaryDto(db, session) {
   if (!session) return null;
   const room = session.virtual_room_id
-    ? db.prepare('SELECT * FROM virtual_meeting_rooms WHERE id = ?').get(session.virtual_room_id)
-    : db.prepare('SELECT * FROM virtual_meeting_rooms WHERE session_id = ? ORDER BY created_at DESC LIMIT 1').get(session.session_id);
+    ? await db.prepare('SELECT * FROM virtual_meeting_rooms WHERE id = ?').get(session.virtual_room_id)
+    : await db.prepare('SELECT * FROM virtual_meeting_rooms WHERE session_id = ? ORDER BY created_at DESC LIMIT 1').get(session.session_id);
   if (!room) return null;
 
-  const stats = db
+  const stats = await db
     .prepare(
       `SELECT
          SUM(CASE WHEN is_currently_in_room = 1 AND identity_match_method <> 'HOST_STAFF' THEN 1 ELSE 0 END) AS current_in_room,
@@ -761,29 +761,29 @@ export function virtualRoomSummaryDto(db, session) {
   };
 }
 
-function buildVirtualSessionDetailDto(db, user, session, cls, caps, jwtSecret) {
+async function buildVirtualSessionDetailDto(db, user, session, cls, caps, jwtSecret) {
   const room = session.virtual_room_id
-    ? db.prepare('SELECT * FROM virtual_meeting_rooms WHERE id = ?').get(session.virtual_room_id)
-    : db.prepare('SELECT * FROM virtual_meeting_rooms WHERE session_id = ? ORDER BY created_at DESC LIMIT 1').get(session.session_id);
+    ? await db.prepare('SELECT * FROM virtual_meeting_rooms WHERE id = ?').get(session.virtual_room_id)
+    : await db.prepare('SELECT * FROM virtual_meeting_rooms WHERE session_id = ? ORDER BY created_at DESC LIMIT 1').get(session.session_id);
 
-  const roster = sessionRoster(db, session);
-  const rules = getSessionAttendanceRules(db, session, cls);
+  const roster = await sessionRoster(db, session);
+  const rules = await getSessionAttendanceRules(db, session, cls);
 
   if (room && room.supports_auto_sync) {
-    calculateSessionVirtualAttendance(db, session, { preserveManualAdjustments: true });
+    await calculateSessionVirtualAttendance(db, session, { preserveManualAdjustments: true });
   }
 
-  const refreshedSession = db.prepare('SELECT * FROM sessions WHERE session_id = ?').get(session.session_id);
+  const refreshedSession = await db.prepare('SELECT * FROM sessions WHERE session_id = ?').get(session.session_id);
   const rosterById = Object.fromEntries(roster.map((r) => [r.student_id, r]));
 
   const participantSessions = room
-    ? db
+    ? (await db
         .prepare(
           `SELECT * FROM virtual_participant_sessions
            WHERE session_id = ? AND virtual_room_id = ?
            ORDER BY join_at ASC`
         )
-        .all(session.session_id, room.id)
+        .all(session.session_id, room.id))
         .map((ps) => {
           const st = ps.matched_student_id ? rosterById[ps.matched_student_id] : null;
           const liveDurSec =
@@ -811,16 +811,16 @@ function buildVirtualSessionDetailDto(db, user, session, cls, caps, jwtSecret) {
     : [];
 
   const calcs = Object.fromEntries(
-    db
+    (await db
       .prepare('SELECT * FROM virtual_attendance_calculations WHERE session_id = ?')
-      .all(session.session_id)
+      .all(session.session_id))
       .map((c) => [c.student_id, c])
   );
 
   const actorIds = new Set(Object.values(calcs).map((c) => c.adjusted_by).filter(Boolean));
   const actorNames = {};
   for (const aid of actorIds) {
-    const u = db.prepare('SELECT full_name FROM users WHERE id = ?').get(aid);
+    const u = await db.prepare('SELECT full_name FROM users WHERE id = ?').get(aid);
     if (u) actorNames[aid] = u.full_name;
   }
 
@@ -963,7 +963,7 @@ function buildVirtualSessionDetailDto(db, user, session, cls, caps, jwtSecret) {
 
 // ------------------------------------------------------------------ Xử lý Webhook chung (dùng cho cả HTTP endpoint & Simulator)
 
-export function processProviderWebhook({ db, provider, headers, rawBody, body, jwtSecret, log, skipSignatureVerify = false }) {
+export async function processProviderWebhook({ db, provider, headers, rawBody, body, jwtSecret, log, skipSignatureVerify = false }) {
   const normProvider = String(provider || 'ZOOM').toUpperCase();
   const adapter = createProviderAdapter(normProvider, { db, jwtSecret, log });
 
@@ -972,15 +972,15 @@ export function processProviderWebhook({ db, provider, headers, rawBody, body, j
     const plainToken = body?.payload?.plainToken;
     if (!plainToken) fail(400, 'MISSING_PLAIN_TOKEN', 'Thiếu plainToken trong yêu cầu xác thực URL Webhook.');
     if (!skipSignatureVerify && headers['x-zm-signature']) {
-      adapter.verifyWebhookSignature({ headers, rawBody });
+      await adapter.verifyWebhookSignature({ headers, rawBody });
     }
-    return adapter.createValidationChallengeResponse(plainToken);
+    return await adapter.createValidationChallengeResponse(plainToken);
   }
 
   // 2. Xác thực chữ ký HMAC-SHA256 & chống replay
   if (!skipSignatureVerify) {
     if (normProvider === 'ZOOM') {
-      adapter.verifyWebhookSignature({ headers, rawBody });
+      await adapter.verifyWebhookSignature({ headers, rawBody });
     }
   }
 
@@ -1001,7 +1001,7 @@ export function processProviderWebhook({ db, provider, headers, rawBody, body, j
     String(body?.event_id || '').trim() ||
     `${normProvider}:${eventType}:${rawMeetingId}:${partId}:${partActionTime}:${eventTs}`;
 
-  const existingEvent = db.prepare('SELECT * FROM virtual_webhook_events WHERE event_key = ?').get(eventKey);
+  const existingEvent = await db.prepare('SELECT * FROM virtual_webhook_events WHERE event_key = ?').get(eventKey);
   if (existingEvent) {
     return {
       received: true,
@@ -1012,7 +1012,7 @@ export function processProviderWebhook({ db, provider, headers, rawBody, body, j
   }
 
   // Tìm phòng họp & buổi học tương ứng
-  const room = db
+  const room = await db
     .prepare(
       `SELECT * FROM virtual_meeting_rooms
        WHERE provider = ? AND (REPLACE(external_meeting_id, ' ', '') = ? OR id = ?)
@@ -1022,8 +1022,8 @@ export function processProviderWebhook({ db, provider, headers, rawBody, body, j
 
   const session = room
     ? room.session_id
-      ? db.prepare('SELECT * FROM sessions WHERE session_id = ?').get(room.session_id)
-      : db.prepare('SELECT * FROM sessions WHERE virtual_room_id = ? ORDER BY scheduled_start_at DESC LIMIT 1').get(room.id)
+      ? await db.prepare('SELECT * FROM sessions WHERE session_id = ?').get(room.session_id)
+      : await db.prepare('SELECT * FROM sessions WHERE virtual_room_id = ? ORDER BY scheduled_start_at DESC LIMIT 1').get(room.id)
     : null;
 
   const webhookRowId = `wh_${crypto.randomBytes(6).toString('hex')}`;
@@ -1032,12 +1032,12 @@ export function processProviderWebhook({ db, provider, headers, rawBody, body, j
   let processingStatus = 'PROCESSED';
   let resultDetail = {};
 
-  tx(db, () => {
+  await tx(db, async () => {
     if (room && session) {
       if (eventType === 'meeting.started') {
         const startIso = payloadObj.start_time ? vnIso(new Date(payloadObj.start_time)) : nowVn();
-        db.prepare("UPDATE virtual_meeting_rooms SET room_status = 'LIVE', updated_at = ? WHERE id = ?").run(now, room.id);
-        db.prepare(
+        await db.prepare("UPDATE virtual_meeting_rooms SET room_status = 'LIVE', updated_at = ? WHERE id = ?").run(now, room.id);
+        await db.prepare(
           `UPDATE sessions
            SET live_status = 'LIVE',
                live_started_at = COALESCE(live_started_at, ?),
@@ -1046,7 +1046,7 @@ export function processProviderWebhook({ db, provider, headers, rawBody, body, j
         ).run(startIso, session.session_id);
         resultDetail = { session_id: session.session_id, live_status: 'LIVE' };
       } else if (eventType === 'meeting.participant_joined') {
-        const r = recordParticipantJoinEvent(db, {
+        const r = await recordParticipantJoinEvent(db, {
           session,
           room,
           externalParticipantId: partId || `ext_${crypto.randomBytes(3).toString('hex')}`,
@@ -1060,10 +1060,10 @@ export function processProviderWebhook({ db, provider, headers, rawBody, body, j
           sessionKey: `wh_join_${room.id}_${partId || participant.user_name}_${participant.join_time || eventTs}`,
         });
         if (r.out_of_order_resolved) processingStatus = 'OUT_OF_ORDER_RESOLVED';
-        calculateSessionVirtualAttendance(db, session, { preserveManualAdjustments: true });
+        await calculateSessionVirtualAttendance(db, session, { preserveManualAdjustments: true });
         resultDetail = { session_id: session.session_id, participant_session_id: r.id, match: r.match };
       } else if (eventType === 'meeting.participant_left') {
-        const r = recordParticipantLeaveEvent(db, {
+        const r = await recordParticipantLeaveEvent(db, {
           session,
           room,
           externalParticipantId: partId || null,
@@ -1074,24 +1074,24 @@ export function processProviderWebhook({ db, provider, headers, rawBody, body, j
           sessionKey: `wh_leave_${room.id}_${partId || participant.user_name}_${participant.leave_time || eventTs}`,
         });
         if (r.out_of_order_created) processingStatus = 'OUT_OF_ORDER_RESOLVED';
-        calculateSessionVirtualAttendance(db, session, { preserveManualAdjustments: true });
+        await calculateSessionVirtualAttendance(db, session, { preserveManualAdjustments: true });
         resultDetail = { session_id: session.session_id, participant_session_id: r.id };
       } else if (eventType === 'meeting.ended') {
         const endIso = payloadObj.end_time ? vnIso(new Date(payloadObj.end_time)) : nowVn();
         // Đóng các phiên tham gia còn đang mở khi phòng họp kết thúc
-        const openRows = db
+        const openRows = await db
           .prepare('SELECT * FROM virtual_participant_sessions WHERE session_id = ? AND virtual_room_id = ? AND is_currently_in_room = 1')
           .all(session.session_id, room.id);
         for (const op of openRows) {
           const durSec = Math.max(0, Math.round((Date.parse(endIso) - Date.parse(op.join_at)) / 1000));
-          db.prepare(
+          await db.prepare(
             'UPDATE virtual_participant_sessions SET leave_at = ?, duration_sec = ?, is_currently_in_room = 0, updated_at = ? WHERE id = ?'
           ).run(endIso, durSec, now, op.id);
         }
 
         const waitReport = Boolean(body?.payload?.wait_for_final_report);
-        db.prepare("UPDATE virtual_meeting_rooms SET room_status = 'ENDED', updated_at = ? WHERE id = ?").run(now, room.id);
-        db.prepare(
+        await db.prepare("UPDATE virtual_meeting_rooms SET room_status = 'ENDED', updated_at = ? WHERE id = ?").run(now, room.id);
+        await db.prepare(
           `UPDATE sessions
            SET live_status = 'ENDED',
                live_ended_at = ?,
@@ -1100,8 +1100,8 @@ export function processProviderWebhook({ db, provider, headers, rawBody, body, j
            WHERE session_id = ?`
         ).run(endIso, waitReport ? 'WAITING_PROVIDER_DATA' : 'SYNCING', session.session_id);
 
-        const updatedSession = db.prepare('SELECT * FROM sessions WHERE session_id = ?').get(session.session_id);
-        const calcRes = calculateSessionVirtualAttendance(db, updatedSession, {
+        const updatedSession = await db.prepare('SELECT * FROM sessions WHERE session_id = ?').get(session.session_id);
+        const calcRes = await calculateSessionVirtualAttendance(db, updatedSession, {
           referenceTimeIso: endIso,
           preserveManualAdjustments: true,
         });
@@ -1117,7 +1117,7 @@ export function processProviderWebhook({ db, provider, headers, rawBody, body, j
       }
     }
 
-    db.prepare(
+    await db.prepare(
       `INSERT INTO virtual_webhook_events (
          id, event_key, provider, event_type, external_meeting_id, session_id,
          event_timestamp_ms, signature_verified, processing_status, raw_payload_json, received_at
@@ -1157,11 +1157,11 @@ function csvSafeCell(v) {
 
 export function registerVirtualClassroomRoutes(route, { jwtSecret = 'lmsplus-production-grade-hmac-secret-2026' } = {}) {
   // 1. Danh sách cấu hình nhà cung cấp (Zoom, Google Meet, External)
-  route('GET', '/virtual-providers', ({ db, user }) => {
+  route('GET', '/virtual-providers', async ({ db, user }) => {
     if (!isAdmin(user) && !isStaff(user) && !isInstructor(user)) {
       fail(403, 'FORBIDDEN', 'Bạn không có quyền xem cấu hình tích hợp phòng học trực tuyến.');
     }
-    const rows = db.prepare('SELECT * FROM virtual_provider_configs ORDER BY provider').all();
+    const rows = await db.prepare('SELECT * FROM virtual_provider_configs ORDER BY provider').all();
     return {
       items: rows.map((r) => {
         const creds = decryptJsonCredentials(r.encrypted_credentials_json, jwtSecret);
@@ -1188,7 +1188,7 @@ export function registerVirtualClassroomRoutes(route, { jwtSecret = 'lmsplus-pro
   });
 
   // 2. Cập nhật thông tin xác thực OAuth / Webhook cho Provider
-  route('PUT', '/virtual-providers/:provider', ({ db, user, params, body, log }) => {
+  route('PUT', '/virtual-providers/:provider', async ({ db, user, params, body, log }) => {
     if (!isAdmin(user) && !isStaff(user) && !isInstructor(user)) {
       fail(403, 'FORBIDDEN', 'Chỉ Quản trị viên, Giáo vụ hoặc Giảng viên được cấu hình kết nối nền tảng.');
     }
@@ -1196,7 +1196,7 @@ export function registerVirtualClassroomRoutes(route, { jwtSecret = 'lmsplus-pro
     if (!VIRTUAL_PROVIDERS.includes(provider)) {
       fail(422, 'UNSUPPORTED_PROVIDER', 'Nền tảng không hợp lệ.');
     }
-    const existing = db.prepare('SELECT * FROM virtual_provider_configs WHERE provider = ?').get(provider);
+    const existing = await db.prepare('SELECT * FROM virtual_provider_configs WHERE provider = ?').get(provider);
     if (!existing) fail(404, 'PROVIDER_NOT_FOUND', 'Không tìm thấy cấu hình nền tảng.');
 
     const oldCreds = decryptJsonCredentials(existing.encrypted_credentials_json, jwtSecret);
@@ -1218,7 +1218,7 @@ export function registerVirtualClassroomRoutes(route, { jwtSecret = 'lmsplus-pro
     const authMode = typeof body.auth_mode === 'string' ? body.auth_mode.trim() : existing.auth_mode;
     const now = nowIso();
 
-    db.prepare(
+    await db.prepare(
       `UPDATE virtual_provider_configs
        SET account_id = ?, client_id = ?, auth_mode = ?, encrypted_credentials_json = ?,
            updated_by = ?, updated_at = ?
@@ -1251,13 +1251,13 @@ export function registerVirtualClassroomRoutes(route, { jwtSecret = 'lmsplus-pro
     }
     const provider = String(params.provider || '').toUpperCase();
     const adapter = createProviderAdapter(provider, { db, jwtSecret, log });
-    return adapter.validateMeetingConnection();
+    return await adapter.validateMeetingConnection();
   });
 
   // 4. Danh sách các phòng trực tuyến đã tạo trong lớp (phục vụ tái sử dụng / phòng cố định)
-  route('GET', '/classes/:id/virtual-rooms', ({ db, user, params }) => {
-    const { cls } = requireClassAccess(db, user, params.id, 'can_view_roster');
-    const rows = db
+  route('GET', '/classes/:id/virtual-rooms', async ({ db, user, params }) => {
+    const { cls } = await requireClassAccess(db, user, params.id, 'can_view_roster');
+    const rows = await db
       .prepare(
         `SELECT * FROM virtual_meeting_rooms
          WHERE subject_class_id = ?
@@ -1280,14 +1280,14 @@ export function registerVirtualClassroomRoutes(route, { jwtSecret = 'lmsplus-pro
   });
 
   // 5. Lấy chi tiết Phòng học trực tuyến & Bảng điểm danh tự động của một buổi học
-  route('GET', '/sessions/:id/virtual-room', ({ db, user, params }) => {
-    const { session, cls, caps } = requireSession(db, user, params.id, 'can_view_roster');
-    return buildVirtualSessionDetailDto(db, user, session, cls, caps, jwtSecret);
+  route('GET', '/sessions/:id/virtual-room', async ({ db, user, params }) => {
+    const { session, cls, caps } = await requireSession(db, user, params.id, 'can_view_roster');
+    return await buildVirtualSessionDetailDto(db, user, session, cls, caps, jwtSecret);
   });
 
   // 6. Tạo mới / Gắn phòng học trực tuyến cho buổi học
   route('POST', '/sessions/:id/virtual-room', async ({ db, user, params, body, log }) => {
-    const { session, cls, caps } = requireSession(db, user, params.id, 'can_manage_sessions');
+    const { session, cls, caps } = await requireSession(db, user, params.id, 'can_manage_sessions');
     const mode = oneOf(body, 'creation_mode', ['AUTO_API', 'MANUAL_LINK', 'REUSED_ROOM'], {
       fallback: 'AUTO_API',
       label: 'chế độ tạo phòng',
@@ -1298,12 +1298,12 @@ export function registerVirtualClassroomRoutes(route, { jwtSecret = 'lmsplus-pro
 
     if (mode === 'REUSED_ROOM') {
       const targetRoomId = text(body, 'reuse_room_id', { required: true, max: 80, label: 'mã phòng sẵn có' });
-      const existingRoom = db
+      const existingRoom = await db
         .prepare('SELECT * FROM virtual_meeting_rooms WHERE id = ? AND subject_class_id = ?')
         .get(targetRoomId, cls.id);
       if (!existingRoom) fail(404, 'VIRTUAL_ROOM_NOT_FOUND', 'Không tìm thấy phòng học trực tuyến đã chọn trong lớp này.');
       roomId = existingRoom.id;
-      db.prepare(
+      await db.prepare(
         `UPDATE sessions
          SET virtual_room_id = ?, room_or_link = ?, delivery_mode = CASE WHEN delivery_mode = 'OFFLINE' THEN 'ONLINE' ELSE delivery_mode END
          WHERE session_id = ?`
@@ -1324,8 +1324,8 @@ export function registerVirtualClassroomRoutes(route, { jwtSecret = 'lmsplus-pro
       const supportsAutoSync = provider !== 'EXTERNAL' && Boolean(externalMeetingId) && Boolean(body.supports_auto_sync);
 
       roomId = `vmr_${crypto.randomBytes(6).toString('hex')}`;
-      tx(db, () => {
-        db.prepare(
+      await tx(db, async () => {
+        await db.prepare(
           `INSERT INTO virtual_meeting_rooms (
              id, subject_class_id, session_id, provider, external_platform_name, creation_mode,
              is_recurring_room, room_title, external_meeting_id, join_url,
@@ -1357,7 +1357,7 @@ export function registerVirtualClassroomRoutes(route, { jwtSecret = 'lmsplus-pro
         );
 
         const displayRoom = `${externalPlatformName}${externalMeetingId ? ` · ID: ${formatZoomMeetingId(externalMeetingId)}` : ''}`;
-        db.prepare(
+        await db.prepare(
           `UPDATE sessions
            SET virtual_room_id = ?, room_or_link = ?,
                delivery_mode = CASE WHEN delivery_mode = 'OFFLINE' THEN 'ONLINE' ELSE delivery_mode END
@@ -1365,7 +1365,7 @@ export function registerVirtualClassroomRoutes(route, { jwtSecret = 'lmsplus-pro
         ).run(roomId, displayRoom, session.session_id);
 
         if (isRecurring) {
-          db.prepare('UPDATE subject_classes SET default_virtual_room_id = ? WHERE id = ?').run(roomId, cls.id);
+          await db.prepare('UPDATE subject_classes SET default_virtual_room_id = ? WHERE id = ?').run(roomId, cls.id);
         }
       });
     } else {
@@ -1389,8 +1389,8 @@ export function registerVirtualClassroomRoutes(route, { jwtSecret = 'lmsplus-pro
       });
 
       roomId = `vmr_${crypto.randomBytes(6).toString('hex')}`;
-      tx(db, () => {
-        db.prepare(
+      await tx(db, async () => {
+        await db.prepare(
           `INSERT INTO virtual_meeting_rooms (
              id, subject_class_id, session_id, provider, external_platform_name, creation_mode,
              is_recurring_room, room_title, external_meeting_id, external_meeting_uuid, join_url,
@@ -1423,7 +1423,7 @@ export function registerVirtualClassroomRoutes(route, { jwtSecret = 'lmsplus-pro
           provider === 'ZOOM'
             ? `Zoom · ID: ${formatZoomMeetingId(created.external_meeting_id)}`
             : `Google Meet · ${created.external_meeting_id}`;
-        db.prepare(
+        await db.prepare(
           `UPDATE sessions
            SET virtual_room_id = ?, room_or_link = ?,
                delivery_mode = CASE WHEN delivery_mode = 'OFFLINE' THEN 'ONLINE' ELSE delivery_mode END
@@ -1431,22 +1431,22 @@ export function registerVirtualClassroomRoutes(route, { jwtSecret = 'lmsplus-pro
         ).run(roomId, displayRoom, session.session_id);
 
         if (isRecurring) {
-          db.prepare('UPDATE subject_classes SET default_virtual_room_id = ? WHERE id = ?').run(roomId, cls.id);
+          await db.prepare('UPDATE subject_classes SET default_virtual_room_id = ? WHERE id = ?').run(roomId, cls.id);
         }
       });
     }
 
     log('INFO', `[virtual-room] attached ${roomId} (${mode}) to session ${session.session_id} by ${user.id}`);
-    const updatedSession = db.prepare('SELECT * FROM sessions WHERE session_id = ?').get(session.session_id);
-    return [201, buildVirtualSessionDetailDto(db, user, updatedSession, cls, caps, jwtSecret)];
+    const updatedSession = await db.prepare('SELECT * FROM sessions WHERE session_id = ?').get(session.session_id);
+    return [201, await buildVirtualSessionDetailDto(db, user, updatedSession, cls, caps, jwtSecret)];
   });
 
   // 7. Cập nhật thông tin phòng học trực tuyến (KHÔNG tạo lại phòng mới khi chỉ đổi tên/mật khẩu/cấu hình)
   route('PATCH', '/sessions/:id/virtual-room', async ({ db, user, params, body }) => {
-    const { session, cls, caps } = requireSession(db, user, params.id, 'can_manage_sessions');
+    const { session, cls, caps } = await requireSession(db, user, params.id, 'can_manage_sessions');
     const room = session.virtual_room_id
-      ? db.prepare('SELECT * FROM virtual_meeting_rooms WHERE id = ?').get(session.virtual_room_id)
-      : db.prepare('SELECT * FROM virtual_meeting_rooms WHERE session_id = ? ORDER BY created_at DESC LIMIT 1').get(session.session_id);
+      ? await db.prepare('SELECT * FROM virtual_meeting_rooms WHERE id = ?').get(session.virtual_room_id)
+      : await db.prepare('SELECT * FROM virtual_meeting_rooms WHERE session_id = ? ORDER BY created_at DESC LIMIT 1').get(session.session_id);
     if (!room) fail(404, 'VIRTUAL_ROOM_NOT_FOUND', 'Buổi học này chưa gắn phòng học trực tuyến.');
 
     const nextTitle = 'room_title' in body ? text(body, 'room_title', { required: true, max: 200, label: 'tên phòng' }) : room.room_title;
@@ -1466,29 +1466,29 @@ export function registerVirtualClassroomRoutes(route, { jwtSecret = 'lmsplus-pro
         : room.encrypted_passcode;
     const isRecurring = 'is_recurring_room' in body ? (body.is_recurring_room ? 1 : 0) : room.is_recurring_room;
 
-    db.prepare(
+    await db.prepare(
       `UPDATE virtual_meeting_rooms
        SET room_title = ?, join_url = ?, external_meeting_id = ?, encrypted_passcode = ?,
            is_recurring_room = ?, updated_at = ?
        WHERE id = ?`
     ).run(nextTitle, nextUrl, nextMeetingId, nextPasscode, isRecurring, nowIso(), room.id);
 
-    const updatedSession = db.prepare('SELECT * FROM sessions WHERE session_id = ?').get(session.session_id);
-    return buildVirtualSessionDetailDto(db, user, updatedSession, cls, caps, jwtSecret);
+    const updatedSession = await db.prepare('SELECT * FROM sessions WHERE session_id = ?').get(session.session_id);
+    return await buildVirtualSessionDetailDto(db, user, updatedSession, cls, caps, jwtSecret);
   });
 
   // 8. Xóa / Gỡ liên kết phòng học trực tuyến khỏi buổi học
   route('DELETE', '/sessions/:id/virtual-room', async ({ db, user, params, log }) => {
-    const { session, cls } = requireSession(db, user, params.id, 'can_manage_sessions');
+    const { session, cls } = await requireSession(db, user, params.id, 'can_manage_sessions');
     const room = session.virtual_room_id
-      ? db.prepare('SELECT * FROM virtual_meeting_rooms WHERE id = ?').get(session.virtual_room_id)
-      : db.prepare('SELECT * FROM virtual_meeting_rooms WHERE session_id = ? ORDER BY created_at DESC LIMIT 1').get(session.session_id);
+      ? await db.prepare('SELECT * FROM virtual_meeting_rooms WHERE id = ?').get(session.virtual_room_id)
+      : await db.prepare('SELECT * FROM virtual_meeting_rooms WHERE session_id = ? ORDER BY created_at DESC LIMIT 1').get(session.session_id);
     if (!room) fail(404, 'VIRTUAL_ROOM_NOT_FOUND', 'Buổi học chưa có phòng trực tuyến.');
 
-    tx(db, () => {
-      db.prepare('UPDATE sessions SET virtual_room_id = NULL, room_or_link = ? WHERE session_id = ?').run(cls.room || null, session.session_id);
+    await tx(db, async () => {
+      await db.prepare('UPDATE sessions SET virtual_room_id = NULL, room_or_link = ? WHERE session_id = ?').run(cls.room || null, session.session_id);
       if (!room.is_recurring_room) {
-        db.prepare('DELETE FROM virtual_meeting_rooms WHERE id = ?').run(room.id);
+        await db.prepare('DELETE FROM virtual_meeting_rooms WHERE id = ?').run(room.id);
       }
     });
     log('INFO', `[virtual-room] detached room ${room.id} from ${session.session_id} by ${user.id}`);
@@ -1496,21 +1496,21 @@ export function registerVirtualClassroomRoutes(route, { jwtSecret = 'lmsplus-pro
   });
 
   // 9. Giảng viên Bắt đầu buổi học trực tuyến (trả về Host Start URL đã giải mã — CHỈ dành cho Host/Giảng viên)
-  route('POST', '/sessions/:id/virtual-room/start', ({ db, user, params, log }) => {
-    const { session, cls, caps } = requireSession(db, user, params.id, 'can_take_attendance');
+  route('POST', '/sessions/:id/virtual-room/start', async ({ db, user, params, log }) => {
+    const { session, cls, caps } = await requireSession(db, user, params.id, 'can_take_attendance');
     if (caps.role === 'STUDENT') {
       fail(403, 'HOST_START_FORBIDDEN', 'Học viên không có quyền khởi tạo quyền Host phòng học.');
     }
     const room = session.virtual_room_id
-      ? db.prepare('SELECT * FROM virtual_meeting_rooms WHERE id = ?').get(session.virtual_room_id)
-      : db.prepare('SELECT * FROM virtual_meeting_rooms WHERE session_id = ? ORDER BY created_at DESC LIMIT 1').get(session.session_id);
+      ? await db.prepare('SELECT * FROM virtual_meeting_rooms WHERE id = ?').get(session.virtual_room_id)
+      : await db.prepare('SELECT * FROM virtual_meeting_rooms WHERE session_id = ? ORDER BY created_at DESC LIMIT 1').get(session.session_id);
     if (!room) fail(404, 'VIRTUAL_ROOM_NOT_FOUND', 'Buổi học chưa gắn phòng trực tuyến.');
 
     const nowVnStr = nowVn();
     const now = nowIso();
-    tx(db, () => {
-      db.prepare("UPDATE virtual_meeting_rooms SET room_status = 'LIVE', updated_at = ? WHERE id = ?").run(now, room.id);
-      db.prepare(
+    await tx(db, async () => {
+      await db.prepare("UPDATE virtual_meeting_rooms SET room_status = 'LIVE', updated_at = ? WHERE id = ?").run(now, room.id);
+      await db.prepare(
         `UPDATE sessions
          SET live_status = 'LIVE',
              live_started_at = COALESCE(live_started_at, ?),
@@ -1535,17 +1535,17 @@ export function registerVirtualClassroomRoutes(route, { jwtSecret = 'lmsplus-pro
 
   // 10. Học viên (hoặc Giảng viên) nhấn "Tham gia lớp học trực tuyến"
   // Kiểm tra RBAC & ghi danh lớp học; sinh token định danh học viên; KHÔNG BAO GIỜ trả về host_start_url hay OAuth token!
-  route('POST', '/sessions/:id/virtual-room/join', ({ db, user, params, log }) => {
-    const session = db.prepare('SELECT * FROM sessions WHERE session_id = ?').get(params.id);
+  route('POST', '/sessions/:id/virtual-room/join', async ({ db, user, params, log }) => {
+    const session = await db.prepare('SELECT * FROM sessions WHERE session_id = ?').get(params.id);
     if (!session) fail(404, 'SESSION_NOT_FOUND', 'Không tìm thấy buổi học.');
-    const { cls, caps } = requireClassAccess(db, user, session.subject_class_id, 'can_view');
+    const { cls, caps } = await requireClassAccess(db, user, session.subject_class_id, 'can_view');
     if (session.session_status === 'CANCELLED') {
       fail(422, 'SESSION_CANCELLED', 'Buổi học này đã bị hủy.');
     }
 
     const room = session.virtual_room_id
-      ? db.prepare('SELECT * FROM virtual_meeting_rooms WHERE id = ?').get(session.virtual_room_id)
-      : db.prepare('SELECT * FROM virtual_meeting_rooms WHERE session_id = ? ORDER BY created_at DESC LIMIT 1').get(session.session_id);
+      ? await db.prepare('SELECT * FROM virtual_meeting_rooms WHERE id = ?').get(session.virtual_room_id)
+      : await db.prepare('SELECT * FROM virtual_meeting_rooms WHERE session_id = ? ORDER BY created_at DESC LIMIT 1').get(session.session_id);
     if (!room) {
       fail(404, 'VIRTUAL_ROOM_NOT_FOUND', 'Buổi học chưa có link phòng học trực tuyến.');
     }
@@ -1556,7 +1556,7 @@ export function registerVirtualClassroomRoutes(route, { jwtSecret = 'lmsplus-pro
 
     if (caps.role === 'STUDENT' || isStudent(user)) {
       // Kiểm tra ghi danh ACTIVE trong lớp
-      const enrollment = db
+      const enrollment = await db
         .prepare("SELECT * FROM class_enrollments WHERE subject_class_id = ? AND student_id = ? AND status = 'ACTIVE'")
         .get(cls.id, user.id);
       if (!enrollment) {
@@ -1566,18 +1566,18 @@ export function registerVirtualClassroomRoutes(route, { jwtSecret = 'lmsplus-pro
       lmsJoinToken = `lmst_${crypto.randomBytes(8).toString('hex')}`;
       registrantId = `reg_${user.code}`;
 
-      tx(db, () => {
-        const existingMap = db
+      await tx(db, async () => {
+        const existingMap = await db
           .prepare('SELECT id FROM virtual_identity_mappings WHERE subject_class_id = ? AND student_id = ? AND provider = ?')
           .get(cls.id, user.id, room.provider);
         if (existingMap) {
-          db.prepare(
+          await db.prepare(
             `UPDATE virtual_identity_mappings
              SET provider_email = ?, registrant_id = ?, lms_join_token = ?, updated_at = ?
              WHERE id = ?`
           ).run(user.email.toLowerCase(), registrantId, lmsJoinToken, now, existingMap.id);
         } else {
-          db.prepare(
+          await db.prepare(
             `INSERT INTO virtual_identity_mappings (
                id, subject_class_id, student_id, provider, provider_email,
                provider_user_id, registrant_id, lms_join_token, mapped_by, created_at, updated_at
@@ -1597,13 +1597,13 @@ export function registerVirtualClassroomRoutes(route, { jwtSecret = 'lmsplus-pro
 
         // Nếu nền tảng hỗ trợ đồng bộ & buổi học đang diễn ra, ghi nhận sự kiện vào cổng LMS_GATEWAY
         if (room.supports_auto_sync && (session.live_status === 'LIVE' || Date.now() >= Date.parse(session.scheduled_start_at) - 15 * 60000)) {
-          const alreadyIn = db
+          const alreadyIn = await db
             .prepare(
               'SELECT id FROM virtual_participant_sessions WHERE session_id = ? AND virtual_room_id = ? AND matched_student_id = ? AND is_currently_in_room = 1'
             )
             .get(session.session_id, room.id, user.id);
           if (!alreadyIn) {
-            recordParticipantJoinEvent(db, {
+            await recordParticipantJoinEvent(db, {
               session,
               room,
               externalParticipantId: `lms_${user.code}`,
@@ -1615,7 +1615,7 @@ export function registerVirtualClassroomRoutes(route, { jwtSecret = 'lmsplus-pro
               deviceInfo: 'LMSPLUS Verified Gateway',
               source: 'LMS_GATEWAY',
             });
-            calculateSessionVirtualAttendance(db, session, { preserveManualAdjustments: true });
+            await calculateSessionVirtualAttendance(db, session, { preserveManualAdjustments: true });
           }
         }
       });
@@ -1655,30 +1655,30 @@ export function registerVirtualClassroomRoutes(route, { jwtSecret = 'lmsplus-pro
 
   // 11. Kết thúc buổi học trực tuyến & Tự động tổng hợp điểm danh dự kiến
   route('POST', '/sessions/:id/virtual-room/end', async ({ db, user, params, body, log }) => {
-    const { session, cls, caps } = requireSession(db, user, params.id, 'can_take_attendance');
+    const { session, cls, caps } = await requireSession(db, user, params.id, 'can_take_attendance');
     const room = session.virtual_room_id
-      ? db.prepare('SELECT * FROM virtual_meeting_rooms WHERE id = ?').get(session.virtual_room_id)
-      : db.prepare('SELECT * FROM virtual_meeting_rooms WHERE session_id = ? ORDER BY created_at DESC LIMIT 1').get(session.session_id);
+      ? await db.prepare('SELECT * FROM virtual_meeting_rooms WHERE id = ?').get(session.virtual_room_id)
+      : await db.prepare('SELECT * FROM virtual_meeting_rooms WHERE session_id = ? ORDER BY created_at DESC LIMIT 1').get(session.session_id);
     if (!room) fail(404, 'VIRTUAL_ROOM_NOT_FOUND', 'Buổi học chưa có phòng trực tuyến.');
 
     const endVnStr = nowVn();
     const now = nowIso();
     const waitProviderReport = Boolean(body?.wait_for_provider_report);
 
-    tx(db, () => {
+    await tx(db, async () => {
       // Đóng toàn bộ các phiên còn mở tại thời điểm kết thúc buổi học
-      const openRows = db
+      const openRows = await db
         .prepare('SELECT * FROM virtual_participant_sessions WHERE session_id = ? AND virtual_room_id = ? AND is_currently_in_room = 1')
         .all(session.session_id, room.id);
       for (const op of openRows) {
         const durSec = Math.max(0, Math.round((Date.parse(endVnStr) - Date.parse(op.join_at)) / 1000));
-        db.prepare(
+        await db.prepare(
           'UPDATE virtual_participant_sessions SET leave_at = ?, duration_sec = ?, is_currently_in_room = 0, updated_at = ? WHERE id = ?'
         ).run(endVnStr, durSec, now, op.id);
       }
 
-      db.prepare("UPDATE virtual_meeting_rooms SET room_status = 'ENDED', updated_at = ? WHERE id = ?").run(now, room.id);
-      db.prepare(
+      await db.prepare("UPDATE virtual_meeting_rooms SET room_status = 'ENDED', updated_at = ? WHERE id = ?").run(now, room.id);
+      await db.prepare(
         `UPDATE sessions
          SET live_status = 'ENDED',
              live_ended_at = ?,
@@ -1696,19 +1696,19 @@ export function registerVirtualClassroomRoutes(route, { jwtSecret = 'lmsplus-pro
       );
     });
 
-    const updatedSession = db.prepare('SELECT * FROM sessions WHERE session_id = ?').get(session.session_id);
+    const updatedSession = await db.prepare('SELECT * FROM sessions WHERE session_id = ?').get(session.session_id);
     if (room.supports_auto_sync && !waitProviderReport) {
-      calculateSessionVirtualAttendance(db, updatedSession, {
+      await calculateSessionVirtualAttendance(db, updatedSession, {
         referenceTimeIso: endVnStr,
         preserveManualAdjustments: true,
       });
     }
 
     log('INFO', `[virtual-room] ended session ${session.session_id} by ${user.id}`);
-    return buildVirtualSessionDetailDto(
+    return await buildVirtualSessionDetailDto(
       db,
       user,
-      db.prepare('SELECT * FROM sessions WHERE session_id = ?').get(session.session_id),
+      await db.prepare('SELECT * FROM sessions WHERE session_id = ?').get(session.session_id),
       cls,
       caps,
       jwtSecret
@@ -1716,9 +1716,9 @@ export function registerVirtualClassroomRoutes(route, { jwtSecret = 'lmsplus-pro
   });
 
   // 12. Nhận Webhook từ Zoom / Google Meet (Hỗ trợ xác thực chữ ký HMAC-SHA256, chống replay & idempotency)
-  route('POST', '/webhooks/:provider', ({ req, db, params, body, log }) => {
+  route('POST', '/webhooks/:provider', async ({ req, db, params, body, log }) => {
     const rawBody = req.__rawBody || JSON.stringify(body || {});
-    return processProviderWebhook({
+    return await processProviderWebhook({
       db,
       provider: params.provider,
       headers: req.headers || {},
@@ -1731,26 +1731,26 @@ export function registerVirtualClassroomRoutes(route, { jwtSecret = 'lmsplus-pro
   });
 
   // 13. Mô phỏng sự kiện Webhook thời gian thực (cho phép Giảng viên/QA kiểm chứng luồng vào/ra nhiều lần & UNKNOWN ngay trên giao diện)
-  route('POST', '/sessions/:id/virtual-room/simulate-event', ({ db, user, params, body, log }) => {
-    const { session, cls, caps } = requireSession(db, user, params.id, 'can_take_attendance');
+  route('POST', '/sessions/:id/virtual-room/simulate-event', async ({ db, user, params, body, log }) => {
+    const { session, cls, caps } = await requireSession(db, user, params.id, 'can_take_attendance');
     const room = session.virtual_room_id
-      ? db.prepare('SELECT * FROM virtual_meeting_rooms WHERE id = ?').get(session.virtual_room_id)
-      : db.prepare('SELECT * FROM virtual_meeting_rooms WHERE session_id = ? ORDER BY created_at DESC LIMIT 1').get(session.session_id);
+      ? await db.prepare('SELECT * FROM virtual_meeting_rooms WHERE id = ?').get(session.virtual_room_id)
+      : await db.prepare('SELECT * FROM virtual_meeting_rooms WHERE session_id = ? ORDER BY created_at DESC LIMIT 1').get(session.session_id);
     if (!room) fail(404, 'VIRTUAL_ROOM_NOT_FOUND', 'Buổi học chưa có phòng trực tuyến.');
     if (!room.supports_auto_sync) {
       fail(422, 'AUTO_SYNC_NOT_SUPPORTED', EXTERNAL_NO_SYNC_NOTICE);
     }
 
     const scenario = String(body?.scenario || 'REALISTIC_CLASSROOM_BATCH').toUpperCase();
-    const roster = sessionRoster(db, session);
+    const roster = await sessionRoster(db, session);
     const startMs = Date.parse(session.scheduled_start_at);
     const endMs = Date.parse(session.scheduled_end_at);
     const zoomAdapter = createProviderAdapter('ZOOM', { db, jwtSecret, log });
 
-    const dispatchSignedWebhook = (eventPayload) => {
+    const dispatchSignedWebhook = async (eventPayload) => {
       const raw = JSON.stringify(eventPayload);
-      const sigHeaders = zoomAdapter.signWebhookPayload(raw);
-      return processProviderWebhook({
+      const sigHeaders = await zoomAdapter.signWebhookPayload(raw);
+      return await processProviderWebhook({
         db,
         provider: 'ZOOM',
         headers: sigHeaders,
@@ -1766,7 +1766,7 @@ export function registerVirtualClassroomRoutes(route, { jwtSecret = 'lmsplus-pro
       const targetStudent = roster.find((r) => r.student_id === body.student_id) || roster[0];
       const isUnknown = Boolean(body.as_unknown);
       const joinIso = body.join_at || new Date().toISOString();
-      dispatchSignedWebhook({
+      await dispatchSignedWebhook({
         event: 'meeting.participant_joined',
         event_ts: Date.now(),
         payload: {
@@ -1784,7 +1784,7 @@ export function registerVirtualClassroomRoutes(route, { jwtSecret = 'lmsplus-pro
     } else if (scenario === 'SINGLE_LEAVE') {
       const targetStudent = roster.find((r) => r.student_id === body.student_id) || roster[0];
       const leaveIso = body.leave_at || new Date().toISOString();
-      dispatchSignedWebhook({
+      await dispatchSignedWebhook({
         event: 'meeting.participant_left',
         event_ts: Date.now(),
         payload: {
@@ -1801,7 +1801,7 @@ export function registerVirtualClassroomRoutes(route, { jwtSecret = 'lmsplus-pro
       });
     } else {
       // Kịch bản đầy đủ: Khởi chạy phòng họp + học viên ra vào nhiều lần + thiết bị chồng lấn + đi muộn + tham gia một phần + khách UNKNOWN
-      dispatchSignedWebhook({
+      await dispatchSignedWebhook({
         event: 'meeting.started',
         event_ts: Date.now(),
         payload: {
@@ -1812,7 +1812,7 @@ export function registerVirtualClassroomRoutes(route, { jwtSecret = 'lmsplus-pro
         },
       });
 
-      roster.slice(0, 12).forEach((st, idx) => {
+      for (const [idx, st] of (roster.slice(0, 12)).entries()) {
         if (idx === 0) {
           // Học viên 1 (HS50101): Vào/ra 3 lần + trùng lặp thiết bị (minh họa hợp nhất khoảng chồng lấn chính xác)
           const slices = [
@@ -1822,7 +1822,7 @@ export function registerVirtualClassroomRoutes(route, { jwtSecret = 'lmsplus-pro
             [26, 35],
           ];
           for (const [mIn, mOut] of slices) {
-            dispatchSignedWebhook({
+            await dispatchSignedWebhook({
               event: 'meeting.participant_joined',
               event_ts: Date.now(),
               payload: {
@@ -1837,7 +1837,7 @@ export function registerVirtualClassroomRoutes(route, { jwtSecret = 'lmsplus-pro
                 },
               },
             });
-            dispatchSignedWebhook({
+            await dispatchSignedWebhook({
               event: 'meeting.participant_left',
               event_ts: Date.now(),
               payload: {
@@ -1855,7 +1855,7 @@ export function registerVirtualClassroomRoutes(route, { jwtSecret = 'lmsplus-pro
           }
         } else if (idx === 1) {
           // Học viên 2: Đi muộn 14 phút nhưng ở đến cuối buổi -> LATE
-          dispatchSignedWebhook({
+          await dispatchSignedWebhook({
             event: 'meeting.participant_joined',
             event_ts: Date.now(),
             payload: {
@@ -1870,7 +1870,7 @@ export function registerVirtualClassroomRoutes(route, { jwtSecret = 'lmsplus-pro
               },
             },
           });
-          dispatchSignedWebhook({
+          await dispatchSignedWebhook({
             event: 'meeting.participant_left',
             event_ts: Date.now(),
             payload: {
@@ -1887,7 +1887,7 @@ export function registerVirtualClassroomRoutes(route, { jwtSecret = 'lmsplus-pro
           });
         } else if (idx === 2) {
           // Học viên 3: Chỉ tham gia 8 phút rồi thoát -> PARTIAL
-          dispatchSignedWebhook({
+          await dispatchSignedWebhook({
             event: 'meeting.participant_joined',
             event_ts: Date.now(),
             payload: {
@@ -1902,7 +1902,7 @@ export function registerVirtualClassroomRoutes(route, { jwtSecret = 'lmsplus-pro
               },
             },
           });
-          dispatchSignedWebhook({
+          await dispatchSignedWebhook({
             event: 'meeting.participant_left',
             event_ts: Date.now(),
             payload: {
@@ -1919,7 +1919,7 @@ export function registerVirtualClassroomRoutes(route, { jwtSecret = 'lmsplus-pro
           });
         } else {
           // Các học viên còn lại trong nhóm: Tham gia đầy đủ -> PRESENT
-          dispatchSignedWebhook({
+          await dispatchSignedWebhook({
             event: 'meeting.participant_joined',
             event_ts: Date.now(),
             payload: {
@@ -1934,7 +1934,7 @@ export function registerVirtualClassroomRoutes(route, { jwtSecret = 'lmsplus-pro
               },
             },
           });
-          dispatchSignedWebhook({
+          await dispatchSignedWebhook({
             event: 'meeting.participant_left',
             event_ts: Date.now(),
             payload: {
@@ -1950,12 +1950,12 @@ export function registerVirtualClassroomRoutes(route, { jwtSecret = 'lmsplus-pro
             },
           });
         }
-      });
+      }
 
       // Thêm 1 người tham gia chỉ có display_name trùng tên học viên thứ 13 nhưng KHÔNG có email/token xác thực -> phải vào UNKNOWN
       const targetUnverified = roster[12];
       if (targetUnverified) {
-        dispatchSignedWebhook({
+        await dispatchSignedWebhook({
           event: 'meeting.participant_joined',
           event_ts: Date.now(),
           payload: {
@@ -1970,7 +1970,7 @@ export function registerVirtualClassroomRoutes(route, { jwtSecret = 'lmsplus-pro
             },
           },
         });
-        dispatchSignedWebhook({
+        await dispatchSignedWebhook({
           event: 'meeting.participant_left',
           event_ts: Date.now(),
           payload: {
@@ -1988,16 +1988,16 @@ export function registerVirtualClassroomRoutes(route, { jwtSecret = 'lmsplus-pro
       }
     }
 
-    const updatedSession = db.prepare('SELECT * FROM sessions WHERE session_id = ?').get(session.session_id);
-    return buildVirtualSessionDetailDto(db, user, updatedSession, cls, caps, jwtSecret);
+    const updatedSession = await db.prepare('SELECT * FROM sessions WHERE session_id = ?').get(session.session_id);
+    return await buildVirtualSessionDetailDto(db, user, updatedSession, cls, caps, jwtSecret);
   });
 
   // 14. Đồng bộ lại báo cáo người tham gia từ Provider & Tính lại điểm danh
   route('POST', '/sessions/:id/virtual-attendance/sync', async ({ db, user, params, log }) => {
-    const { session, cls, caps } = requireSession(db, user, params.id, 'can_take_attendance');
+    const { session, cls, caps } = await requireSession(db, user, params.id, 'can_take_attendance');
     const room = session.virtual_room_id
-      ? db.prepare('SELECT * FROM virtual_meeting_rooms WHERE id = ?').get(session.virtual_room_id)
-      : db.prepare('SELECT * FROM virtual_meeting_rooms WHERE session_id = ? ORDER BY created_at DESC LIMIT 1').get(session.session_id);
+      ? await db.prepare('SELECT * FROM virtual_meeting_rooms WHERE id = ?').get(session.virtual_room_id)
+      : await db.prepare('SELECT * FROM virtual_meeting_rooms WHERE session_id = ? ORDER BY created_at DESC LIMIT 1').get(session.session_id);
     if (!room) fail(404, 'VIRTUAL_ROOM_NOT_FOUND', 'Buổi học chưa có phòng trực tuyến.');
     if (!room.supports_auto_sync) {
       fail(422, 'AUTO_SYNC_NOT_SUPPORTED', EXTERNAL_NO_SYNC_NOTICE);
@@ -2005,14 +2005,14 @@ export function registerVirtualClassroomRoutes(route, { jwtSecret = 'lmsplus-pro
 
     const jobId = `vsj_${crypto.randomBytes(6).toString('hex')}`;
     const startedAt = nowIso();
-    db.prepare(
+    await db.prepare(
       `INSERT INTO virtual_sync_jobs (
          id, session_id, virtual_room_id, provider, trigger_source, status, attempt_count, started_at
        ) VALUES (?, ?, ?, ?, 'MANUAL_RESYNC', 'RUNNING', 1, ?)`
     ).run(jobId, session.session_id, room.id, room.provider, startedAt);
 
     if (session.attendance_sync_status !== 'CONFIRMED') {
-      db.prepare("UPDATE sessions SET attendance_sync_status = 'SYNCING' WHERE session_id = ?").run(session.session_id);
+      await db.prepare("UPDATE sessions SET attendance_sync_status = 'SYNCING' WHERE session_id = ?").run(session.session_id);
     }
 
     const adapter = createProviderAdapter(room.provider, { db, jwtSecret, log });
@@ -2021,7 +2021,7 @@ export function registerVirtualClassroomRoutes(route, { jwtSecret = 'lmsplus-pro
     // Nếu Provider trả thêm các bản ghi từ past_meetings report, hợp nhất idempotent vào virtual_participant_sessions
     for (const p of report.participants || []) {
       const key = `rep_${room.id}_${p.external_participant_id || p.display_name}_${p.join_at}`;
-      const exists = db
+      const exists = await db
         .prepare(
           `SELECT id FROM virtual_participant_sessions
            WHERE session_id = ? AND virtual_room_id = ?
@@ -2029,7 +2029,7 @@ export function registerVirtualClassroomRoutes(route, { jwtSecret = 'lmsplus-pro
         )
         .get(session.session_id, room.id, key, p.external_participant_id || '', p.join_at);
       if (!exists && p.join_at) {
-        const jRes = recordParticipantJoinEvent(db, {
+        const jRes = await recordParticipantJoinEvent(db, {
           session,
           room,
           externalParticipantId: p.external_participant_id,
@@ -2042,44 +2042,44 @@ export function registerVirtualClassroomRoutes(route, { jwtSecret = 'lmsplus-pro
         });
         if (p.leave_at && !jRes.deduplicated) {
           const durSec = Math.max(0, Math.round((Date.parse(p.leave_at) - Date.parse(p.join_at)) / 1000));
-          db.prepare(
+          await db.prepare(
             'UPDATE virtual_participant_sessions SET leave_at = ?, duration_sec = ?, is_currently_in_room = 0 WHERE id = ?'
           ).run(vnIso(new Date(p.leave_at)), durSec, jRes.id);
         }
       }
     }
 
-    const refreshedForCalc = db.prepare('SELECT * FROM sessions WHERE session_id = ?').get(session.session_id);
+    const refreshedForCalc = await db.prepare('SELECT * FROM sessions WHERE session_id = ?').get(session.session_id);
     if (refreshedForCalc.attendance_sync_status === 'WAITING_PROVIDER_DATA') {
-      db.prepare("UPDATE sessions SET attendance_sync_status = 'SYNCING' WHERE session_id = ?").run(session.session_id);
+      await db.prepare("UPDATE sessions SET attendance_sync_status = 'SYNCING' WHERE session_id = ?").run(session.session_id);
     }
 
-    const calcResult = calculateSessionVirtualAttendance(
+    const calcResult = await calculateSessionVirtualAttendance(
       db,
-      db.prepare('SELECT * FROM sessions WHERE session_id = ?').get(session.session_id),
+      await db.prepare('SELECT * FROM sessions WHERE session_id = ?').get(session.session_id),
       { preserveManualAdjustments: true }
     );
 
-    const totalFetched = db
+    const totalFetched = (await db
       .prepare('SELECT COUNT(*) n FROM virtual_participant_sessions WHERE session_id = ? AND virtual_room_id = ?')
-      .get(session.session_id, room.id).n;
-    const matchedCnt = db
+      .get(session.session_id, room.id)).n;
+    const matchedCnt = (await db
       .prepare(
         'SELECT COUNT(DISTINCT matched_student_id) n FROM virtual_participant_sessions WHERE session_id = ? AND virtual_room_id = ? AND matched_student_id IS NOT NULL'
       )
-      .get(session.session_id, room.id).n;
+      .get(session.session_id, room.id)).n;
 
-    db.prepare(
+    await db.prepare(
       `UPDATE virtual_sync_jobs
        SET status = 'COMPLETED', participants_fetched = ?, matched_students = ?, unknown_participants = ?, completed_at = ?
        WHERE id = ?`
     ).run(totalFetched, matchedCnt, calcResult.unknown_participants_count || 0, nowIso(), jobId);
 
     log('INFO', `[virtual-sync] synced session ${session.session_id} (${totalFetched} slices, ${matchedCnt} matched) by ${user.id}`);
-    return buildVirtualSessionDetailDto(
+    return await buildVirtualSessionDetailDto(
       db,
       user,
-      db.prepare('SELECT * FROM sessions WHERE session_id = ?').get(session.session_id),
+      await db.prepare('SELECT * FROM sessions WHERE session_id = ?').get(session.session_id),
       cls,
       caps,
       jwtSecret
@@ -2087,8 +2087,8 @@ export function registerVirtualClassroomRoutes(route, { jwtSecret = 'lmsplus-pro
   });
 
   // 15. Cấu hình quy tắc điểm danh tự động cho buổi học hoặc cho cả lớp học
-  route('PUT', '/sessions/:id/virtual-attendance/rules', ({ db, user, params, body, log }) => {
-    const { session, cls, caps } = requireSession(db, user, params.id, 'can_take_attendance');
+  route('PUT', '/sessions/:id/virtual-attendance/rules', async ({ db, user, params, body, log }) => {
+    const { session, cls, caps } = await requireSession(db, user, params.id, 'can_take_attendance');
     const lateGrace = intField(body, 'late_grace_minutes', { min: 0, max: 120, label: 'thời gian cho phép vào muộn' }) ?? 10;
     const minDuration = intField(body, 'min_duration_minutes', { min: 1, max: 600, label: 'thời gian tham gia tối thiểu' }) ?? 20;
     const minPct = intField(body, 'min_attendance_pct', { min: 1, max: 100, label: 'tỷ lệ tham gia tối thiểu (%)' }) ?? 70;
@@ -2115,13 +2115,13 @@ export function registerVirtualClassroomRoutes(route, { jwtSecret = 'lmsplus-pro
       allow_instructor_adjustment: allowAdjust,
     };
 
-    tx(db, () => {
-      db.prepare('UPDATE sessions SET attendance_rules_json = ? WHERE session_id = ?').run(
+    await tx(db, async () => {
+      await db.prepare('UPDATE sessions SET attendance_rules_json = ? WHERE session_id = ?').run(
         JSON.stringify(rulesObj),
         session.session_id
       );
       if (body.apply_to_class && caps.can_manage_class) {
-        db.prepare('UPDATE subject_classes SET attendance_rules_json = ?, updated_at = ? WHERE id = ?').run(
+        await db.prepare('UPDATE subject_classes SET attendance_rules_json = ?, updated_at = ? WHERE id = ?').run(
           JSON.stringify(rulesObj),
           nowIso(),
           cls.id
@@ -2129,13 +2129,13 @@ export function registerVirtualClassroomRoutes(route, { jwtSecret = 'lmsplus-pro
       }
     });
 
-    const updatedSession = db.prepare('SELECT * FROM sessions WHERE session_id = ?').get(session.session_id);
-    calculateSessionVirtualAttendance(db, updatedSession, { preserveManualAdjustments: true });
+    const updatedSession = await db.prepare('SELECT * FROM sessions WHERE session_id = ?').get(session.session_id);
+    await calculateSessionVirtualAttendance(db, updatedSession, { preserveManualAdjustments: true });
     log('INFO', `[virtual-rules] updated rules for ${session.session_id} by ${user.id}`);
-    return buildVirtualSessionDetailDto(
+    return await buildVirtualSessionDetailDto(
       db,
       user,
-      db.prepare('SELECT * FROM sessions WHERE session_id = ?').get(session.session_id),
+      await db.prepare('SELECT * FROM sessions WHERE session_id = ?').get(session.session_id),
       cls,
       caps,
       jwtSecret
@@ -2143,18 +2143,18 @@ export function registerVirtualClassroomRoutes(route, { jwtSecret = 'lmsplus-pro
   });
 
   // 16. Giảng viên xác nhận thủ công danh tính cho người tham gia UNKNOWN
-  route('POST', '/sessions/:id/virtual-attendance/map-participant', ({ db, user, params, body, log }) => {
-    const { session, cls, caps } = requireSession(db, user, params.id, 'can_take_attendance');
+  route('POST', '/sessions/:id/virtual-attendance/map-participant', async ({ db, user, params, body, log }) => {
+    const { session, cls, caps } = await requireSession(db, user, params.id, 'can_take_attendance');
     const participantSessionId = text(body, 'participant_session_id', { required: true, max: 80, label: 'mã phiên tham gia' });
     const studentId = text(body, 'student_id', { required: true, max: 80, label: 'mã học viên' });
 
-    const roster = sessionRoster(db, session);
+    const roster = await sessionRoster(db, session);
     const student = roster.find((s) => s.student_id === studentId);
     if (!student) {
       fail(422, 'STUDENT_NOT_IN_CLASS', 'Học viên được chọn không thuộc danh sách lớp học này.');
     }
 
-    const ps = db
+    const ps = await db
       .prepare('SELECT * FROM virtual_participant_sessions WHERE id = ? AND session_id = ?')
       .get(participantSessionId, session.session_id);
     if (!ps) {
@@ -2162,16 +2162,16 @@ export function registerVirtualClassroomRoutes(route, { jwtSecret = 'lmsplus-pro
     }
 
     const now = nowIso();
-    tx(db, () => {
+    await tx(db, async () => {
       // Cập nhật phiên hiện tại và các phiên cùng external_participant_id / display_name trong buổi học này
       if (ps.external_participant_id) {
-        db.prepare(
+        await db.prepare(
           `UPDATE virtual_participant_sessions
            SET matched_student_id = ?, identity_match_method = 'INSTRUCTOR_MANUAL_MAP', updated_at = ?
            WHERE session_id = ? AND external_participant_id = ?`
         ).run(student.student_id, now, session.session_id, ps.external_participant_id);
       } else {
-        db.prepare(
+        await db.prepare(
           `UPDATE virtual_participant_sessions
            SET matched_student_id = ?, identity_match_method = 'INSTRUCTOR_MANUAL_MAP', updated_at = ?
            WHERE id = ?`
@@ -2180,7 +2180,7 @@ export function registerVirtualClassroomRoutes(route, { jwtSecret = 'lmsplus-pro
 
       // Lưu vào bảng virtual_identity_mappings để những lần sau tự động nhận diện
       if (ps.external_participant_id || ps.participant_email) {
-        db.prepare(
+        await db.prepare(
           `INSERT INTO virtual_identity_mappings (
              id, subject_class_id, student_id, provider, provider_email,
              provider_user_id, mapped_by, created_at, updated_at
@@ -2198,7 +2198,7 @@ export function registerVirtualClassroomRoutes(route, { jwtSecret = 'lmsplus-pro
       }
 
       // Lưu lịch sử kiểm toán
-      db.prepare(
+      await db.prepare(
         `INSERT INTO virtual_attendance_adjustments (
            id, session_id, student_id, action_type, previous_status, new_status,
            reason, actor_id, actor_name, metadata_json, created_at
@@ -2221,14 +2221,14 @@ export function registerVirtualClassroomRoutes(route, { jwtSecret = 'lmsplus-pro
       );
     });
 
-    const updatedSession = db.prepare('SELECT * FROM sessions WHERE session_id = ?').get(session.session_id);
-    calculateSessionVirtualAttendance(db, updatedSession, { preserveManualAdjustments: true });
+    const updatedSession = await db.prepare('SELECT * FROM sessions WHERE session_id = ?').get(session.session_id);
+    await calculateSessionVirtualAttendance(db, updatedSession, { preserveManualAdjustments: true });
     log('INFO', `[virtual-map] mapped participant ${ps.id} -> student ${student.code} by ${user.id}`);
 
-    return buildVirtualSessionDetailDto(
+    return await buildVirtualSessionDetailDto(
       db,
       user,
-      db.prepare('SELECT * FROM sessions WHERE session_id = ?').get(session.session_id),
+      await db.prepare('SELECT * FROM sessions WHERE session_id = ?').get(session.session_id),
       cls,
       caps,
       jwtSecret
@@ -2236,12 +2236,12 @@ export function registerVirtualClassroomRoutes(route, { jwtSecret = 'lmsplus-pro
   });
 
   // 17. Giảng viên điều chỉnh kết quả điểm danh của học viên (có lưu lịch sử & lý do bắt buộc)
-  route('PATCH', '/sessions/:id/virtual-attendance/records/:studentId', ({ db, user, params, body, log }) => {
-    const { session, cls, caps } = requireSession(db, user, params.id, 'can_take_attendance');
+  route('PATCH', '/sessions/:id/virtual-attendance/records/:studentId', async ({ db, user, params, body, log }) => {
+    const { session, cls, caps } = await requireSession(db, user, params.id, 'can_take_attendance');
     if (session.attendance_locked_at && !caps.can_lock_attendance) {
       fail(423, 'ATTENDANCE_LOCKED', 'Điểm danh buổi học này đã chốt khóa. Cần Giáo vụ mở khóa để chỉnh sửa.');
     }
-    const rules = getSessionAttendanceRules(db, session, cls);
+    const rules = await getSessionAttendanceRules(db, session, cls);
     if (!rules.allow_instructor_adjustment && !isAdmin(user) && !isStaff(user)) {
       fail(403, 'ADJUSTMENT_DISABLED', 'Cấu hình buổi học này không cho phép điều chỉnh thủ công kết quả điểm danh tự động.');
     }
@@ -2252,26 +2252,26 @@ export function registerVirtualClassroomRoutes(route, { jwtSecret = 'lmsplus-pro
     });
     const reason = text(body, 'reason', { required: true, min: 3, max: 500, label: 'lý do điều chỉnh' });
 
-    const roster = sessionRoster(db, session);
+    const roster = await sessionRoster(db, session);
     const student = roster.find((s) => s.student_id === params.studentId);
     if (!student) fail(404, 'STUDENT_NOT_IN_CLASS', 'Học viên không thuộc danh sách lớp.');
 
-    calculateSessionVirtualAttendance(db, session, { preserveManualAdjustments: true });
-    const existingCalc = db
+    await calculateSessionVirtualAttendance(db, session, { preserveManualAdjustments: true });
+    const existingCalc = await db
       .prepare('SELECT * FROM virtual_attendance_calculations WHERE session_id = ? AND student_id = ?')
       .get(session.session_id, student.student_id);
 
     const prevStatus = existingCalc ? existingCalc.final_status : 'ABSENT';
     const now = nowIso();
 
-    tx(db, () => {
-      db.prepare(
+    await tx(db, async () => {
+      await db.prepare(
         `UPDATE virtual_attendance_calculations
          SET final_status = ?, is_manually_adjusted = 1, adjustment_reason = ?, adjusted_by = ?, adjusted_at = ?
          WHERE session_id = ? AND student_id = ?`
       ).run(newStatus, reason, user.id, now, session.session_id, student.student_id);
 
-      db.prepare(
+      await db.prepare(
         `INSERT INTO virtual_attendance_adjustments (
            id, session_id, student_id, action_type, previous_status, new_status,
            reason, actor_id, actor_name, metadata_json, created_at
@@ -2299,14 +2299,14 @@ export function registerVirtualClassroomRoutes(route, { jwtSecret = 'lmsplus-pro
             : newStatus === 'PARTIAL'
             ? 'LATE'
             : newStatus;
-        const attRow = db
+        const attRow = await db
           .prepare('SELECT * FROM attendance_records WHERE class_session_id = ? AND student_id = ?')
           .get(session.session_id, student.student_id);
         if (attRow) {
-          db.prepare(
+          await db.prepare(
             'UPDATE attendance_records SET attendance_status = ?, note = ?, updated_by = ?, updated_at = ? WHERE id = ?'
           ).run(mappedRecordStatus, reason, user.id, now, attRow.id);
-          db.prepare(
+          await db.prepare(
             `INSERT INTO attendance_audit_logs (
                id, attendance_record_id, previous_status, new_status, previous_note, new_note, change_reason, changed_by, changed_at
              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
@@ -2325,14 +2325,14 @@ export function registerVirtualClassroomRoutes(route, { jwtSecret = 'lmsplus-pro
       }
     });
 
-    const updatedSession = db.prepare('SELECT * FROM sessions WHERE session_id = ?').get(session.session_id);
-    calculateSessionVirtualAttendance(db, updatedSession, { preserveManualAdjustments: true });
+    const updatedSession = await db.prepare('SELECT * FROM sessions WHERE session_id = ?').get(session.session_id);
+    await calculateSessionVirtualAttendance(db, updatedSession, { preserveManualAdjustments: true });
     log('INFO', `[virtual-adjust] ${student.code}: ${prevStatus} -> ${newStatus} by ${user.id}`);
 
-    return buildVirtualSessionDetailDto(
+    return await buildVirtualSessionDetailDto(
       db,
       user,
-      db.prepare('SELECT * FROM sessions WHERE session_id = ?').get(session.session_id),
+      await db.prepare('SELECT * FROM sessions WHERE session_id = ?').get(session.session_id),
       cls,
       caps,
       jwtSecret
@@ -2340,14 +2340,14 @@ export function registerVirtualClassroomRoutes(route, { jwtSecret = 'lmsplus-pro
   });
 
   // 18. Xác nhận & Chốt kết quả điểm danh tự động (đồng bộ sang bảng attendance_records chính thức của lớp)
-  route('POST', '/sessions/:id/virtual-attendance/confirm', ({ db, user, params, body, log }) => {
-    const { session, cls, caps } = requireSession(db, user, params.id, 'can_take_attendance');
+  route('POST', '/sessions/:id/virtual-attendance/confirm', async ({ db, user, params, body, log }) => {
+    const { session, cls, caps } = await requireSession(db, user, params.id, 'can_take_attendance');
     if (session.session_status === 'CANCELLED') {
       fail(422, 'SESSION_CANCELLED', 'Buổi học đã hủy, không thể chốt điểm danh.');
     }
     const room = session.virtual_room_id
-      ? db.prepare('SELECT * FROM virtual_meeting_rooms WHERE id = ?').get(session.virtual_room_id)
-      : db.prepare('SELECT * FROM virtual_meeting_rooms WHERE session_id = ? ORDER BY created_at DESC LIMIT 1').get(session.session_id);
+      ? await db.prepare('SELECT * FROM virtual_meeting_rooms WHERE id = ?').get(session.virtual_room_id)
+      : await db.prepare('SELECT * FROM virtual_meeting_rooms WHERE session_id = ? ORDER BY created_at DESC LIMIT 1').get(session.session_id);
     if (!room || !room.supports_auto_sync) {
       fail(422, 'AUTO_SYNC_NOT_SUPPORTED', EXTERNAL_NO_SYNC_NOTICE);
     }
@@ -2361,9 +2361,9 @@ export function registerVirtualClassroomRoutes(route, { jwtSecret = 'lmsplus-pro
 
     // Nếu người dùng chọn giải quyết toàn bộ MANUAL_REVIEW còn lại thành ABSENT khi xác nhận
     const resolveRemainingAsAbsent = Boolean(body?.resolve_unmatched_as_absent);
-    calculateSessionVirtualAttendance(db, session, { preserveManualAdjustments: true });
+    await calculateSessionVirtualAttendance(db, session, { preserveManualAdjustments: true });
 
-    const calcs = db
+    const calcs = await db
       .prepare('SELECT * FROM virtual_attendance_calculations WHERE session_id = ?')
       .all(session.session_id);
     const unresolved = calcs.filter((c) => c.final_status === 'MANUAL_REVIEW');
@@ -2377,9 +2377,9 @@ export function registerVirtualClassroomRoutes(route, { jwtSecret = 'lmsplus-pro
     }
 
     const now = nowIso();
-    tx(db, () => {
+    await tx(db, async () => {
       if (unresolved.length > 0 && resolveRemainingAsAbsent) {
-        db.prepare(
+        await db.prepare(
           `UPDATE virtual_attendance_calculations
            SET final_status = 'ABSENT',
                adjustment_reason = COALESCE(adjustment_reason, 'Chốt điểm danh: không có phiên tham gia xác thực')
@@ -2387,7 +2387,7 @@ export function registerVirtualClassroomRoutes(route, { jwtSecret = 'lmsplus-pro
         ).run(session.session_id);
       }
 
-      const finalCalcs = db
+      const finalCalcs = await db
         .prepare('SELECT * FROM virtual_attendance_calculations WHERE session_id = ?')
         .all(session.session_id);
 
@@ -2409,13 +2409,13 @@ export function registerVirtualClassroomRoutes(route, { jwtSecret = 'lmsplus-pro
             ? `Phòng trực tuyến: tham gia ${durMin} phút (${c.attendance_ratio_pct}%)${c.final_status === 'PARTIAL' ? ' [Tham gia một phần]' : ''}`
             : 'Phòng trực tuyến: không có dữ liệu tham gia hợp lệ');
 
-        const existingRec = db
+        const existingRec = await db
           .prepare('SELECT * FROM attendance_records WHERE class_session_id = ? AND student_id = ?')
           .get(session.session_id, c.student_id);
 
         if (!existingRec) {
           const recId = crypto.randomUUID();
-          db.prepare(
+          await db.prepare(
             `INSERT INTO attendance_records (
                id, subject_class_id, class_session_id, student_id, attendance_status,
                check_in_method, check_in_at, note, recorded_by, updated_by, created_at, updated_at
@@ -2433,16 +2433,16 @@ export function registerVirtualClassroomRoutes(route, { jwtSecret = 'lmsplus-pro
             now,
             now
           );
-          db.prepare(
+          await db.prepare(
             `INSERT INTO attendance_audit_logs (
                id, attendance_record_id, previous_status, new_status, previous_note, new_note, change_reason, changed_by, changed_at
              ) VALUES (?, ?, NULL, ?, NULL, ?, 'Đồng bộ & xác nhận từ Phòng học trực tuyến', ?, ?)`
           ).run(crypto.randomUUID(), recId, canonicalStatus, autoNote.slice(0, 500), user.id, now);
         } else if (existingRec.attendance_status !== canonicalStatus || (existingRec.note || '') !== autoNote) {
-          db.prepare(
+          await db.prepare(
             'UPDATE attendance_records SET attendance_status = ?, check_in_at = COALESCE(?, check_in_at), note = ?, updated_by = ?, updated_at = ? WHERE id = ?'
           ).run(canonicalStatus, c.first_join_at || null, autoNote.slice(0, 500), user.id, now, existingRec.id);
-          db.prepare(
+          await db.prepare(
             `INSERT INTO attendance_audit_logs (
                id, attendance_record_id, previous_status, new_status, previous_note, new_note, change_reason, changed_by, changed_at
              ) VALUES (?, ?, ?, ?, ?, ?, 'Cập nhật chốt điểm danh Phòng học trực tuyến', ?, ?)`
@@ -2459,7 +2459,7 @@ export function registerVirtualClassroomRoutes(route, { jwtSecret = 'lmsplus-pro
         }
       }
 
-      db.prepare(
+      await db.prepare(
         `UPDATE sessions
          SET attendance_sync_status = 'CONFIRMED',
              attendance_saved_at = ?,
@@ -2467,7 +2467,7 @@ export function registerVirtualClassroomRoutes(route, { jwtSecret = 'lmsplus-pro
          WHERE session_id = ?`
       ).run(now, user.id, session.session_id);
 
-      db.prepare(
+      await db.prepare(
         `INSERT INTO virtual_attendance_adjustments (
            id, session_id, student_id, action_type, previous_status, new_status,
            reason, actor_id, actor_name, metadata_json, created_at
@@ -2485,10 +2485,10 @@ export function registerVirtualClassroomRoutes(route, { jwtSecret = 'lmsplus-pro
     });
 
     log('INFO', `[virtual-confirm] confirmed virtual attendance for ${session.session_id} by ${user.id}`);
-    return buildVirtualSessionDetailDto(
+    return await buildVirtualSessionDetailDto(
       db,
       user,
-      db.prepare('SELECT * FROM sessions WHERE session_id = ?').get(session.session_id),
+      await db.prepare('SELECT * FROM sessions WHERE session_id = ?').get(session.session_id),
       cls,
       caps,
       jwtSecret
@@ -2496,27 +2496,27 @@ export function registerVirtualClassroomRoutes(route, { jwtSecret = 'lmsplus-pro
   });
 
   // 19. Lịch sử điều chỉnh, sự kiện Webhook & Job đồng bộ của buổi học
-  route('GET', '/sessions/:id/virtual-attendance/history', ({ db, user, params }) => {
-    const { session } = requireSession(db, user, params.id, 'can_view_roster');
-    const adjustments = db
+  route('GET', '/sessions/:id/virtual-attendance/history', async ({ db, user, params }) => {
+    const { session } = await requireSession(db, user, params.id, 'can_view_roster');
+    const adjustments = await db
       .prepare(
         `SELECT a.*, u.code AS student_code, u.full_name AS student_name
          FROM virtual_attendance_adjustments a
          LEFT JOIN users u ON u.id = a.student_id
          WHERE a.session_id = ?
-         ORDER BY a.created_at DESC, a.rowid DESC LIMIT 200`
+         ORDER BY a.created_at DESC, a.id DESC LIMIT 200`
       )
       .all(session.session_id);
-    const syncJobs = db
+    const syncJobs = await db
       .prepare('SELECT * FROM virtual_sync_jobs WHERE session_id = ? ORDER BY started_at DESC LIMIT 50')
       .all(session.session_id);
-    const webhookEvents = db
+    const webhookEvents = await db
       .prepare(
         `SELECT id, event_key, provider, event_type, external_meeting_id, event_timestamp_ms,
                 signature_verified, processing_status, received_at
          FROM virtual_webhook_events
          WHERE session_id = ?
-         ORDER BY received_at DESC, rowid DESC LIMIT 100`
+         ORDER BY received_at DESC, id DESC LIMIT 100`
       )
       .all(session.session_id);
     return {
@@ -2527,9 +2527,9 @@ export function registerVirtualClassroomRoutes(route, { jwtSecret = 'lmsplus-pro
   });
 
   // 20. Xuất báo cáo Excel (CSV UTF-8 BOM) chi tiết thời gian vào/ra và trạng thái điểm danh buổi học trực tuyến
-  route('GET', '/sessions/:id/virtual-attendance/export', ({ db, user, params, raw }) => {
-    const { session, cls, caps } = requireSession(db, user, params.id, 'can_view_roster');
-    const detail = buildVirtualSessionDetailDto(db, user, session, cls, caps, jwtSecret);
+  route('GET', '/sessions/:id/virtual-attendance/export', async ({ db, user, params, raw }) => {
+    const { session, cls, caps } = await requireSession(db, user, params.id, 'can_view_roster');
+    const detail = await buildVirtualSessionDetailDto(db, user, session, cls, caps, jwtSecret);
     const header = [
       'STT',
       'Mã SV',

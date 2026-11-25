@@ -13,7 +13,7 @@ import path from 'node:path';
 import { parseYouTubeUrl } from '../../shared/youtube.mjs';
 import { BLOCK_SCHEMA_VERSION, normalizeSnapshot, validateBlocks, validateDirectVideoUrl } from './blocks.mjs';
 import { draftBlocks, getCourse, latestPublishedBlocks, lessonContext, outline } from './courses.mjs';
-import { fail, intField, nowIso, oneOf, safeFilename, text, tx } from './http.mjs';
+import { fail, intField, nowIso, oneOf, safeFilename, text, tx , mapAsync} from './http.mjs';
 import { getClassContentVersionKey } from './masterSchema.mjs';
 import {
   MARKER_BEHAVIORS,
@@ -79,35 +79,35 @@ export function buildMediaStreamUrl(secret, resourceId, userId) {
 
 // ------------------------------------------------------------------ Quyền & Helpers
 
-export function canEditClassContent(db, user, cls) {
-  const caps = classCapabilities(db, user, cls);
+export async function canEditClassContent(db, user, cls) {
+  const caps = await classCapabilities(db, user, cls);
   if (caps.can_manage_class) return true;
   if (caps.role === 'TEACHING_ASSISTANT') {
-    const a = staffAssignments(db, user.id, cls.id)[0];
+    const a = (await staffAssignments(db, user.id, cls.id))[0];
     return Boolean(a && a.permissions && a.permissions.can_manage_materials);
   }
   return false;
 }
 
-export function canPublishClassContent(db, user, cls) {
-  return classCapabilities(db, user, cls).can_manage_class;
+export async function canPublishClassContent(db, user, cls) {
+  return (await classCapabilities(db, user, cls)).can_manage_class;
 }
 
-function canStreamResource(db, user, resRow) {
-  const course = getCourse(db, resRow.course_id);
+async function canStreamResource(db, user, resRow) {
+  const course = await getCourse(db, resRow.course_id);
   if (!course) return false;
-  if (canViewCourse(db, user, course)) return true;
+  if (await canViewCourse(db, user, course)) return true;
   if (resRow.class_id) {
-    const cls = db.prepare('SELECT * FROM subject_classes WHERE id = ?').get(resRow.class_id);
-    if (cls && classRole(db, user, cls)) {
-      if (resRow.visibility === 'INSTRUCTOR_ONLY' && classRole(db, user, cls) === 'STUDENT') return false;
+    const cls = await db.prepare('SELECT * FROM subject_classes WHERE id = ?').get(resRow.class_id);
+    if (cls && await classRole(db, user, cls)) {
+      if (resRow.visibility === 'INSTRUCTOR_ONLY' && await classRole(db, user, cls) === 'STUDENT') return false;
       return true;
     }
     return false;
   }
   if (course.status !== 'PUBLISHED') return false;
   if (resRow.visibility === 'INSTRUCTOR_ONLY') return false;
-  const enrolled = db
+  const enrolled = await db
     .prepare(
       `SELECT 1 FROM class_enrollments e
        JOIN subject_classes sc ON sc.id = e.subject_class_id
@@ -144,14 +144,14 @@ export function mapMarkerRow(r) {
   };
 }
 
-export function draftLessonMarkers(db, lessonId, classId = null) {
+export async function draftLessonMarkers(db, lessonId, classId = null) {
   const rows = classId
-    ? db
+    ? await db
         .prepare(
           'SELECT * FROM video_quiz_markers WHERE lesson_id = ? AND class_id = ? ORDER BY timestamp_sec ASC, sort_order ASC'
         )
         .all(lessonId, classId)
-    : db
+    : await db
         .prepare(
           'SELECT * FROM video_quiz_markers WHERE lesson_id = ? AND class_id IS NULL ORDER BY timestamp_sec ASC, sort_order ASC'
         )
@@ -191,8 +191,8 @@ export function filterActiveMarkerSubs(subs, marker, blocks = []) {
   });
 }
 
-export function latestPublishedMarkers(db, lessonId) {
-  const v = db
+export async function latestPublishedMarkers(db, lessonId) {
+  const v = await db
     .prepare('SELECT markers_snapshot_json FROM lesson_versions WHERE lesson_id = ? ORDER BY version_number DESC LIMIT 1')
     .get(lessonId);
   if (v && v.markers_snapshot_json) {
@@ -201,11 +201,11 @@ export function latestPublishedMarkers(db, lessonId) {
       return parsed.map((r) => (r.question !== undefined ? r : mapMarkerRow(r)));
     }
   }
-  return draftLessonMarkers(db, lessonId, null);
+  return await draftLessonMarkers(db, lessonId, null);
 }
 
-export function getPublishedClassCustom(db, classId, lessonId) {
-  const meta = db
+export async function getPublishedClassCustom(db, classId, lessonId) {
+  const meta = await db
     .prepare('SELECT * FROM class_lesson_customs WHERE subject_class_id = ? AND lesson_id = ?')
     .get(classId, lessonId);
   if (!meta) return null;
@@ -223,11 +223,11 @@ export function getPublishedClassCustom(db, classId, lessonId) {
     }
   }
   if (meta.publish_status === 'PUBLISHED') {
-    const blocks = db
+    const blocks = (await db
       .prepare(
         'SELECT * FROM class_lesson_blocks WHERE subject_class_id = ? AND lesson_id = ? AND is_published = 1 ORDER BY sort_order'
       )
-      .all(classId, lessonId)
+      .all(classId, lessonId))
       .map((b) => ({
         id: b.id,
         block_type: b.block_type,
@@ -241,7 +241,7 @@ export function getPublishedClassCustom(db, classId, lessonId) {
       instructor_note: meta.instructor_note || '',
       custom_objectives: meta.custom_objectives || '',
       blocks,
-      markers: draftLessonMarkers(db, lessonId, classId),
+      markers: await draftLessonMarkers(db, lessonId, classId),
     };
   }
   return null;
@@ -303,12 +303,12 @@ export function computeLessonWarnings(blocks, markers) {
   return warnings;
 }
 
-function validateAndPersistMarkers(db, { lessonId, classId = null, courseId, markersInput, blockIdFilter = null, userId }) {
+async function validateAndPersistMarkers(db, { lessonId, classId = null, courseId, markersInput, blockIdFilter = null, userId }) {
   if (!Array.isArray(markersInput)) fail(422, 'VALIDATION_ERROR', 'Danh sách mốc tương tác phải là mảng.');
   if (markersInput.length > 100) fail(422, 'VALIDATION_ERROR', 'Mỗi bài học tối đa 100 mốc tương tác trên video.');
 
   const now = nowIso();
-  const normalized = markersInput.map((m, idx) => {
+  const normalized = await mapAsync(markersInput, async (m, idx) => {
     if (!m || typeof m !== 'object') fail(422, 'VALIDATION_ERROR', `Mốc #${idx + 1} không hợp lệ.`);
     const blockId = String(m.block_id || '').trim();
     if (!blockId || !/^[A-Za-z0-9_-]{1,64}$/.test(blockId)) {
@@ -338,7 +338,7 @@ function validateAndPersistMarkers(db, { lessonId, classId = null, courseId, mar
     } else {
       let rawQ = m.question;
       if (!rawQ && questionId) {
-        const bankRow = db
+        const bankRow = await db
           .prepare('SELECT * FROM question_bank_items WHERE id = ? AND deleted_at IS NULL')
           .get(questionId);
         if (!bankRow) fail(422, 'VALIDATION_ERROR', `Mốc #${idx + 1}: không tìm thấy câu hỏi trong ngân hàng.`);
@@ -365,8 +365,8 @@ function validateAndPersistMarkers(db, { lessonId, classId = null, courseId, mar
       if (m.save_to_bank && !questionId) {
         questionId = `qb_${crypto.randomBytes(5).toString('hex')}`;
         questionSnap.question_id = questionId;
-        const crs = getCourse(db, courseId);
-        db.prepare(
+        const crs = await getCourse(db, courseId);
+        await db.prepare(
           `INSERT INTO question_bank_items (
              id, course_id, subject, question_type, prompt, options_json, answer_key_json,
              points, explanation, correct_feedback, wrong_feedback, difficulty, tags_json, created_by, created_at, updated_at
@@ -417,24 +417,24 @@ function validateAndPersistMarkers(db, { lessonId, classId = null, courseId, mar
 
   normalized.sort((a, b) => a.timestamp_sec - b.timestamp_sec || a.sort_order - b.sort_order);
 
-  tx(db, () => {
+  await tx(db, async () => {
     if (classId) {
       if (blockIdFilter) {
-        db.prepare('DELETE FROM video_quiz_markers WHERE lesson_id = ? AND class_id = ? AND block_id = ?').run(
+        await db.prepare('DELETE FROM video_quiz_markers WHERE lesson_id = ? AND class_id = ? AND block_id = ?').run(
           lessonId,
           classId,
           blockIdFilter
         );
       } else {
-        db.prepare('DELETE FROM video_quiz_markers WHERE lesson_id = ? AND class_id = ?').run(lessonId, classId);
+        await db.prepare('DELETE FROM video_quiz_markers WHERE lesson_id = ? AND class_id = ?').run(lessonId, classId);
       }
     } else if (blockIdFilter) {
-      db.prepare('DELETE FROM video_quiz_markers WHERE lesson_id = ? AND class_id IS NULL AND block_id = ?').run(
+      await db.prepare('DELETE FROM video_quiz_markers WHERE lesson_id = ? AND class_id IS NULL AND block_id = ?').run(
         lessonId,
         blockIdFilter
       );
     } else {
-      db.prepare('DELETE FROM video_quiz_markers WHERE lesson_id = ? AND class_id IS NULL').run(lessonId);
+      await db.prepare('DELETE FROM video_quiz_markers WHERE lesson_id = ? AND class_id IS NULL').run(lessonId);
     }
 
     const ins = db.prepare(
@@ -447,9 +447,9 @@ function validateAndPersistMarkers(db, { lessonId, classId = null, courseId, mar
 
     for (const item of normalized) {
       let mid = item.id;
-      const clash = db.prepare('SELECT lesson_id FROM video_quiz_markers WHERE id = ?').get(mid);
+      const clash = await db.prepare('SELECT lesson_id FROM video_quiz_markers WHERE id = ?').get(mid);
       if (clash) mid = `vqm_${crypto.randomBytes(5).toString('hex')}`;
-      ins.run(
+      await ins.run(
         mid,
         lessonId,
         classId,
@@ -474,11 +474,11 @@ function validateAndPersistMarkers(db, { lessonId, classId = null, courseId, mar
     }
 
     if (!classId) {
-      db.prepare('UPDATE lessons SET updated_at = ? WHERE id = ?').run(now, lessonId);
+      await db.prepare('UPDATE lessons SET updated_at = ? WHERE id = ?').run(now, lessonId);
     }
   });
 
-  return draftLessonMarkers(db, lessonId, classId);
+  return await draftLessonMarkers(db, lessonId, classId);
 }
 
 function questionBankDto(r) {
@@ -500,11 +500,11 @@ function questionBankDto(r) {
   };
 }
 
-function loadCourseWikiPages(db, courseId, { includeDraft = false } = {}) {
+async function loadCourseWikiPages(db, courseId, { includeDraft = false } = {}) {
   if (!courseId) return [];
   try {
     const statusClause = includeDraft ? "AND w.status <> 'ARCHIVED'" : "AND w.status = 'PUBLISHED'";
-    const rows = db
+    const rows = await db
       .prepare(
         `SELECT w.id, w.course_id, w.topic_id, w.chapter_id, w.lesson_id, w.slug, w.title,
                 w.summary, w.content_markdown, w.tags_json, w.related_page_ids_json, w.status, w.updated_at
@@ -538,19 +538,19 @@ function loadCourseWikiPages(db, courseId, { includeDraft = false } = {}) {
 export function registerStudioRoutes(route, { uploadsDir, jwtSecret }) {
   // ==================== 1. MODE A — COURSE LESSON STUDIO ====================
 
-  route('GET', '/studio/courses/:courseId', ({ db, user, params }) => {
-    const course = getCourse(db, params.courseId);
+  route('GET', '/studio/courses/:courseId', async ({ db, user, params }) => {
+    const course = await getCourse(db, params.courseId);
     if (!course) fail(404, 'COURSE_NOT_FOUND', 'Không tìm thấy khóa học.');
-    if (!canViewCourse(db, user, course)) fail(403, 'COURSE_ACCESS_DENIED', 'Bạn không có quyền truy cập khóa học này.');
+    if (!await canViewCourse(db, user, course)) fail(403, 'COURSE_ACCESS_DENIED', 'Bạn không có quyền truy cập khóa học này.');
 
-    const rawOutline = outline(db, course.id);
-    const enrichedOutline = rawOutline.map((ch) => ({
+    const rawOutline = await outline(db, course.id);
+    const enrichedOutline = await mapAsync(rawOutline, async (ch) => ({
       ...ch,
-      lessons: ch.lessons.map((l) => {
-        const blocks = draftBlocks(db, l.id);
-        const markers = draftLessonMarkers(db, l.id, null);
+      lessons: await mapAsync(ch.lessons, async (l) => {
+        const blocks = await draftBlocks(db, l.id);
+        const markers = await draftLessonMarkers(db, l.id, null);
         const warnings = computeLessonWarnings(blocks, markers);
-        const row = db.prepare('SELECT min_video_watch_pct, require_video_quizzes FROM lessons WHERE id = ?').get(l.id);
+        const row = await db.prepare('SELECT min_video_watch_pct, require_video_quizzes FROM lessons WHERE id = ?').get(l.id);
         return {
           ...l,
           min_video_watch_pct: Number(row?.min_video_watch_pct || 0),
@@ -562,7 +562,7 @@ export function registerStudioRoutes(route, { uploadsDir, jwtSecret }) {
       }),
     }));
 
-    const classes = db
+    const classes = await db
       .prepare(
         `SELECT sc.id, sc.code, sc.title, sc.status,
            (SELECT COUNT(*) FROM class_enrollments e WHERE e.subject_class_id = sc.id AND e.status = 'ACTIVE') AS student_count
@@ -572,19 +572,19 @@ export function registerStudioRoutes(route, { uploadsDir, jwtSecret }) {
       )
       .all(course.id);
 
-    const resources = db
+    const resources = (await db
       .prepare(
         `SELECT r.*, u.full_name AS created_by_name
          FROM learning_resources r LEFT JOIN users u ON u.id = r.created_by
          WHERE r.course_id = ? AND r.class_id IS NULL AND r.deleted_at IS NULL
          ORDER BY r.created_at DESC`
       )
-      .all(course.id)
+      .all(course.id))
       .map((r) => resourceDto(r, jwtSecret, user.id));
 
-    const qbCount = db
+    const qbCount = (await db
       .prepare('SELECT COUNT(*) AS n FROM question_bank_items WHERE course_id = ? AND deleted_at IS NULL')
-      .get(course.id).n;
+      .get(course.id)).n;
 
     return {
       mode: 'COURSE',
@@ -599,12 +599,12 @@ export function registerStudioRoutes(route, { uploadsDir, jwtSecret }) {
       },
       outline: enrichedOutline,
       resources,
-      wiki_pages: loadCourseWikiPages(db, course.id, { includeDraft: true }),
+      wiki_pages: await loadCourseWikiPages(db, course.id, { includeDraft: true }),
       question_bank_count: qbCount,
       classes_using: classes,
       capabilities: {
         can_manage: canManageCourse(db, user, course),
-        can_edit_draft: canEditCourseDraft(db, user, course),
+        can_edit_draft: await canEditCourseDraft(db, user, course),
         can_publish: canManageCourse(db, user, course),
         can_duplicate: canCreateCourse(user),
       },
@@ -612,29 +612,29 @@ export function registerStudioRoutes(route, { uploadsDir, jwtSecret }) {
   });
 
   // Nhân bản chương (kèm toàn bộ bài học, khối nội dung và mốc quiz trên video)
-  route('POST', '/chapters/:id/duplicate', ({ db, user, params }) => {
-    const ch = db.prepare('SELECT * FROM chapters WHERE id = ?').get(params.id);
+  route('POST', '/chapters/:id/duplicate', async ({ db, user, params }) => {
+    const ch = await db.prepare('SELECT * FROM chapters WHERE id = ?').get(params.id);
     if (!ch || !ch.course_id) fail(404, 'CHAPTER_NOT_FOUND', 'Không tìm thấy chương.');
-    const course = getCourse(db, ch.course_id);
+    const course = await getCourse(db, ch.course_id);
     if (!course || !canManageCourse(db, user, course)) {
       fail(403, 'COURSE_MANAGE_FORBIDDEN', 'Bạn không có quyền nhân bản chương trong khóa học này.');
     }
-    const max = db.prepare('SELECT COALESCE(MAX(sort_order), 0) m, COUNT(*) n FROM chapters WHERE course_id = ?').get(course.id);
+    const max = await db.prepare('SELECT COALESCE(MAX(sort_order), 0) m, COUNT(*) n FROM chapters WHERE course_id = ?').get(course.id);
     const newChId = `ch_${crypto.randomBytes(5).toString('hex')}`;
     const now = nowIso();
 
-    tx(db, () => {
-      db.prepare(
+    await tx(db, async () => {
+      await db.prepare(
         `INSERT INTO chapters (id, subject_class_id, code, title, progress_pct, course_id, description, sort_order, status, updated_at)
          VALUES (?, '', ?, ?, 0, ?, ?, ?, 'DRAFT', ?)`
       ).run(newChId, `Chương ${max.n + 1}`, `${ch.title} (bản sao)`, course.id, ch.description || '', max.m + 10, now);
 
-      const srcLessons = db
+      const srcLessons = await db
         .prepare("SELECT * FROM lessons WHERE chapter_id = ? AND publish_status <> 'ARCHIVED' ORDER BY sort_order")
         .all(ch.id);
       for (const l of srcLessons) {
         const newLesId = `les_${crypto.randomBytes(5).toString('hex')}`;
-        db.prepare(
+        await db.prepare(
           `INSERT INTO lessons (
              id, chapter_id, code, title, duration_minutes, status, unlock_condition_text,
              required_video_pct, require_quick_check, last_video_position_sec, total_video_seconds, quick_check_passed,
@@ -658,20 +658,20 @@ export function registerStudioRoutes(route, { uploadsDir, jwtSecret }) {
         );
 
         const blockIdMap = {};
-        for (const b of draftBlocks(db, l.id)) {
+        for (const b of await draftBlocks(db, l.id)) {
           const nbId = `blk_${crypto.randomBytes(6).toString('hex')}`;
           blockIdMap[b.id] = nbId;
-          db.prepare(
+          await db.prepare(
             `INSERT INTO lesson_blocks (id, lesson_id, schema_version, block_type, sort_order, status, content_json)
              VALUES (?, ?, ?, ?, ?, 'ACTIVE', ?)`
           ).run(nbId, newLesId, BLOCK_SCHEMA_VERSION, b.block_type, b.sort_order, JSON.stringify(b.content));
         }
 
-        const markers = db
+        const markers = await db
           .prepare('SELECT * FROM video_quiz_markers WHERE lesson_id = ? AND class_id IS NULL ORDER BY timestamp_sec, sort_order')
           .all(l.id);
         for (const m of markers) {
-          db.prepare(
+          await db.prepare(
             `INSERT INTO video_quiz_markers (
                id, lesson_id, class_id, block_id, timestamp_sec, sort_order, behavior, title, info_body,
                question_id, question_snapshot_json, is_required, allow_skip, max_attempts,
@@ -700,24 +700,24 @@ export function registerStudioRoutes(route, { uploadsDir, jwtSecret }) {
           );
         }
       }
-      db.prepare('UPDATE courses SET updated_at = ? WHERE id = ?').run(now, course.id);
+      await db.prepare('UPDATE courses SET updated_at = ? WHERE id = ?').run(now, course.id);
     });
 
-    return [201, { id: newChId, outline: outline(db, course.id) }];
+    return [201, { id: newChId, outline: await outline(db, course.id) }];
   });
 
   // Nhân bản bài học (kèm khối nội dung và mốc quiz trên video)
-  route('POST', '/lessons/:id/duplicate', ({ db, user, params }) => {
-    const { lesson, chapter, course } = lessonContext(db, params.id);
+  route('POST', '/lessons/:id/duplicate', async ({ db, user, params }) => {
+    const { lesson, chapter, course } = await lessonContext(db, params.id);
     if (!canManageCourse(db, user, course)) {
       fail(403, 'COURSE_MANAGE_FORBIDDEN', 'Bạn không có quyền nhân bản bài học này.');
     }
-    const max = db.prepare('SELECT COALESCE(MAX(sort_order), 0) m, COUNT(*) n FROM lessons WHERE chapter_id = ?').get(chapter.id);
+    const max = await db.prepare('SELECT COALESCE(MAX(sort_order), 0) m, COUNT(*) n FROM lessons WHERE chapter_id = ?').get(chapter.id);
     const newLesId = `les_${crypto.randomBytes(5).toString('hex')}`;
     const now = nowIso();
 
-    tx(db, () => {
-      db.prepare(
+    await tx(db, async () => {
+      await db.prepare(
         `INSERT INTO lessons (
            id, chapter_id, code, title, duration_minutes, status, unlock_condition_text,
            required_video_pct, require_quick_check, last_video_position_sec, total_video_seconds, quick_check_passed,
@@ -741,20 +741,20 @@ export function registerStudioRoutes(route, { uploadsDir, jwtSecret }) {
       );
 
       const blockIdMap = {};
-      for (const b of draftBlocks(db, lesson.id)) {
+      for (const b of await draftBlocks(db, lesson.id)) {
         const nbId = `blk_${crypto.randomBytes(6).toString('hex')}`;
         blockIdMap[b.id] = nbId;
-        db.prepare(
+        await db.prepare(
           `INSERT INTO lesson_blocks (id, lesson_id, schema_version, block_type, sort_order, status, content_json)
            VALUES (?, ?, ?, ?, ?, 'ACTIVE', ?)`
         ).run(nbId, newLesId, BLOCK_SCHEMA_VERSION, b.block_type, b.sort_order, JSON.stringify(b.content));
       }
 
-      const markers = db
+      const markers = await db
         .prepare('SELECT * FROM video_quiz_markers WHERE lesson_id = ? AND class_id IS NULL ORDER BY timestamp_sec, sort_order')
         .all(lesson.id);
       for (const m of markers) {
-        db.prepare(
+        await db.prepare(
           `INSERT INTO video_quiz_markers (
              id, lesson_id, class_id, block_id, timestamp_sec, sort_order, behavior, title, info_body,
              question_id, question_snapshot_json, is_required, allow_skip, max_attempts,
@@ -782,17 +782,17 @@ export function registerStudioRoutes(route, { uploadsDir, jwtSecret }) {
           now
         );
       }
-      db.prepare('UPDATE courses SET updated_at = ? WHERE id = ?').run(now, course.id);
+      await db.prepare('UPDATE courses SET updated_at = ? WHERE id = ?').run(now, course.id);
     });
 
     return [201, { id: newLesId, chapter_id: chapter.id, title: `${lesson.title} (bản sao)` }];
   });
 
   // Lịch sử phiên bản đã xuất bản của bài học
-  route('GET', '/lessons/:id/versions', ({ db, user, params }) => {
-    const { lesson, course } = lessonContext(db, params.id);
-    if (!canViewCourse(db, user, course)) fail(403, 'COURSE_ACCESS_DENIED', 'Bạn không có quyền xem lịch sử phiên bản.');
-    const rows = db
+  route('GET', '/lessons/:id/versions', async ({ db, user, params }) => {
+    const { lesson, course } = await lessonContext(db, params.id);
+    if (!await canViewCourse(db, user, course)) fail(403, 'COURSE_ACCESS_DENIED', 'Bạn không có quyền xem lịch sử phiên bản.');
+    const rows = await db
       .prepare('SELECT * FROM lesson_versions WHERE lesson_id = ? ORDER BY version_number DESC')
       .all(lesson.id);
     return {
@@ -813,13 +813,13 @@ export function registerStudioRoutes(route, { uploadsDir, jwtSecret }) {
   });
 
   // Khôi phục một phiên bản xuất bản cũ về bản nháp hiện tại
-  route('POST', '/lessons/:id/versions/:versionNumber/restore', ({ db, user, params }) => {
-    const { lesson, course } = lessonContext(db, params.id);
-    if (!canEditCourseDraft(db, user, course)) {
+  route('POST', '/lessons/:id/versions/:versionNumber/restore', async ({ db, user, params }) => {
+    const { lesson, course } = await lessonContext(db, params.id);
+    if (!await canEditCourseDraft(db, user, course)) {
       fail(403, 'CONTENT_EDIT_FORBIDDEN', 'Bạn không có quyền khôi phục phiên bản bài học này.');
     }
     const verNum = Number(params.versionNumber);
-    const ver = db
+    const ver = await db
       .prepare('SELECT * FROM lesson_versions WHERE lesson_id = ? AND version_number = ?')
       .get(lesson.id, verNum);
     if (!ver) fail(404, 'VERSION_NOT_FOUND', 'Không tìm thấy phiên bản yêu cầu.');
@@ -829,22 +829,22 @@ export function registerStudioRoutes(route, { uploadsDir, jwtSecret }) {
     const nextRev = Number(lesson.working_draft_revision) + 1;
     const now = nowIso();
 
-    tx(db, () => {
-      db.prepare('DELETE FROM lesson_blocks WHERE lesson_id = ?').run(lesson.id);
+    await tx(db, async () => {
+      await db.prepare('DELETE FROM lesson_blocks WHERE lesson_id = ?').run(lesson.id);
       const insBlk = db.prepare(
         `INSERT INTO lesson_blocks (id, lesson_id, schema_version, block_type, sort_order, status, content_json)
          VALUES (?, ?, ?, ?, ?, 'ACTIVE', ?)`
       );
       const blockIdMap = {};
-      snapBlocks.forEach((b, i) => {
+      for (const [i, b] of (snapBlocks).entries()) {
         let bid = b.id;
-        const clash = db.prepare('SELECT lesson_id FROM lesson_blocks WHERE id = ?').get(bid);
+        const clash = await db.prepare('SELECT lesson_id FROM lesson_blocks WHERE id = ?').get(bid);
         if (clash) bid = `blk_${crypto.randomBytes(6).toString('hex')}`;
         blockIdMap[b.id] = bid;
-        insBlk.run(bid, lesson.id, BLOCK_SCHEMA_VERSION, b.block_type, (i + 1) * 1000, JSON.stringify(b.content || {}));
-      });
+        await insBlk.run(bid, lesson.id, BLOCK_SCHEMA_VERSION, b.block_type, (i + 1) * 1000, JSON.stringify(b.content || {}));
+      }
 
-      db.prepare('DELETE FROM video_quiz_markers WHERE lesson_id = ? AND class_id IS NULL').run(lesson.id);
+      await db.prepare('DELETE FROM video_quiz_markers WHERE lesson_id = ? AND class_id IS NULL').run(lesson.id);
       if (Array.isArray(snapMarkers)) {
         const insM = db.prepare(
           `INSERT INTO video_quiz_markers (
@@ -855,11 +855,11 @@ export function registerStudioRoutes(route, { uploadsDir, jwtSecret }) {
         );
         for (const m of snapMarkers) {
           let mid = m.id || `vqm_${crypto.randomBytes(5).toString('hex')}`;
-          if (db.prepare('SELECT 1 FROM video_quiz_markers WHERE id = ?').get(mid)) {
+          if (await db.prepare('SELECT 1 FROM video_quiz_markers WHERE id = ?').get(mid)) {
             mid = `vqm_${crypto.randomBytes(5).toString('hex')}`;
           }
           const qSnap = m.question ? JSON.stringify(m.question) : m.question_snapshot_json || '{}';
-          insM.run(
+          await insM.run(
             mid,
             lesson.id,
             blockIdMap[m.block_id] || m.block_id,
@@ -883,34 +883,34 @@ export function registerStudioRoutes(route, { uploadsDir, jwtSecret }) {
         }
       }
 
-      db.prepare('UPDATE lessons SET working_draft_revision = ?, updated_at = ? WHERE id = ?').run(nextRev, now, lesson.id);
+      await db.prepare('UPDATE lessons SET working_draft_revision = ?, updated_at = ? WHERE id = ?').run(nextRev, now, lesson.id);
     });
 
     return {
       revision: nextRev,
-      blocks: draftBlocks(db, lesson.id),
-      video_markers: draftLessonMarkers(db, lesson.id, null),
+      blocks: await draftBlocks(db, lesson.id),
+      video_markers: await draftLessonMarkers(db, lesson.id, null),
     };
   });
 
   // ==================== 2. VIDEO QUIZ MARKERS (MODE A) ====================
 
-  route('GET', '/lessons/:id/video-markers', ({ db, user, params }) => {
-    const { lesson, course } = lessonContext(db, params.id);
-    if (!canViewCourse(db, user, course)) fail(403, 'COURSE_ACCESS_DENIED', 'Bạn không có quyền xem mốc câu hỏi video.');
-    return { items: draftLessonMarkers(db, lesson.id, null) };
+  route('GET', '/lessons/:id/video-markers', async ({ db, user, params }) => {
+    const { lesson, course } = await lessonContext(db, params.id);
+    if (!await canViewCourse(db, user, course)) fail(403, 'COURSE_ACCESS_DENIED', 'Bạn không có quyền xem mốc câu hỏi video.');
+    return { items: await draftLessonMarkers(db, lesson.id, null) };
   });
 
-  route('PUT', '/lessons/:id/video-markers', ({ db, user, body, params }) => {
-    const { lesson, course } = lessonContext(db, params.id);
-    if (!canEditCourseDraft(db, user, course)) {
+  route('PUT', '/lessons/:id/video-markers', async ({ db, user, body, params }) => {
+    const { lesson, course } = await lessonContext(db, params.id);
+    if (!await canEditCourseDraft(db, user, course)) {
       fail(403, 'CONTENT_EDIT_FORBIDDEN', 'Bạn không có quyền chỉnh sửa mốc câu hỏi trên video.');
     }
     if (lesson.publish_status === 'ARCHIVED') {
       fail(409, 'LESSON_ARCHIVED', 'Bài học đã lưu trữ. Hãy khôi phục trước khi chỉnh sửa.');
     }
     const blockIdFilter = typeof body.block_id === 'string' && body.block_id.trim() ? body.block_id.trim() : null;
-    const saved = validateAndPersistMarkers(db, {
+    const saved = await validateAndPersistMarkers(db, {
       lessonId: lesson.id,
       classId: null,
       courseId: course.id,
@@ -923,16 +923,16 @@ export function registerStudioRoutes(route, { uploadsDir, jwtSecret }) {
 
   // ==================== 3. QUESTION BANK (NGÂN HÀNG CÂU HỎI KHÓA HỌC) ====================
 
-  route('GET', '/courses/:courseId/question-bank', ({ db, user, params, url }) => {
-    const course = getCourse(db, params.courseId);
+  route('GET', '/courses/:courseId/question-bank', async ({ db, user, params, url }) => {
+    const course = await getCourse(db, params.courseId);
     if (!course) fail(404, 'COURSE_NOT_FOUND', 'Không tìm thấy khóa học.');
-    if (!canViewCourse(db, user, course)) fail(403, 'COURSE_ACCESS_DENIED', 'Bạn không có quyền truy cập ngân hàng câu hỏi.');
+    if (!await canViewCourse(db, user, course)) fail(403, 'COURSE_ACCESS_DENIED', 'Bạn không có quyền truy cập ngân hàng câu hỏi.');
 
     const where = ['(course_id = ? OR (course_id IS NULL AND subject = ?))', 'deleted_at IS NULL'];
     const sqlParams = [course.id, course.subject || ''];
     const q = (url.searchParams.get('q') || '').trim();
     if (q) {
-      where.push('prompt LIKE ?');
+      where.push("LOWER(prompt) LIKE LOWER(?)");
       sqlParams.push(`%${q}%`);
     }
     const qType = url.searchParams.get('question_type');
@@ -940,20 +940,20 @@ export function registerStudioRoutes(route, { uploadsDir, jwtSecret }) {
       where.push('question_type = ?');
       sqlParams.push(qType);
     }
-    const rows = db
+    const rows = await db
       .prepare(`SELECT * FROM question_bank_items WHERE ${where.join(' AND ')} ORDER BY updated_at DESC LIMIT 200`)
       .all(...sqlParams);
 
     return {
       items: rows.map(questionBankDto),
-      can_edit: canEditCourseDraft(db, user, course),
+      can_edit: await canEditCourseDraft(db, user, course),
     };
   });
 
-  route('POST', '/courses/:courseId/question-bank', ({ db, user, body, params }) => {
-    const course = getCourse(db, params.courseId);
+  route('POST', '/courses/:courseId/question-bank', async ({ db, user, body, params }) => {
+    const course = await getCourse(db, params.courseId);
     if (!course) fail(404, 'COURSE_NOT_FOUND', 'Không tìm thấy khóa học.');
-    if (!canEditCourseDraft(db, user, course)) {
+    if (!await canEditCourseDraft(db, user, course)) {
       fail(403, 'CONTENT_EDIT_FORBIDDEN', 'Bạn không có quyền thêm câu hỏi vào ngân hàng.');
     }
     let spec;
@@ -969,7 +969,7 @@ export function registerStudioRoutes(route, { uploadsDir, jwtSecret }) {
       ? body.tags.map((t) => String(t).trim().slice(0, 40)).filter(Boolean).slice(0, 10)
       : [];
     const now = nowIso();
-    db.prepare(
+    await db.prepare(
       `INSERT INTO question_bank_items (
          id, course_id, subject, question_type, prompt, options_json, answer_key_json,
          points, explanation, correct_feedback, wrong_feedback, difficulty, tags_json, created_by, created_at, updated_at
@@ -992,14 +992,14 @@ export function registerStudioRoutes(route, { uploadsDir, jwtSecret }) {
       now,
       now
     );
-    return [201, questionBankDto(db.prepare('SELECT * FROM question_bank_items WHERE id = ?').get(id))];
+    return [201, questionBankDto(await db.prepare('SELECT * FROM question_bank_items WHERE id = ?').get(id))];
   });
 
-  route('PATCH', '/question-bank/:id', ({ db, user, body, params }) => {
-    const row = db.prepare('SELECT * FROM question_bank_items WHERE id = ? AND deleted_at IS NULL').get(params.id);
+  route('PATCH', '/question-bank/:id', async ({ db, user, body, params }) => {
+    const row = await db.prepare('SELECT * FROM question_bank_items WHERE id = ? AND deleted_at IS NULL').get(params.id);
     if (!row) fail(404, 'QUESTION_NOT_FOUND', 'Không tìm thấy câu hỏi trong ngân hàng.');
-    const course = row.course_id ? getCourse(db, row.course_id) : null;
-    if (!course || !canEditCourseDraft(db, user, course)) {
+    const course = row.course_id ? await getCourse(db, row.course_id) : null;
+    if (!course || !await canEditCourseDraft(db, user, course)) {
       fail(403, 'CONTENT_EDIT_FORBIDDEN', 'Bạn không có quyền sửa câu hỏi này.');
     }
     let spec;
@@ -1033,7 +1033,7 @@ export function registerStudioRoutes(route, { uploadsDir, jwtSecret }) {
           )
         : row.tags_json || '[]';
     const now = nowIso();
-    db.prepare(
+    await db.prepare(
       `UPDATE question_bank_items
        SET question_type = ?, prompt = ?, options_json = ?, answer_key_json = ?,
            points = ?, explanation = ?, correct_feedback = ?, wrong_feedback = ?, difficulty = ?, tags_json = ?, updated_at = ?
@@ -1052,53 +1052,53 @@ export function registerStudioRoutes(route, { uploadsDir, jwtSecret }) {
       now,
       row.id
     );
-    return questionBankDto(db.prepare('SELECT * FROM question_bank_items WHERE id = ?').get(row.id));
+    return questionBankDto(await db.prepare('SELECT * FROM question_bank_items WHERE id = ?').get(row.id));
   });
 
-  route('DELETE', '/question-bank/:id', ({ db, user, params }) => {
-    const row = db.prepare('SELECT * FROM question_bank_items WHERE id = ? AND deleted_at IS NULL').get(params.id);
+  route('DELETE', '/question-bank/:id', async ({ db, user, params }) => {
+    const row = await db.prepare('SELECT * FROM question_bank_items WHERE id = ? AND deleted_at IS NULL').get(params.id);
     if (!row) fail(404, 'QUESTION_NOT_FOUND', 'Không tìm thấy câu hỏi trong ngân hàng.');
-    const course = row.course_id ? getCourse(db, row.course_id) : null;
-    if (!course || !canEditCourseDraft(db, user, course)) {
+    const course = row.course_id ? await getCourse(db, row.course_id) : null;
+    if (!course || !await canEditCourseDraft(db, user, course)) {
       fail(403, 'CONTENT_EDIT_FORBIDDEN', 'Bạn không có quyền xóa câu hỏi này.');
     }
-    db.prepare('UPDATE question_bank_items SET deleted_at = ?, updated_at = ? WHERE id = ?').run(nowIso(), nowIso(), row.id);
+    await db.prepare('UPDATE question_bank_items SET deleted_at = ?, updated_at = ? WHERE id = ?').run(nowIso(), nowIso(), row.id);
     return { deleted_id: row.id };
   });
 
   // ==================== 4. MODE B — CLASS TEACHING CONTENT STUDIO ====================
 
-  const requireClassStudio = (db, user, classId) => {
-    const cls = db.prepare('SELECT * FROM subject_classes WHERE id = ?').get(classId);
+  const requireClassStudio = async (db, user, classId) => {
+    const cls = await db.prepare('SELECT * FROM subject_classes WHERE id = ?').get(classId);
     if (!cls) fail(404, 'CLASS_NOT_FOUND', 'Không tìm thấy lớp học.');
-    const role = classRole(db, user, cls);
+    const role = await classRole(db, user, cls);
     if (!role || role === 'STUDENT') fail(403, 'CLASS_ACCESS_DENIED', 'Bạn không có quyền truy cập trình soạn nội dung lớp học này.');
     if (!cls.course_id) fail(422, 'CLASS_NO_COURSE', 'Lớp học chưa được liên kết với khóa học gốc.');
-    const course = getCourse(db, cls.course_id);
+    const course = await getCourse(db, cls.course_id);
     if (!course) fail(404, 'COURSE_NOT_FOUND', 'Không tìm thấy khóa học liên kết.');
     return { cls, course };
   };
 
-  route('GET', '/studio/classes/:classId', ({ db, user, params }) => {
-    const { cls, course } = requireClassStudio(db, user, params.classId);
-    const rawOutline = outline(db, course.id, { publishedOnly: true });
+  route('GET', '/studio/classes/:classId', async ({ db, user, params }) => {
+    const { cls, course } = await requireClassStudio(db, user, params.classId);
+    const rawOutline = await outline(db, course.id, { publishedOnly: true });
     const customsByLesson = Object.fromEntries(
-      db
+      (await db
         .prepare('SELECT * FROM class_lesson_customs WHERE subject_class_id = ?')
-        .all(cls.id)
+        .all(cls.id))
         .map((r) => [r.lesson_id, r])
     );
 
-    const enrichedOutline = rawOutline.map((ch) => ({
+    const enrichedOutline = await mapAsync(rawOutline, async (ch) => ({
       ...ch,
-      lessons: ch.lessons.map((l) => {
+      lessons: await mapAsync(ch.lessons, async (l) => {
         const custom = customsByLesson[l.id];
-        const customBlocksCnt = db
+        const customBlocksCnt = (await db
           .prepare('SELECT COUNT(*) AS n FROM class_lesson_blocks WHERE subject_class_id = ? AND lesson_id = ?')
-          .get(cls.id, l.id).n;
-        const customMarkersCnt = db
+          .get(cls.id, l.id)).n;
+        const customMarkersCnt = (await db
           .prepare('SELECT COUNT(*) AS n FROM video_quiz_markers WHERE lesson_id = ? AND class_id = ?')
-          .get(l.id, cls.id).n;
+          .get(l.id, cls.id)).n;
         return {
           ...l,
           class_publish_status: custom?.publish_status || (customBlocksCnt > 0 || customMarkersCnt > 0 ? 'DRAFT' : 'INHERITED_ONLY'),
@@ -1109,14 +1109,14 @@ export function registerStudioRoutes(route, { uploadsDir, jwtSecret }) {
       }),
     }));
 
-    const resources = db
+    const resources = (await db
       .prepare(
         `SELECT r.*, u.full_name AS created_by_name
          FROM learning_resources r LEFT JOIN users u ON u.id = r.created_by
          WHERE r.course_id = ? AND (r.class_id IS NULL OR r.class_id = ?) AND r.deleted_at IS NULL
          ORDER BY r.created_at DESC`
       )
-      .all(course.id, cls.id)
+      .all(course.id, cls.id))
       .map((r) => resourceDto(r, jwtSecret, user.id));
 
     return {
@@ -1135,38 +1135,38 @@ export function registerStudioRoutes(route, { uploadsDir, jwtSecret }) {
       },
       outline: enrichedOutline,
       resources,
-      wiki_pages: loadCourseWikiPages(db, course.id, { includeDraft: false }),
+      wiki_pages: await loadCourseWikiPages(db, course.id, { includeDraft: false }),
       capabilities: {
-        can_edit_class_content: canEditClassContent(db, user, cls),
-        can_publish_class_content: canPublishClassContent(db, user, cls),
-        can_open_canonical_course: canEditCourseDraft(db, user, course),
+        can_edit_class_content: await canEditClassContent(db, user, cls),
+        can_publish_class_content: await canPublishClassContent(db, user, cls),
+        can_open_canonical_course: await canEditCourseDraft(db, user, course),
       },
     };
   });
 
-  route('GET', '/studio/classes/:classId/lessons/:lessonId', ({ db, user, params }) => {
-    const { cls, course } = requireClassStudio(db, user, params.classId);
-    const { lesson, chapter } = lessonContext(db, params.lessonId);
-    if (course.id !== getCourse(db, chapter.course_id)?.id) {
+  route('GET', '/studio/classes/:classId/lessons/:lessonId', async ({ db, user, params }) => {
+    const { cls, course } = await requireClassStudio(db, user, params.classId);
+    const { lesson, chapter } = await lessonContext(db, params.lessonId);
+    if (course.id !== (await getCourse(db, chapter.course_id))?.id) {
       fail(403, 'LESSON_OUT_OF_SCOPE', 'Bài học không thuộc khóa học của lớp này.');
     }
 
-    const inheritedBlocks = latestPublishedBlocks(db, lesson.id).map((b) => ({
+    const inheritedBlocks = (await latestPublishedBlocks(db, lesson.id)).map((b) => ({
       ...b,
       origin: 'INHERITED',
     }));
-    const inheritedMarkers = latestPublishedMarkers(db, lesson.id).map((m) => ({
+    const inheritedMarkers = (await latestPublishedMarkers(db, lesson.id)).map((m) => ({
       ...m,
       origin: 'INHERITED',
     }));
 
-    const customMeta = db
+    const customMeta = await db
       .prepare('SELECT * FROM class_lesson_customs WHERE subject_class_id = ? AND lesson_id = ?')
       .get(cls.id, lesson.id);
 
-    const customBlocks = db
+    const customBlocks = (await db
       .prepare('SELECT * FROM class_lesson_blocks WHERE subject_class_id = ? AND lesson_id = ? ORDER BY sort_order')
-      .all(cls.id, lesson.id)
+      .all(cls.id, lesson.id))
       .map((b) => ({
         id: b.id,
         block_type: b.block_type,
@@ -1177,7 +1177,7 @@ export function registerStudioRoutes(route, { uploadsDir, jwtSecret }) {
         content: safeJson(b.content_json, {}),
       }));
 
-    const customMarkers = draftLessonMarkers(db, lesson.id, cls.id);
+    const customMarkers = await draftLessonMarkers(db, lesson.id, cls.id);
 
     return {
       mode: 'CLASS',
@@ -1204,23 +1204,23 @@ export function registerStudioRoutes(route, { uploadsDir, jwtSecret }) {
       custom_blocks: customBlocks,
       custom_markers: customMarkers,
       capabilities: {
-        can_edit: canEditClassContent(db, user, cls),
-        can_publish: canPublishClassContent(db, user, cls),
-        can_open_canonical_course: canEditCourseDraft(db, user, course),
+        can_edit: await canEditClassContent(db, user, cls),
+        can_publish: await canPublishClassContent(db, user, cls),
+        can_open_canonical_course: await canEditCourseDraft(db, user, course),
       },
     };
   });
 
   // Lưu nội dung bổ sung riêng cho Lớp học — KHÔNG SỬA bảng lessons / lesson_blocks của khóa học gốc
-  route('PUT', '/studio/classes/:classId/lessons/:lessonId/content', ({ db, user, body, params }) => {
-    const { cls, course } = requireClassStudio(db, user, params.classId);
-    if (!canEditClassContent(db, user, cls)) {
+  route('PUT', '/studio/classes/:classId/lessons/:lessonId/content', async ({ db, user, body, params }) => {
+    const { cls, course } = await requireClassStudio(db, user, params.classId);
+    if (!await canEditClassContent(db, user, cls)) {
       fail(403, 'CLASS_CONTENT_FORBIDDEN', 'Bạn không có quyền chỉnh sửa nội dung riêng của lớp này.');
     }
-    const { lesson, chapter } = lessonContext(db, params.lessonId);
+    const { lesson, chapter } = await lessonContext(db, params.lessonId);
     if (chapter.course_id !== course.id) fail(403, 'LESSON_OUT_OF_SCOPE', 'Bài học không thuộc khóa học của lớp.');
 
-    const existingMeta = db
+    const existingMeta = await db
       .prepare('SELECT * FROM class_lesson_customs WHERE subject_class_id = ? AND lesson_id = ?')
       .get(cls.id, lesson.id);
     const currentRev = existingMeta ? Number(existingMeta.working_revision) : 1;
@@ -1230,7 +1230,7 @@ export function registerStudioRoutes(route, { uploadsDir, jwtSecret }) {
       });
     }
 
-    const v = validateBlocks(body.custom_blocks || [], { db, courseId: course.id, classId: cls.id });
+    const v = await validateBlocks(body.custom_blocks || [], { db, courseId: course.id, classId: cls.id });
     if (!v.ok) fail(422, v.code, v.message, { block_index: v.block_index });
 
     const note = text(body, 'instructor_note', { max: 5000, label: 'ghi chú giảng dạy riêng cho lớp' });
@@ -1239,8 +1239,8 @@ export function registerStudioRoutes(route, { uploadsDir, jwtSecret }) {
     const now = nowIso();
     const keepPublished = existingMeta?.publish_status === 'PUBLISHED' && body.auto_publish === true;
 
-    tx(db, () => {
-      db.prepare(
+    await tx(db, async () => {
+      await db.prepare(
         `INSERT INTO class_lesson_customs (
            id, subject_class_id, lesson_id, instructor_note, custom_objectives, publish_status, working_revision, updated_by, updated_at
          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -1263,7 +1263,7 @@ export function registerStudioRoutes(route, { uploadsDir, jwtSecret }) {
         now
       );
 
-      db.prepare('DELETE FROM class_lesson_blocks WHERE subject_class_id = ? AND lesson_id = ?').run(cls.id, lesson.id);
+      await db.prepare('DELETE FROM class_lesson_blocks WHERE subject_class_id = ? AND lesson_id = ?').run(cls.id, lesson.id);
       const ins = db.prepare(
         `INSERT INTO class_lesson_blocks (
            id, subject_class_id, lesson_id, anchor_block_id, block_type, schema_version, sort_order, is_published, content_json, created_by, created_at, updated_at
@@ -1271,9 +1271,9 @@ export function registerStudioRoutes(route, { uploadsDir, jwtSecret }) {
       );
       for (const b of v.blocks) {
         let bid = b.id;
-        const clash = db.prepare('SELECT subject_class_id FROM class_lesson_blocks WHERE id = ?').get(bid);
+        const clash = await db.prepare('SELECT subject_class_id FROM class_lesson_blocks WHERE id = ?').get(bid);
         if (clash) bid = `cblk_${crypto.randomBytes(6).toString('hex')}`;
-        ins.run(
+        await ins.run(
           bid,
           cls.id,
           lesson.id,
@@ -1297,16 +1297,16 @@ export function registerStudioRoutes(route, { uploadsDir, jwtSecret }) {
     };
   });
 
-  route('PUT', '/studio/classes/:classId/lessons/:lessonId/video-markers', ({ db, user, body, params }) => {
-    const { cls, course } = requireClassStudio(db, user, params.classId);
-    if (!canEditClassContent(db, user, cls)) {
+  route('PUT', '/studio/classes/:classId/lessons/:lessonId/video-markers', async ({ db, user, body, params }) => {
+    const { cls, course } = await requireClassStudio(db, user, params.classId);
+    if (!await canEditClassContent(db, user, cls)) {
       fail(403, 'CLASS_CONTENT_FORBIDDEN', 'Bạn không có quyền chỉnh sửa mốc câu hỏi của lớp này.');
     }
-    const { lesson, chapter } = lessonContext(db, params.lessonId);
+    const { lesson, chapter } = await lessonContext(db, params.lessonId);
     if (chapter.course_id !== course.id) fail(403, 'LESSON_OUT_OF_SCOPE', 'Bài học không thuộc khóa học của lớp.');
 
     const blockIdFilter = typeof body.block_id === 'string' && body.block_id.trim() ? body.block_id.trim() : null;
-    const saved = validateAndPersistMarkers(db, {
+    const saved = await validateAndPersistMarkers(db, {
       lessonId: lesson.id,
       classId: cls.id,
       courseId: course.id,
@@ -1314,32 +1314,32 @@ export function registerStudioRoutes(route, { uploadsDir, jwtSecret }) {
       blockIdFilter,
       userId: user.id,
     });
-    db.prepare(
+    await db.prepare(
       `UPDATE class_lesson_customs SET publish_status = 'DRAFT', updated_by = ?, updated_at = ?
        WHERE subject_class_id = ? AND lesson_id = ?`
     ).run(user.id, nowIso(), cls.id, lesson.id);
     return { items: saved };
   });
 
-  route('POST', '/studio/classes/:classId/lessons/:lessonId/publish', ({ db, user, params }) => {
-    const { cls, course } = requireClassStudio(db, user, params.classId);
-    if (!canPublishClassContent(db, user, cls)) {
+  route('POST', '/studio/classes/:classId/lessons/:lessonId/publish', async ({ db, user, params }) => {
+    const { cls, course } = await requireClassStudio(db, user, params.classId);
+    if (!await canPublishClassContent(db, user, cls)) {
       fail(403, 'CLASS_PUBLISH_FORBIDDEN', 'Chỉ giảng viên phụ trách lớp mới được xuất bản nội dung bổ sung của lớp.');
     }
-    const { lesson, chapter } = lessonContext(db, params.lessonId);
+    const { lesson, chapter } = await lessonContext(db, params.lessonId);
     if (chapter.course_id !== course.id) fail(403, 'LESSON_OUT_OF_SCOPE', 'Bài học không thuộc khóa học của lớp.');
 
     const now = nowIso();
-    tx(db, () => {
-      db.prepare('UPDATE class_lesson_blocks SET is_published = 1, updated_at = ? WHERE subject_class_id = ? AND lesson_id = ?')
+    await tx(db, async () => {
+      await db.prepare('UPDATE class_lesson_blocks SET is_published = 1, updated_at = ? WHERE subject_class_id = ? AND lesson_id = ?')
         .run(now, cls.id, lesson.id);
 
-      const curMeta = db
+      const curMeta = await db
         .prepare('SELECT instructor_note, custom_objectives FROM class_lesson_customs WHERE subject_class_id = ? AND lesson_id = ?')
         .get(cls.id, lesson.id);
-      const snapBlocks = db
+      const snapBlocks = (await db
         .prepare('SELECT * FROM class_lesson_blocks WHERE subject_class_id = ? AND lesson_id = ? ORDER BY sort_order')
-        .all(cls.id, lesson.id)
+        .all(cls.id, lesson.id))
         .map((b) => ({
           id: b.id,
           block_type: b.block_type,
@@ -1349,7 +1349,7 @@ export function registerStudioRoutes(route, { uploadsDir, jwtSecret }) {
           content: safeJson(b.content_json, {}),
         }))
         .filter((b) => !b.content?.display?.hidden);
-      const snapMarkers = draftLessonMarkers(db, lesson.id, cls.id);
+      const snapMarkers = await draftLessonMarkers(db, lesson.id, cls.id);
       const snapshotJson = JSON.stringify({
         instructor_note: curMeta?.instructor_note || '',
         custom_objectives: curMeta?.custom_objectives || '',
@@ -1357,7 +1357,7 @@ export function registerStudioRoutes(route, { uploadsDir, jwtSecret }) {
         markers: snapMarkers,
       });
 
-      db.prepare(
+      await db.prepare(
         `INSERT INTO class_lesson_customs (
            id, subject_class_id, lesson_id, instructor_note, custom_objectives, publish_status, working_revision, published_snapshot_json, published_at, updated_by, updated_at
          ) VALUES (?, ?, ?, '', '', 'PUBLISHED', 1, ?, ?, ?, ?)
@@ -1375,18 +1375,18 @@ export function registerStudioRoutes(route, { uploadsDir, jwtSecret }) {
 
   // ==================== 5. VIDEO UPLOAD (CHUNKED), CANCEL, PDF & RANGE STREAMING ====================
 
-  route('POST', '/media/videos/init', ({ db, user, body }) => {
+  route('POST', '/media/videos/init', async ({ db, user, body }) => {
     const courseId = text(body, 'course_id', { required: true, max: 64, label: 'mã khóa học' });
     const classId = body.class_id ? text(body, 'class_id', { max: 64, label: 'mã lớp học' }) : null;
-    const course = getCourse(db, courseId);
+    const course = await getCourse(db, courseId);
     if (!course) fail(404, 'COURSE_NOT_FOUND', 'Không tìm thấy khóa học.');
 
     if (classId) {
-      const cls = db.prepare('SELECT * FROM subject_classes WHERE id = ? AND course_id = ?').get(classId, course.id);
-      if (!cls || !canEditClassContent(db, user, cls)) {
+      const cls = await db.prepare('SELECT * FROM subject_classes WHERE id = ? AND course_id = ?').get(classId, course.id);
+      if (!cls || !await canEditClassContent(db, user, cls)) {
         fail(403, 'UPLOAD_FORBIDDEN', 'Bạn không có quyền tải video lên cho lớp học này.');
       }
-    } else if (!canEditCourseDraft(db, user, course)) {
+    } else if (!await canEditCourseDraft(db, user, course)) {
       fail(403, 'UPLOAD_FORBIDDEN', 'Bạn không có quyền tải video lên cho khóa học này.');
     }
 
@@ -1414,7 +1414,7 @@ export function registerStudioRoutes(route, { uploadsDir, jwtSecret }) {
     fs.writeFileSync(tempPath, Buffer.alloc(0));
 
     const now = nowIso();
-    db.prepare(
+    await db.prepare(
       `INSERT INTO video_upload_sessions (
          id, course_id, class_id, title, file_name, mime_type, total_size_bytes,
          received_bytes, chunks_received, temp_path, status, created_by, created_at, updated_at
@@ -1432,8 +1432,8 @@ export function registerStudioRoutes(route, { uploadsDir, jwtSecret }) {
     ];
   });
 
-  route('PUT', '/media/videos/:uploadId/chunk', ({ db, user, body, params }) => {
-    const sess = db.prepare('SELECT * FROM video_upload_sessions WHERE id = ?').get(params.uploadId);
+  route('PUT', '/media/videos/:uploadId/chunk', async ({ db, user, body, params }) => {
+    const sess = await db.prepare('SELECT * FROM video_upload_sessions WHERE id = ?').get(params.uploadId);
     if (!sess) fail(404, 'UPLOAD_NOT_FOUND', 'Không tìm thấy phiên tải lên video.');
     if (sess.created_by !== user.id) fail(403, 'UPLOAD_FORBIDDEN', 'Bạn không phải người khởi tạo phiên tải lên này.');
     if (sess.status !== 'UPLOADING') fail(409, 'UPLOAD_NOT_ACTIVE', `Phiên tải lên đang ở trạng thái ${sess.status}.`);
@@ -1472,7 +1472,7 @@ export function registerStudioRoutes(route, { uploadsDir, jwtSecret }) {
     fs.appendFileSync(sess.temp_path, buf);
     const nextReceived = sess.received_bytes + buf.length;
     const nextChunks = sess.chunks_received + 1;
-    db.prepare(
+    await db.prepare(
       'UPDATE video_upload_sessions SET received_bytes = ?, chunks_received = ?, updated_at = ? WHERE id = ?'
     ).run(nextReceived, nextChunks, nowIso(), sess.id);
 
@@ -1485,8 +1485,8 @@ export function registerStudioRoutes(route, { uploadsDir, jwtSecret }) {
     };
   });
 
-  route('POST', '/media/videos/:uploadId/complete', ({ db, user, body, params, log }) => {
-    const sess = db.prepare('SELECT * FROM video_upload_sessions WHERE id = ?').get(params.uploadId);
+  route('POST', '/media/videos/:uploadId/complete', async ({ db, user, body, params, log }) => {
+    const sess = await db.prepare('SELECT * FROM video_upload_sessions WHERE id = ?').get(params.uploadId);
     if (!sess) fail(404, 'UPLOAD_NOT_FOUND', 'Không tìm thấy phiên tải lên video.');
     if (sess.created_by !== user.id) fail(403, 'UPLOAD_FORBIDDEN', 'Bạn không phải người khởi tạo phiên tải lên này.');
     if (sess.status !== 'UPLOADING') fail(409, 'UPLOAD_NOT_ACTIVE', `Phiên tải lên đang ở trạng thái ${sess.status}.`);
@@ -1523,7 +1523,7 @@ export function registerStudioRoutes(route, { uploadsDir, jwtSecret }) {
       ? body.replace_resource_id.trim()
       : null;
     const existingRes = replaceId
-      ? db
+      ? await db
           .prepare('SELECT * FROM learning_resources WHERE id = ? AND course_id = ? AND deleted_at IS NULL')
           .get(replaceId, sess.course_id)
       : null;
@@ -1556,16 +1556,16 @@ export function registerStudioRoutes(route, { uploadsDir, jwtSecret }) {
     const thumbDataUrl = rawThumbInput.startsWith('data:image/') ? rawThumbInput.slice(0, 120_000) : null;
     const now = nowIso();
 
-    tx(db, () => {
+    await tx(db, async () => {
       if (existingRes) {
-        db.prepare(
+        await db.prepare(
           `UPDATE learning_resources
            SET title = ?, storage_key = ?, file_name = ?, mime_type = ?, file_size_bytes = ?, checksum_sha256 = ?,
                duration_seconds = ?, thumbnail_url = COALESCE(?, thumbnail_url), processing_status = 'READY', updated_at = ?
            WHERE id = ?`
         ).run(sess.title, relKey, sess.file_name, sess.mime_type, stat.size, checksum, cleanDuration, thumbDataUrl, now, resId);
       } else {
-        db.prepare(
+        await db.prepare(
           `INSERT INTO learning_resources (
              id, course_id, class_id, title, description, visibility, resource_type, storage_provider,
              storage_key, file_name, mime_type, file_size_bytes, checksum_sha256, duration_seconds,
@@ -1589,17 +1589,17 @@ export function registerStudioRoutes(route, { uploadsDir, jwtSecret }) {
           now
         );
       }
-      db.prepare("UPDATE video_upload_sessions SET status = 'COMPLETED', updated_at = ? WHERE id = ?").run(now, sess.id);
+      await db.prepare("UPDATE video_upload_sessions SET status = 'COMPLETED', updated_at = ? WHERE id = ?").run(now, sess.id);
     });
 
     log('INFO', `[studio] video uploaded ${resId} (${stat.size} bytes) by ${user.id}`);
-    const row = db.prepare('SELECT * FROM learning_resources WHERE id = ?').get(resId);
+    const row = await db.prepare('SELECT * FROM learning_resources WHERE id = ?').get(resId);
     return [201, resourceDto(row, jwtSecret, user.id)];
   });
 
   // Hủy upload video giữa chừng & dọn sạch tệp tạm
-  route('DELETE', '/media/videos/:uploadId', ({ db, user, params }) => {
-    const sess = db.prepare('SELECT * FROM video_upload_sessions WHERE id = ?').get(params.uploadId);
+  route('DELETE', '/media/videos/:uploadId', async ({ db, user, params }) => {
+    const sess = await db.prepare('SELECT * FROM video_upload_sessions WHERE id = ?').get(params.uploadId);
     if (!sess) fail(404, 'UPLOAD_NOT_FOUND', 'Không tìm thấy phiên tải lên video.');
     if (sess.created_by !== user.id) fail(403, 'UPLOAD_FORBIDDEN', 'Bạn không có quyền hủy phiên tải lên này.');
     if (sess.temp_path && fs.existsSync(sess.temp_path)) {
@@ -1609,20 +1609,20 @@ export function registerStudioRoutes(route, { uploadsDir, jwtSecret }) {
         // ignore
       }
     }
-    db.prepare("UPDATE video_upload_sessions SET status = 'CANCELLED', updated_at = ? WHERE id = ?").run(nowIso(), sess.id);
+    await db.prepare("UPDATE video_upload_sessions SET status = 'CANCELLED', updated_at = ? WHERE id = ?").run(nowIso(), sess.id);
     return { cancelled_id: sess.id, status: 'CANCELLED' };
   });
 
   // Tải lên tài liệu PDF (hỗ trợ xem trực tiếp trong bài giảng)
-  route('POST', '/media/pdfs', ({ db, user, body }) => {
+  route('POST', '/media/pdfs', async ({ db, user, body }) => {
     const courseId = text(body, 'course_id', { required: true, max: 64, label: 'mã khóa học' });
     const classId = body.class_id ? text(body, 'class_id', { max: 64, label: 'mã lớp học' }) : null;
-    const course = getCourse(db, courseId);
+    const course = await getCourse(db, courseId);
     if (!course) fail(404, 'COURSE_NOT_FOUND', 'Không tìm thấy khóa học.');
     if (classId) {
-      const cls = db.prepare('SELECT * FROM subject_classes WHERE id = ? AND course_id = ?').get(classId, course.id);
-      if (!cls || !canEditClassContent(db, user, cls)) fail(403, 'UPLOAD_FORBIDDEN', 'Bạn không có quyền tải tài liệu lên lớp này.');
-    } else if (!canEditCourseDraft(db, user, course)) {
+      const cls = await db.prepare('SELECT * FROM subject_classes WHERE id = ? AND course_id = ?').get(classId, course.id);
+      if (!cls || !await canEditClassContent(db, user, cls)) fail(403, 'UPLOAD_FORBIDDEN', 'Bạn không có quyền tải tài liệu lên lớp này.');
+    } else if (!await canEditCourseDraft(db, user, course)) {
       fail(403, 'UPLOAD_FORBIDDEN', 'Bạn không có quyền tải tài liệu lên khóa học này.');
     }
 
@@ -1648,7 +1648,7 @@ export function registerStudioRoutes(route, { uploadsDir, jwtSecret }) {
 
     const now = nowIso();
     const checksum = crypto.createHash('sha256').update(buf).digest('hex');
-    db.prepare(
+    await db.prepare(
       `INSERT INTO learning_resources (
          id, course_id, class_id, title, description, visibility, resource_type, storage_provider,
          storage_key, file_name, mime_type, file_size_bytes, checksum_sha256, status, processing_status,
@@ -1669,7 +1669,7 @@ export function registerStudioRoutes(route, { uploadsDir, jwtSecret }) {
       now
     );
 
-    const row = db.prepare('SELECT * FROM learning_resources WHERE id = ?').get(resId);
+    const row = await db.prepare('SELECT * FROM learning_resources WHERE id = ?').get(resId);
     return [201, resourceDto(row, jwtSecret, user.id)];
   });
 
@@ -1756,10 +1756,10 @@ export function registerStudioRoutes(route, { uploadsDir, jwtSecret }) {
   });
 
   // Streaming Video / PDF qua HTTP Range (206 Partial Content) — đóng fd ngay sau khi đọc mảnh
-  route('GET', '/media/:resourceId/stream', ({ req, db, user, params, raw }) => {
-    const r = db.prepare('SELECT * FROM learning_resources WHERE id = ?').get(params.resourceId);
+  route('GET', '/media/:resourceId/stream', async ({ req, db, user, params, raw }) => {
+    const r = await db.prepare('SELECT * FROM learning_resources WHERE id = ?').get(params.resourceId);
     if (!r || r.deleted_at) fail(404, 'RESOURCE_NOT_FOUND', 'Không tìm thấy tệp phương tiện.');
-    if (!canStreamResource(db, user, r)) {
+    if (!await canStreamResource(db, user, r)) {
       fail(403, 'RESOURCE_ACCESS_DENIED', 'Bạn không có quyền truy cập học liệu này.');
     }
     if (r.storage_provider !== 'LOCAL_DISK') {
@@ -1880,12 +1880,12 @@ export function registerStudioRoutes(route, { uploadsDir, jwtSecret }) {
 
   // ==================== 6. BÁO CÁO KẾT QUẢ VIDEO & QUIZ THEO LỚP ====================
 
-  route('GET', '/classes/:classId/lessons/:lessonId/quiz-analytics', ({ db, user, params }) => {
-    const cls = db.prepare('SELECT * FROM subject_classes WHERE id = ?').get(params.classId);
+  route('GET', '/classes/:classId/lessons/:lessonId/quiz-analytics', async ({ db, user, params }) => {
+    const cls = await db.prepare('SELECT * FROM subject_classes WHERE id = ?').get(params.classId);
     if (!cls) fail(404, 'CLASS_NOT_FOUND', 'Không tìm thấy lớp học.');
-    const caps = classCapabilities(db, user, cls);
+    const caps = await classCapabilities(db, user, cls);
     if (!caps.can_view_roster) fail(403, 'CLASS_ACCESS_DENIED', 'Bạn không có quyền xem thống kê kết quả của lớp này.');
-    const lessonRow = db
+    const lessonRow = await db
       .prepare(
         `SELECT l.id, ch.course_id
          FROM lessons l JOIN chapters ch ON ch.id = l.chapter_id
@@ -1896,7 +1896,7 @@ export function registerStudioRoutes(route, { uploadsDir, jwtSecret }) {
       fail(404, 'LESSON_NOT_IN_CLASS', 'Bài học không thuộc khóa học của lớp này.');
     }
 
-    const roster = db
+    const roster = await db
       .prepare(
         `SELECT u.id, u.code, u.full_name
          FROM class_enrollments e JOIN users u ON u.id = e.student_id
@@ -1905,24 +1905,24 @@ export function registerStudioRoutes(route, { uploadsDir, jwtSecret }) {
       )
       .all(cls.id);
 
-    const publishedCustom = getPublishedClassCustom(db, cls.id, params.lessonId);
+    const publishedCustom = await getPublishedClassCustom(db, cls.id, params.lessonId);
     const classPublishedMarkers = publishedCustom ? publishedCustom.markers : [];
     const verKey = getClassContentVersionKey(cls);
 
     const pubMarkers = [
-      ...getEffectiveLessonBaseMarkers(db, cls, params.lessonId),
+      ...await getEffectiveLessonBaseMarkers(db, cls, params.lessonId),
       ...classPublishedMarkers,
     ].filter((m) => m.behavior !== 'INFO_ONLY');
 
-    const students = roster.map((st) => {
-      const vp = db
+    const students = await mapAsync(roster, async (st) => {
+      const vp = await db
         .prepare(
           `SELECT COALESCE(MAX(watch_pct), 0) AS max_pct, COALESCE(SUM(watched_seconds), 0) AS watched_sec
            FROM video_watch_progress
            WHERE student_id = ? AND subject_class_id = ? AND lesson_id = ? AND content_version_key = ?`
         )
         .get(st.id, cls.id, params.lessonId, verKey);
-      const subs = db
+      const subs = await db
         .prepare(
           `SELECT target_type, target_id, MAX(earned_points) AS best_pts, MAX(max_points) AS max_pts, MAX(is_correct) AS any_correct, COUNT(*) AS attempts
            FROM lesson_quiz_submissions
@@ -1934,7 +1934,7 @@ export function registerStudioRoutes(route, { uploadsDir, jwtSecret }) {
       const markerSubs = subs.filter((s) => s.target_type === 'VIDEO_MARKER');
       const earned = subs.reduce((acc, s) => acc + Number(s.best_pts || 0), 0);
       const maxPts = subs.reduce((acc, s) => acc + Number(s.max_pts || 0), 0);
-      const lp = db
+      const lp = await db
         .prepare('SELECT status, completed_at FROM lesson_progress WHERE student_id = ? AND subject_class_id = ? AND lesson_id = ? AND content_version_key = ?')
         .get(st.id, cls.id, params.lessonId, verKey);
 
@@ -1962,9 +1962,9 @@ export function registerStudioRoutes(route, { uploadsDir, jwtSecret }) {
 
 // ------------------------------------------------------------------ Snapshot Helpers & Learner Helpers (dùng trong learn.mjs)
 
-export function getClassCourseSnapshot(db, cls) {
+export async function getClassCourseSnapshot(db, cls) {
   if (!cls || !cls.course_version_id) return null;
-  const row = db
+  const row = await db
     .prepare('SELECT id, version_number, version_label, snapshot_json FROM course_versions WHERE id = ?')
     .get(cls.course_version_id);
   if (!row) return null;
@@ -1972,8 +1972,8 @@ export function getClassCourseSnapshot(db, cls) {
   return snapshot ? { version: row, snapshot } : null;
 }
 
-export function getEffectiveLessonBaseBlocks(db, cls, lessonId) {
-  const snapCtx = getClassCourseSnapshot(db, cls);
+export async function getEffectiveLessonBaseBlocks(db, cls, lessonId) {
+  const snapCtx = await getClassCourseSnapshot(db, cls);
   const raw = snapCtx?.snapshot?.blocks_by_lesson?.[lessonId];
   if (Array.isArray(raw)) {
     return raw.map((b) => ({
@@ -1983,24 +1983,24 @@ export function getEffectiveLessonBaseBlocks(db, cls, lessonId) {
       content: b.content || safeJson(b.content_json, {}),
     }));
   }
-  return latestPublishedBlocks(db, lessonId);
+  return await latestPublishedBlocks(db, lessonId);
 }
 
-export function getEffectiveLessonBaseMarkers(db, cls, lessonId) {
-  const snapCtx = getClassCourseSnapshot(db, cls);
+export async function getEffectiveLessonBaseMarkers(db, cls, lessonId) {
+  const snapCtx = await getClassCourseSnapshot(db, cls);
   const raw = snapCtx?.snapshot?.markers_by_lesson?.[lessonId];
   if (Array.isArray(raw)) {
     return raw.map((r) => (r.question !== undefined ? r : mapMarkerRow(r)));
   }
-  return latestPublishedMarkers(db, lessonId);
+  return await latestPublishedMarkers(db, lessonId);
 }
 
-export function buildStudentLessonPayload(db, { user, cls, lesson, chapterInfo, idx, list, jwtSecret }) {
+export async function buildStudentLessonPayload(db, { user, cls, lesson, chapterInfo, idx, list, jwtSecret }) {
   const verKey = getClassContentVersionKey(cls);
-  const snapCtx = getClassCourseSnapshot(db, cls);
+  const snapCtx = await getClassCourseSnapshot(db, cls);
   const snapLesson = snapCtx?.snapshot?.lessons?.find((l) => l.id === lesson.id) || lesson;
-  const baseBlocks = getEffectiveLessonBaseBlocks(db, cls, lesson.id).map((b) => ({ ...b, origin: 'INHERITED' }));
-  const publishedCustom = getPublishedClassCustom(db, cls.id, lesson.id);
+  const baseBlocks = (await getEffectiveLessonBaseBlocks(db, cls, lesson.id)).map((b) => ({ ...b, origin: 'INHERITED' }));
+  const publishedCustom = await getPublishedClassCustom(db, cls.id, lesson.id);
   const customBlocks = publishedCustom ? publishedCustom.blocks : [];
 
   // Ghép các khối tùy chỉnh của lớp ngay sau anchor_block_id (hoặc cuối bài nếu không chỉ định)
@@ -2024,7 +2024,7 @@ export function buildStudentLessonPayload(db, { user, cls, lesson, chapterInfo, 
   mergedBlocks.push(...tailBlocks);
 
   // Tải lịch sử nộp bài của học viên cho bài học này theo đúng phiên bản nội dung
-  const submissions = db
+  const submissions = await db
     .prepare(
       `SELECT * FROM lesson_quiz_submissions
        WHERE student_id = ? AND subject_class_id = ? AND lesson_id = ? AND content_version_key = ?
@@ -2099,7 +2099,7 @@ export function buildStudentLessonPayload(db, { user, cls, lesson, chapterInfo, 
 
   // Gom các mốc tương tác trên video (kế thừa từ phiên bản môn học hoặc bản mới nhất + bổ sung riêng của lớp)
   const rawMarkers = [
-    ...getEffectiveLessonBaseMarkers(db, cls, lesson.id),
+    ...await getEffectiveLessonBaseMarkers(db, cls, lesson.id),
     ...(publishedCustom ? publishedCustom.markers : []),
   ].sort((a, b) => Number(a.timestamp_sec) - Number(b.timestamp_sec) || Number(a.sort_order) - Number(b.sort_order));
 
@@ -2153,7 +2153,7 @@ export function buildStudentLessonPayload(db, { user, cls, lesson, chapterInfo, 
     )
   );
   const resourceRows = resourceIds.length
-    ? db
+    ? await db
         .prepare(`SELECT * FROM learning_resources WHERE id IN (${resourceIds.map(() => '?').join(',')})`)
         .all(...resourceIds)
     : [];
@@ -2162,7 +2162,7 @@ export function buildStudentLessonPayload(db, { user, cls, lesson, chapterInfo, 
   );
 
   // Tiến độ xem từng khối video của học viên (Resume Playback + STRICT Interval Union theo version)
-  const vpRows = db
+  const vpRows = await db
     .prepare('SELECT * FROM video_watch_progress WHERE student_id = ? AND subject_class_id = ? AND lesson_id = ? AND content_version_key = ?')
     .all(user.id, cls.id, lesson.id, verKey);
   const videoProgress = Object.fromEntries(
@@ -2183,7 +2183,7 @@ export function buildStudentLessonPayload(db, { user, cls, lesson, chapterInfo, 
     ])
   );
 
-  const prog = db
+  const prog = await db
     .prepare('SELECT status, completed_at FROM lesson_progress WHERE student_id = ? AND subject_class_id = ? AND lesson_id = ? AND content_version_key = ?')
     .get(user.id, cls.id, lesson.id, verKey);
 
@@ -2215,7 +2215,7 @@ export function buildStudentLessonPayload(db, { user, cls, lesson, chapterInfo, 
     video_progress: videoProgress,
     quiz_states: quizStates,
     resources: resourcesMap,
-    wiki_pages: loadCourseWikiPages(db, cls.course_id, { includeDraft: false }),
+    wiki_pages: await loadCourseWikiPages(db, cls.course_id, { includeDraft: false }),
     progress_status: prog ? prog.status : 'IN_PROGRESS',
     position: { index: idx + 1, total: list.length },
     prev_lesson: idx > 0 ? { id: list[idx - 1].id, title: list[idx - 1].title } : null,
@@ -2223,18 +2223,18 @@ export function buildStudentLessonPayload(db, { user, cls, lesson, chapterInfo, 
   };
 }
 
-export function findPublishedMarkerForStudent(db, lessonId, classId, markerId) {
-  const cls = db.prepare('SELECT * FROM subject_classes WHERE id = ?').get(classId);
-  const publishedCustom = getPublishedClassCustom(db, classId, lessonId);
+export async function findPublishedMarkerForStudent(db, lessonId, classId, markerId) {
+  const cls = await db.prepare('SELECT * FROM subject_classes WHERE id = ?').get(classId);
+  const publishedCustom = await getPublishedClassCustom(db, classId, lessonId);
   const all = [
-    ...getEffectiveLessonBaseMarkers(db, cls, lessonId),
+    ...await getEffectiveLessonBaseMarkers(db, cls, lessonId),
     ...(publishedCustom ? publishedCustom.markers : []),
   ];
   return all.find((m) => m.id === markerId) || null;
 }
 
-export function submitVideoMarkerAnswer(db, { user, cls, lesson, markerId, body }) {
-  const marker = findPublishedMarkerForStudent(db, lesson.id, cls.id, markerId);
+export async function submitVideoMarkerAnswer(db, { user, cls, lesson, markerId, body }) {
+  const marker = await findPublishedMarkerForStudent(db, lesson.id, cls.id, markerId);
   if (!marker) fail(404, 'MARKER_NOT_FOUND', 'Không tìm thấy câu hỏi tương tác tại mốc thời gian này.');
   if (marker.behavior === 'INFO_ONLY' || !marker.question) {
     return {
@@ -2247,9 +2247,9 @@ export function submitVideoMarkerAnswer(db, { user, cls, lesson, markerId, body 
   }
 
   const verKey = getClassContentVersionKey(cls);
-  const publishedCustom = getPublishedClassCustom(db, cls.id, lesson.id);
+  const publishedCustom = await getPublishedClassCustom(db, cls.id, lesson.id);
   const mergedBlocks = [
-    ...getEffectiveLessonBaseBlocks(db, cls, lesson.id),
+    ...await getEffectiveLessonBaseBlocks(db, cls, lesson.id),
     ...(publishedCustom ? publishedCustom.blocks : []),
   ];
   const markerSig = computeMarkerContentSig(marker, mergedBlocks);
@@ -2259,7 +2259,7 @@ export function submitVideoMarkerAnswer(db, { user, cls, lesson, markerId, body 
     : null;
 
   if (rawKey) {
-    const dup = db
+    const dup = await db
       .prepare('SELECT * FROM lesson_quiz_submissions WHERE idempotency_key = ? AND student_id = ?')
       .get(rawKey, user.id);
     if (dup) {
@@ -2277,7 +2277,7 @@ export function submitVideoMarkerAnswer(db, { user, cls, lesson, markerId, body 
     }
   }
 
-  const allSubsAcrossVersions = db
+  const allSubsAcrossVersions = await db
     .prepare(
       `SELECT * FROM lesson_quiz_submissions
        WHERE student_id = ? AND subject_class_id = ? AND target_type = 'VIDEO_MARKER' AND target_id = ?
@@ -2314,7 +2314,7 @@ export function submitVideoMarkerAnswer(db, { user, cls, lesson, markerId, body 
 
   const idemKey = rawKey || `auto:${user.id}:${cls.id}:${verKey}:vm:${marker.id}:${dbRowAttempt}:${crypto.randomBytes(4).toString('hex')}`;
   const subId = `sub_${crypto.randomBytes(6).toString('hex')}`;
-  db.prepare(
+  await db.prepare(
     `INSERT INTO lesson_quiz_submissions (
        id, idempotency_key, student_id, subject_class_id, lesson_id, target_type, target_id,
        attempt_number, response_json, grading_status, is_correct, earned_points, max_points, feedback_json, submitted_at, content_version_key
@@ -2349,14 +2349,14 @@ export function submitVideoMarkerAnswer(db, { user, cls, lesson, markerId, body 
   };
 }
 
-export function submitStandaloneQuizBlock(db, { user, cls, lesson, blockId, body }) {
+export async function submitStandaloneQuizBlock(db, { user, cls, lesson, blockId, body }) {
   const verKey = getClassContentVersionKey(cls);
   const rawKey = typeof body.idempotency_key === 'string' && body.idempotency_key.trim()
     ? `${user.id}:${cls.id}:${verKey}:${body.idempotency_key.trim().slice(0, 80)}`
     : null;
 
   if (rawKey) {
-    const dup = db
+    const dup = await db
       .prepare('SELECT * FROM lesson_quiz_submissions WHERE idempotency_key = ? AND student_id = ?')
       .get(rawKey, user.id);
     if (dup) {
@@ -2373,9 +2373,9 @@ export function submitStandaloneQuizBlock(db, { user, cls, lesson, blockId, body
   }
 
   // Tìm khối quiz trong phiên bản nội dung của lớp học (snapshot hoặc mới nhất) + tùy biến lớp
-  let block = getEffectiveLessonBaseBlocks(db, cls, lesson.id).find((b) => b.id === blockId && b.block_type === 'quiz');
+  let block = (await getEffectiveLessonBaseBlocks(db, cls, lesson.id)).find((b) => b.id === blockId && b.block_type === 'quiz');
   if (!block) {
-    const customRow = db
+    const customRow = await db
       .prepare(
         "SELECT * FROM class_lesson_blocks WHERE id = ? AND subject_class_id = ? AND lesson_id = ? AND is_published = 1 AND block_type = 'quiz'"
       )
@@ -2386,7 +2386,7 @@ export function submitStandaloneQuizBlock(db, { user, cls, lesson, blockId, body
 
   const c = block.content || {};
   const questions = Array.isArray(c.questions) ? c.questions : [];
-  const allQuizSubs = db
+  const allQuizSubs = await db
     .prepare(
       `SELECT * FROM lesson_quiz_submissions
        WHERE student_id = ? AND subject_class_id = ? AND target_type = 'QUIZ_BLOCK' AND target_id = ?
@@ -2442,7 +2442,7 @@ export function submitStandaloneQuizBlock(db, { user, cls, lesson, blockId, body
 
   const idemKey = rawKey || `auto:${user.id}:${cls.id}:${verKey}:qb:${block.id}:${dbRowAttempt}:${crypto.randomBytes(4).toString('hex')}`;
   const subId = `sub_${crypto.randomBytes(6).toString('hex')}`;
-  db.prepare(
+  await db.prepare(
     `INSERT INTO lesson_quiz_submissions (
        id, idempotency_key, student_id, subject_class_id, lesson_id, target_type, target_id,
        attempt_number, response_json, grading_status, is_correct, earned_points, max_points, feedback_json, submitted_at, content_version_key

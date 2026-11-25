@@ -39,15 +39,13 @@ export function vnDateTime(dateStr, timeStr) {
   return `${dateStr}T${timeStr}:00+07:00`;
 }
 
-function columnNames(db, table) {
-  return db.prepare(`PRAGMA table_info(${table})`).all();
+async function columnNames(db, table) {
+  const names = await db.columnNames(table);
+  return names.map((name) => ({ name }));
 }
 
-function addColumn(db, table, column, definition) {
-  const cols = columnNames(db, table).map((c) => c.name);
-  if (!cols.includes(column)) {
-    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
-  }
+async function addColumn(db, table, column, definition) {
+  await db.addColumn(table, column, definition);
 }
 
 const SUBJECT_CLASSES_DDL = (name) => `
@@ -75,93 +73,95 @@ const SUBJECT_CLASSES_DDL = (name) => `
     updated_at TEXT
   )`;
 
-function ensureSubjectClasses(db) {
-  const info = columnNames(db, 'subject_classes');
+async function ensureSubjectClasses(db) {
+  if (db.isPg) return;
+  const info = await columnNames(db, 'subject_classes');
   if (info.length === 0) {
-    db.exec(SUBJECT_CLASSES_DDL('subject_classes'));
+    await db.exec(SUBJECT_CLASSES_DDL('subject_classes'));
     return;
   }
   const courseCol = info.find((c) => c.name === 'course_id');
   const hasStatus = info.some((c) => c.name === 'status');
   if (courseCol && courseCol.notnull === 0 && hasStatus) return;
 
-  // Tái tạo bảng an toàn: giữ nguyên toàn bộ dữ liệu cũ.
+  // Tái tạo bảng an toàn trên SQLite: giữ nguyên toàn bộ dữ liệu cũ.
   const oldCols = info.map((c) => c.name);
   const keep = [
     'id', 'course_id', 'code', 'title', 'instructor_name', 'ta_names_json',
     'schedule_text', 'room', 'student_count',
   ].filter((c) => oldCols.includes(c));
-  db.exec('PRAGMA foreign_keys = OFF');
+  db.sqlite.exec('PRAGMA foreign_keys = OFF');
   try {
-    db.exec('BEGIN');
-    db.exec('DROP TABLE IF EXISTS subject_classes__new');
-    db.exec(SUBJECT_CLASSES_DDL('subject_classes__new'));
-    db.exec(
+    db.sqlite.exec('BEGIN');
+    db.sqlite.exec('DROP TABLE IF EXISTS subject_classes__new');
+    db.sqlite.exec(SUBJECT_CLASSES_DDL('subject_classes__new'));
+    db.sqlite.exec(
       `INSERT INTO subject_classes__new (${keep.join(', ')}, status, created_at, updated_at)
        SELECT ${keep.join(', ')}, 'ACTIVE', datetime('now'), datetime('now') FROM subject_classes`
     );
-    db.exec('DROP TABLE subject_classes');
-    db.exec('ALTER TABLE subject_classes__new RENAME TO subject_classes');
-    db.exec('COMMIT');
+    db.sqlite.exec('DROP TABLE subject_classes');
+    db.sqlite.exec('ALTER TABLE subject_classes__new RENAME TO subject_classes');
+    db.sqlite.exec('COMMIT');
   } catch (err) {
-    db.exec('ROLLBACK');
+    db.sqlite.exec('ROLLBACK');
     throw err;
   } finally {
-    db.exec('PRAGMA foreign_keys = ON');
+    db.sqlite.exec('PRAGMA foreign_keys = ON');
   }
 }
 
-export function ensureTeachingSchema(db) {
-  db.exec(`CREATE TABLE IF NOT EXISTS app_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`);
+export async function ensureTeachingSchema(db) {
+  if (db.isPg) return;
+  await db.exec(`CREATE TABLE IF NOT EXISTS app_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`);
 
   // ---- Khóa học (mở rộng bảng courses hiện có) ----
-  addColumn(db, 'courses', 'description', 'TEXT');
-  addColumn(db, 'courses', 'thumbnail_url', 'TEXT');
-  addColumn(db, 'courses', 'subject', 'TEXT');
-  addColumn(db, 'courses', 'objectives', 'TEXT');
-  addColumn(db, 'courses', 'target_audience', 'TEXT');
-  addColumn(db, 'courses', 'prerequisites', 'TEXT');
-  addColumn(db, 'courses', 'intro', 'TEXT');
-  addColumn(db, 'courses', 'status', "TEXT NOT NULL DEFAULT 'PUBLISHED'");
-  addColumn(db, 'courses', 'created_by', 'TEXT');
-  addColumn(db, 'courses', 'created_at', 'TEXT');
-  addColumn(db, 'courses', 'archived_at', 'TEXT');
+  await addColumn(db, 'courses', 'description', 'TEXT');
+  await addColumn(db, 'courses', 'thumbnail_url', 'TEXT');
+  await addColumn(db, 'courses', 'subject', 'TEXT');
+  await addColumn(db, 'courses', 'objectives', 'TEXT');
+  await addColumn(db, 'courses', 'target_audience', 'TEXT');
+  await addColumn(db, 'courses', 'prerequisites', 'TEXT');
+  await addColumn(db, 'courses', 'intro', 'TEXT');
+  await addColumn(db, 'courses', 'status', "TEXT NOT NULL DEFAULT 'PUBLISHED'");
+  await addColumn(db, 'courses', 'created_by', 'TEXT');
+  await addColumn(db, 'courses', 'created_at', 'TEXT');
+  await addColumn(db, 'courses', 'archived_at', 'TEXT');
 
   // ---- Chương / bài học (mở rộng bảng hiện có) ----
-  addColumn(db, 'chapters', 'course_id', 'TEXT');
-  addColumn(db, 'chapters', 'description', 'TEXT');
-  addColumn(db, 'chapters', 'sort_order', 'INTEGER NOT NULL DEFAULT 0');
-  addColumn(db, 'chapters', 'status', "TEXT NOT NULL DEFAULT 'PUBLISHED'");
-  addColumn(db, 'chapters', 'updated_at', 'TEXT');
+  await addColumn(db, 'chapters', 'course_id', 'TEXT');
+  await addColumn(db, 'chapters', 'description', 'TEXT');
+  await addColumn(db, 'chapters', 'sort_order', 'INTEGER NOT NULL DEFAULT 0');
+  await addColumn(db, 'chapters', 'status', "TEXT NOT NULL DEFAULT 'PUBLISHED'");
+  await addColumn(db, 'chapters', 'updated_at', 'TEXT');
 
-  addColumn(db, 'lessons', 'description', 'TEXT');
-  addColumn(db, 'lessons', 'objectives', 'TEXT');
-  addColumn(db, 'lessons', 'sort_order', 'INTEGER NOT NULL DEFAULT 0');
-  addColumn(db, 'lessons', 'publish_status', "TEXT NOT NULL DEFAULT 'PUBLISHED'");
-  addColumn(db, 'lessons', 'published_at', 'TEXT');
-  addColumn(db, 'lessons', 'updated_at', 'TEXT');
-  addColumn(db, 'lessons', 'completion_rule', "TEXT NOT NULL DEFAULT 'MANUAL'");
-  addColumn(db, 'lessons', 'min_video_watch_pct', 'INTEGER NOT NULL DEFAULT 0');
-  addColumn(db, 'lessons', 'require_video_quizzes', 'INTEGER NOT NULL DEFAULT 1');
+  await addColumn(db, 'lessons', 'description', 'TEXT');
+  await addColumn(db, 'lessons', 'objectives', 'TEXT');
+  await addColumn(db, 'lessons', 'sort_order', 'INTEGER NOT NULL DEFAULT 0');
+  await addColumn(db, 'lessons', 'publish_status', "TEXT NOT NULL DEFAULT 'PUBLISHED'");
+  await addColumn(db, 'lessons', 'published_at', 'TEXT');
+  await addColumn(db, 'lessons', 'updated_at', 'TEXT');
+  await addColumn(db, 'lessons', 'completion_rule', "TEXT NOT NULL DEFAULT 'MANUAL'");
+  await addColumn(db, 'lessons', 'min_video_watch_pct', 'INTEGER NOT NULL DEFAULT 0');
+  await addColumn(db, 'lessons', 'require_video_quizzes', 'INTEGER NOT NULL DEFAULT 1');
 
-  if (columnNames(db, 'lesson_versions').length > 0) {
-    addColumn(db, 'lesson_versions', 'markers_snapshot_json', "TEXT NOT NULL DEFAULT '[]'");
-    addColumn(db, 'lesson_versions', 'change_note', 'TEXT');
+  if ((await columnNames(db, 'lesson_versions')).length > 0) {
+    await addColumn(db, 'lesson_versions', 'markers_snapshot_json', "TEXT NOT NULL DEFAULT '[]'");
+    await addColumn(db, 'lesson_versions', 'change_note', 'TEXT');
   }
 
   // ---- Lớp học ----
-  ensureSubjectClasses(db);
-  addColumn(db, 'subject_classes', 'default_virtual_room_id', 'TEXT');
-  addColumn(db, 'subject_classes', 'attendance_rules_json', 'TEXT');
+  await ensureSubjectClasses(db);
+  await addColumn(db, 'subject_classes', 'default_virtual_room_id', 'TEXT');
+  await addColumn(db, 'subject_classes', 'attendance_rules_json', 'TEXT');
   // Bổ sung đơn vị / môn học cho lớp cũ còn thiếu (lấy từ khóa học) — idempotent.
-  db.exec(`
+  await db.exec(`
     UPDATE subject_classes SET
       department_id = COALESCE(department_id, (SELECT c.department_id FROM courses c WHERE c.id = subject_classes.course_id)),
       subject = COALESCE(subject, (SELECT c.subject FROM courses c WHERE c.id = subject_classes.course_id))
     WHERE course_id IS NOT NULL AND (department_id IS NULL OR subject IS NULL)
   `);
 
-  db.exec(`
+  await db.exec(`
     CREATE TABLE IF NOT EXISTS class_enrollments (
       id TEXT PRIMARY KEY,
       subject_class_id TEXT NOT NULL REFERENCES subject_classes(id) ON DELETE CASCADE,
@@ -191,27 +191,27 @@ export function ensureTeachingSchema(db) {
   `);
 
   // ---- Buổi học: bảng sessions hiện có ≙ class_sessions + teaching_session_status ----
-  addColumn(db, 'sessions', 'room_or_link', 'TEXT');
-  addColumn(db, 'sessions', 'session_status', "TEXT NOT NULL DEFAULT 'SCHEDULED'");
-  addColumn(db, 'sessions', 'cancel_reason', 'TEXT');
-  addColumn(db, 'sessions', 'attendance_saved_at', 'TEXT');
-  addColumn(db, 'sessions', 'attendance_saved_by', 'TEXT');
-  addColumn(db, 'sessions', 'attendance_locked_at', 'TEXT');
-  addColumn(db, 'sessions', 'attendance_locked_by', 'TEXT');
-  addColumn(db, 'sessions', 'created_by', 'TEXT');
-  addColumn(db, 'sessions', 'created_at', 'TEXT');
-  addColumn(db, 'sessions', 'delivery_mode', "TEXT NOT NULL DEFAULT 'OFFLINE'");
-  addColumn(db, 'sessions', 'teaching_content', 'TEXT');
-  addColumn(db, 'sessions', 'virtual_room_id', 'TEXT');
-  addColumn(db, 'sessions', 'live_status', "TEXT NOT NULL DEFAULT 'NOT_STARTED'");
-  addColumn(db, 'sessions', 'live_started_at', 'TEXT');
-  addColumn(db, 'sessions', 'live_ended_at', 'TEXT');
-  addColumn(db, 'sessions', 'attendance_sync_status', "TEXT NOT NULL DEFAULT 'IDLE'");
-  addColumn(db, 'sessions', 'attendance_rules_json', 'TEXT');
-  db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_class_start ON sessions(subject_class_id, scheduled_start_at)');
+  await addColumn(db, 'sessions', 'room_or_link', 'TEXT');
+  await addColumn(db, 'sessions', 'session_status', "TEXT NOT NULL DEFAULT 'SCHEDULED'");
+  await addColumn(db, 'sessions', 'cancel_reason', 'TEXT');
+  await addColumn(db, 'sessions', 'attendance_saved_at', 'TEXT');
+  await addColumn(db, 'sessions', 'attendance_saved_by', 'TEXT');
+  await addColumn(db, 'sessions', 'attendance_locked_at', 'TEXT');
+  await addColumn(db, 'sessions', 'attendance_locked_by', 'TEXT');
+  await addColumn(db, 'sessions', 'created_by', 'TEXT');
+  await addColumn(db, 'sessions', 'created_at', 'TEXT');
+  await addColumn(db, 'sessions', 'delivery_mode', "TEXT NOT NULL DEFAULT 'OFFLINE'");
+  await addColumn(db, 'sessions', 'teaching_content', 'TEXT');
+  await addColumn(db, 'sessions', 'virtual_room_id', 'TEXT');
+  await addColumn(db, 'sessions', 'live_status', "TEXT NOT NULL DEFAULT 'NOT_STARTED'");
+  await addColumn(db, 'sessions', 'live_started_at', 'TEXT');
+  await addColumn(db, 'sessions', 'live_ended_at', 'TEXT');
+  await addColumn(db, 'sessions', 'attendance_sync_status', "TEXT NOT NULL DEFAULT 'IDLE'");
+  await addColumn(db, 'sessions', 'attendance_rules_json', 'TEXT');
+  await db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_class_start ON sessions(subject_class_id, scheduled_start_at)');
 
   // ---- Điểm danh ----
-  db.exec(`
+  await db.exec(`
     CREATE TABLE IF NOT EXISTS attendance_records (
       id TEXT PRIMARY KEY,
       subject_class_id TEXT NOT NULL REFERENCES subject_classes(id) ON DELETE RESTRICT,
@@ -292,45 +292,45 @@ export function ensureTeachingSchema(db) {
       deleted_at TEXT
     )`;
 
-  const lrMaster = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'learning_resources'").get();
+  const lrMaster = await db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'learning_resources'").get();
   if (!lrMaster) {
-    db.exec(LEARNING_RESOURCES_DDL('learning_resources'));
+    await db.exec(LEARNING_RESOURCES_DDL('learning_resources'));
   } else if (!String(lrMaster.sql).includes("'VIDEO'")) {
-    const oldCols = columnNames(db, 'learning_resources').map((c) => c.name);
+    const oldCols = (await columnNames(db, 'learning_resources')).map((c) => c.name);
     const keep = [
       'id', 'course_id', 'title', 'resource_type', 'storage_provider', 'storage_key',
       'file_name', 'mime_type', 'file_size_bytes', 'checksum_sha256', 'status',
       'created_by', 'created_at', 'updated_at', 'deleted_at',
     ].filter((c) => oldCols.includes(c));
-    db.exec('PRAGMA foreign_keys = OFF');
+    db.sqlite.exec('PRAGMA foreign_keys = OFF');
     try {
-      db.exec('BEGIN');
-      db.exec('DROP TABLE IF EXISTS learning_resources__new');
-      db.exec(LEARNING_RESOURCES_DDL('learning_resources__new'));
-      db.exec(
+      db.sqlite.exec('BEGIN');
+      db.sqlite.exec('DROP TABLE IF EXISTS learning_resources__new');
+      db.sqlite.exec(LEARNING_RESOURCES_DDL('learning_resources__new'));
+      db.sqlite.exec(
         `INSERT INTO learning_resources__new (${keep.join(', ')})
          SELECT ${keep.join(', ')} FROM learning_resources`
       );
-      db.exec('DROP TABLE learning_resources');
-      db.exec('ALTER TABLE learning_resources__new RENAME TO learning_resources');
-      db.exec('COMMIT');
+      db.sqlite.exec('DROP TABLE learning_resources');
+      db.sqlite.exec('ALTER TABLE learning_resources__new RENAME TO learning_resources');
+      db.sqlite.exec('COMMIT');
     } catch (err) {
-      db.exec('ROLLBACK');
+      db.sqlite.exec('ROLLBACK');
       throw err;
     } finally {
-      db.exec('PRAGMA foreign_keys = ON');
+      db.sqlite.exec('PRAGMA foreign_keys = ON');
     }
   } else {
-    addColumn(db, 'learning_resources', 'class_id', 'TEXT');
-    addColumn(db, 'learning_resources', 'description', 'TEXT');
-    addColumn(db, 'learning_resources', 'visibility', "TEXT NOT NULL DEFAULT 'ENROLLED'");
-    addColumn(db, 'learning_resources', 'duration_seconds', 'REAL');
-    addColumn(db, 'learning_resources', 'thumbnail_url', 'TEXT');
-    addColumn(db, 'learning_resources', 'processing_status', "TEXT NOT NULL DEFAULT 'READY'");
-    addColumn(db, 'learning_resources', 'error_message', 'TEXT');
+    await addColumn(db, 'learning_resources', 'class_id', 'TEXT');
+    await addColumn(db, 'learning_resources', 'description', 'TEXT');
+    await addColumn(db, 'learning_resources', 'visibility', "TEXT NOT NULL DEFAULT 'ENROLLED'");
+    await addColumn(db, 'learning_resources', 'duration_seconds', 'REAL');
+    await addColumn(db, 'learning_resources', 'thumbnail_url', 'TEXT');
+    await addColumn(db, 'learning_resources', 'processing_status', "TEXT NOT NULL DEFAULT 'READY'");
+    await addColumn(db, 'learning_resources', 'error_message', 'TEXT');
   }
 
-  db.exec(`
+  await db.exec(`
     CREATE INDEX IF NOT EXISTS idx_resources_course ON learning_resources(course_id, deleted_at);
 
     CREATE TABLE IF NOT EXISTS lesson_progress (
@@ -484,9 +484,9 @@ export function ensureTeachingSchema(db) {
   `);
 
   // Nếu bảng virtual_* từ lần thử nghiệm trước thiếu cột chuẩn mới, tái tạo sạch sẽ
-  const vpsCols = columnNames(db, 'virtual_participant_sessions').map((c) => c.name);
+  const vpsCols = (await columnNames(db, 'virtual_participant_sessions')).map((c) => c.name);
   if (vpsCols.length > 0 && !vpsCols.includes('is_currently_in_room')) {
-    db.exec(`
+    await db.exec(`
       DROP TABLE IF EXISTS virtual_sync_jobs;
       DROP TABLE IF EXISTS virtual_attendance_adjustments;
       DROP TABLE IF EXISTS virtual_attendance_calculations;
@@ -499,7 +499,7 @@ export function ensureTeachingSchema(db) {
     `);
   }
 
-  db.exec(`
+  await db.exec(`
     -- ---- Phòng học trực tuyến & Điểm danh tự động (Virtual Classroom & Auto-Attendance) ----
     CREATE TABLE IF NOT EXISTS virtual_provider_configs (
       provider TEXT PRIMARY KEY CHECK (provider IN ('ZOOM','GOOGLE_MEET','EXTERNAL')),
@@ -656,14 +656,14 @@ export function ensureTeachingSchema(db) {
       completed_at TEXT
     );
   `);
-  addColumn(db, 'class_lesson_customs', 'published_snapshot_json', 'TEXT');
-  ensureMasterLmsSchema(db);
+  await addColumn(db, 'class_lesson_customs', 'published_snapshot_json', 'TEXT');
+  await ensureMasterLmsSchema(db);
 }
 
 /** Xóa dữ liệu module giảng dạy (chỉ dùng khi reset seed cho môi trường phát triển/kiểm thử). */
-export function clearTeachingData(db) {
-  clearMasterLmsData(db);
-  db.exec(`
+export async function clearTeachingData(db) {
+  await clearMasterLmsData(db);
+  await db.exec(`
     DELETE FROM virtual_sync_jobs;
     DELETE FROM virtual_attendance_adjustments;
     DELETE FROM virtual_attendance_calculations;
@@ -714,9 +714,9 @@ function slugEmail(name, suffix) {
 }
 
 /** Tạo một buổi học trong bảng `sessions` (dùng chung cho seed và API). */
-export function insertClassSession(db, s) {
+export async function insertClassSession(db, s) {
   const deadline = vnIso(new Date(Date.parse(s.scheduled_end_at) + 24 * 3600 * 1000));
-  db.prepare(
+  await db.prepare(
     `INSERT INTO sessions (session_id, subject_class_id, subject_class_code, subject_title, session_title,
        scheduled_start_at, scheduled_end_at, confirmation_deadline_at, actual_start_at, actual_end_at,
        scheduled_instructor_id, scheduled_instructor_name, actual_instructor_name, is_substitute_teaching,
@@ -757,12 +757,12 @@ export function insertClassSession(db, s) {
  * Dữ liệu phát triển cho module giảng dạy (idempotent nhờ app_meta marker).
  * Ghi vào cơ sở dữ liệu thật — Frontend luôn đọc qua API, không dùng dữ liệu giả trong giao diện.
  */
-export function seedTeachingData(db, { seed, hashPassword }) {
-  const marker = db.prepare('SELECT value FROM app_meta WHERE key = ?').get(TEACHING_SEED_MARKER);
+export async function seedTeachingData(db, { seed, hashPassword }) {
+  const marker = await db.prepare('SELECT value FROM app_meta WHERE key = ?').get(TEACHING_SEED_MARKER);
   if (marker) {
-    seedStudioStarterData(db);
-    seedVirtualClassroomStarterData(db);
-    seedMasterLmsStarterData(db);
+    await seedStudioStarterData(db);
+    await seedVirtualClassroomStarterData(db);
+    await seedMasterLmsStarterData(db);
     return;
   }
 
@@ -770,17 +770,16 @@ export function seedTeachingData(db, { seed, hashPassword }) {
   const nowIso = now.toISOString();
   const passHash = hashPassword('123456');
 
-  db.exec('BEGIN');
-  try {
+  await db.tx(async () => {
     // 1. Lớp học từ seed gốc (nếu chưa tồn tại).
     const insClass = db.prepare(
-      `INSERT OR IGNORE INTO subject_classes (id, course_id, code, title, subject, description, instructor_name,
+      `INSERT INTO subject_classes (id, course_id, code, title, subject, description, instructor_name,
          ta_names_json, schedule_text, room, student_count, start_date, end_date, max_students, delivery_mode,
          status, department_id, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?, ?)`
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?, ?) ON CONFLICT DO NOTHING`
     );
     for (const sc of seed.subject_classes || []) {
-      insClass.run(
+      await insClass.run(
         sc.id, sc.course_id, sc.code, sc.title, 'Toán', 'Lớp chính khóa năm học 2026–2027.',
         sc.instructor_name, JSON.stringify(sc.ta_names || []), sc.schedule_text || null, sc.room || null,
         sc.student_count || 0, '2026-09-05', '2027-05-25', 40, 'OFFLINE', 'khoi_5', nowIso, nowIso
@@ -788,7 +787,7 @@ export function seedTeachingData(db, { seed, hashPassword }) {
     }
 
     // 2. Bổ sung khóa học: trạng thái, mô tả.
-    db.prepare(
+    await db.prepare(
       `UPDATE courses SET
          status = COALESCE(status, 'PUBLISHED'),
          subject = COALESCE(subject, 'Toán'),
@@ -800,41 +799,43 @@ export function seedTeachingData(db, { seed, hashPassword }) {
     ).run(nowIso);
 
     // 3. Chương: liên kết course_id theo lớp, thứ tự theo mã.
-    db.exec(`
+    await db.exec(`
       UPDATE chapters SET course_id = (
         SELECT sc.course_id FROM subject_classes sc WHERE sc.id = chapters.subject_class_id
       ) WHERE course_id IS NULL
     `);
-    const chapters = db.prepare('SELECT id FROM chapters ORDER BY code').all();
-    chapters.forEach((ch, i) => db.prepare('UPDATE chapters SET sort_order = ? WHERE id = ?').run((i + 1) * 10, ch.id));
-    const lessons = db.prepare('SELECT id, chapter_id FROM lessons ORDER BY chapter_id, code').all();
+    const chapters = await db.prepare('SELECT id FROM chapters ORDER BY code').all();
+    for (const [i, ch] of (chapters).entries()) {
+      await db.prepare('UPDATE chapters SET sort_order = ? WHERE id = ?').run((i + 1) * 10, ch.id);
+    }
+    const lessons = await db.prepare('SELECT id, chapter_id FROM lessons ORDER BY chapter_id, code').all();
     const perChapter = {};
     for (const l of lessons) {
       perChapter[l.chapter_id] = (perChapter[l.chapter_id] || 0) + 10;
-      db.prepare(
+      await db.prepare(
         "UPDATE lessons SET sort_order = ?, published_at = COALESCE(published_at, ?) WHERE id = ?"
       ).run(perChapter[l.chapter_id], nowIso, l.id);
     }
 
     // 4. Học sinh bổ sung cho lớp 5A1 + giáo viên và lớp 5A2 (cùng khóa học → minh họa 1 khóa nhiều lớp).
     const insUser = db.prepare(
-      `INSERT OR IGNORE INTO users (id, code, email, full_name, password_hash, roles_json, department_id,
+      `INSERT INTO users (id, code, email, full_name, password_hash, roles_json, department_id,
          assigned_course_ids_json, enrolled_subject_class_ids_json)
-       VALUES (?, ?, ?, ?, ?, ?, 'khoi_5', '[]', '[]')`
+       VALUES (?, ?, ?, ?, ?, ?, 'khoi_5', '[]', '[]') ON CONFLICT DO NOTHING`
     );
-    EXTRA_STUDENT_NAMES.forEach((name, i) => {
+    for (const [i, name] of (EXTRA_STUDENT_NAMES).entries()) {
       const n = 104 + i;
-      insUser.run(`stu_5a1_${n}`, `HS50${n}`, slugEmail(name, n), name, passHash, '["STUDENT"]');
-    });
-    insUser.run('gv_5002', 'GV5002', 'vankhoa.gv@lmsplus.edu.vn', 'Thầy Đỗ Văn Khoa', passHash, '["INSTRUCTOR"]');
-    CLASS_5A2_STUDENTS.forEach((name, i) => {
+      await insUser.run(`stu_5a1_${n}`, `HS50${n}`, slugEmail(name, n), name, passHash, '["STUDENT"]');
+    }
+    await insUser.run('gv_5002', 'GV5002', 'vankhoa.gv@lmsplus.edu.vn', 'Thầy Đỗ Văn Khoa', passHash, '["INSTRUCTOR"]');
+    for (const [i, name] of (CLASS_5A2_STUDENTS).entries()) {
       const n = 201 + i;
-      insUser.run(`stu_5a2_${n}`, `HS50${n}`, slugEmail(name, n), name, passHash, '["STUDENT"]');
-    });
+      await insUser.run(`stu_5a2_${n}`, `HS50${n}`, slugEmail(name, n), name, passHash, '["STUDENT"]');
+    }
 
-    const course = db.prepare('SELECT id FROM courses ORDER BY id LIMIT 1').get();
+    const course = await db.prepare('SELECT id FROM courses ORDER BY id LIMIT 1').get();
     if (course) {
-      insClass.run(
+      await insClass.run(
         'sc_toan5_5a2', course.id, '5A2', 'Toán lớp 5', 'Toán', 'Lớp chính khóa năm học 2026–2027.',
         'Thầy Đỗ Văn Khoa', '[]', 'Thứ Ba, Thứ Năm • Tiết 3 (08:15 – 08:50)', 'Phòng 5A2 – Dãy B',
         3, '2026-09-05', '2027-05-25', 40, 'OFFLINE', 'khoi_5', nowIso, nowIso
@@ -843,44 +844,44 @@ export function seedTeachingData(db, { seed, hashPassword }) {
 
     // 5. Phân công giảng dạy.
     const insStaff = db.prepare(
-      `INSERT OR IGNORE INTO teaching_staff_assignments (id, subject_class_id, user_id, staff_role, permissions_json,
-         is_active, assigned_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?)`
+      `INSERT INTO teaching_staff_assignments (id, subject_class_id, user_id, staff_role, permissions_json,
+         is_active, assigned_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?) ON CONFLICT DO NOTHING`
     );
-    const instructor = db.prepare(`SELECT id FROM users WHERE roles_json LIKE '%"INSTRUCTOR"%' AND id <> 'gv_5002' ORDER BY code LIMIT 1`).get();
-    const ta = db.prepare(`SELECT id FROM users WHERE roles_json LIKE '%"TEACHING_ASSISTANT"%' ORDER BY code LIMIT 1`).get();
-    const staffUser = db.prepare(`SELECT id FROM users WHERE roles_json LIKE '%"ACADEMIC_STAFF"%' LIMIT 1`).get();
+    const instructor = await db.prepare(`SELECT id FROM users WHERE roles_json LIKE '%"INSTRUCTOR"%' AND id <> 'gv_5002' ORDER BY code LIMIT 1`).get();
+    const ta = await db.prepare(`SELECT id FROM users WHERE roles_json LIKE '%"TEACHING_ASSISTANT"%' ORDER BY code LIMIT 1`).get();
+    const staffUser = await db.prepare(`SELECT id FROM users WHERE roles_json LIKE '%"ACADEMIC_STAFF"%' LIMIT 1`).get();
     const assignedBy = staffUser ? staffUser.id : null;
     if (instructor) {
-      insStaff.run(crypto.randomUUID(), 'sc_toan5_5a1', instructor.id, 'PRIMARY_INSTRUCTOR',
+      await insStaff.run(crypto.randomUUID(), 'sc_toan5_5a1', instructor.id, 'PRIMARY_INSTRUCTOR',
         '{"can_manage_materials":true,"can_take_attendance":true}', assignedBy, nowIso, nowIso);
     }
     if (ta) {
-      insStaff.run(crypto.randomUUID(), 'sc_toan5_5a1', ta.id, 'TEACHING_ASSISTANT',
+      await insStaff.run(crypto.randomUUID(), 'sc_toan5_5a1', ta.id, 'TEACHING_ASSISTANT',
         '{"can_manage_materials":false,"can_take_attendance":true}', assignedBy, nowIso, nowIso);
     }
-    insStaff.run(crypto.randomUUID(), 'sc_toan5_5a2', 'gv_5002', 'PRIMARY_INSTRUCTOR',
+    await insStaff.run(crypto.randomUUID(), 'sc_toan5_5a2', 'gv_5002', 'PRIMARY_INSTRUCTOR',
       '{"can_manage_materials":true,"can_take_attendance":true}', assignedBy, nowIso, nowIso);
 
     // 6. Ghi danh.
     const insEnroll = db.prepare(
-      `INSERT OR IGNORE INTO class_enrollments (id, subject_class_id, student_id, enrollment_source, status, enrolled_at)
-       VALUES (?, ?, ?, 'ACADEMIC_ASSIGNED', 'ACTIVE', ?)`
+      `INSERT INTO class_enrollments (id, subject_class_id, student_id, enrollment_source, status, enrolled_at)
+       VALUES (?, ?, ?, 'ACADEMIC_ASSIGNED', 'ACTIVE', ?) ON CONFLICT DO NOTHING`
     );
     const enrolledAt = '2026-09-05T00:00:00+07:00';
-    const students5a1 = db
+    const students5a1 = await db
       .prepare(`SELECT id FROM users WHERE roles_json LIKE '%"STUDENT"%' AND id NOT LIKE 'stu_5a2_%' ORDER BY code`)
       .all();
-    for (const s of students5a1) insEnroll.run(crypto.randomUUID(), 'sc_toan5_5a1', s.id, enrolledAt);
-    for (const s of db.prepare(`SELECT id FROM users WHERE id LIKE 'stu_5a2_%'`).all()) {
-      insEnroll.run(crypto.randomUUID(), 'sc_toan5_5a2', s.id, enrolledAt);
+    for (const s of students5a1) await insEnroll.run(crypto.randomUUID(), 'sc_toan5_5a1', s.id, enrolledAt);
+    for (const s of await db.prepare(`SELECT id FROM users WHERE id LIKE 'stu_5a2_%'`).all()) {
+      await insEnroll.run(crypto.randomUUID(), 'sc_toan5_5a2', s.id, enrolledAt);
     }
 
     // 7. Lịch học 5A1 (T2/T4/T6 07:30–08:05) từ 3 tuần trước đến 2 tuần sau; 5A2 (T3/T5 08:15–08:50).
     const existingDates = new Set(
-      db.prepare('SELECT subject_class_id, substr(scheduled_start_at,1,10) d FROM sessions').all()
+      (await db.prepare('SELECT subject_class_id, substr(scheduled_start_at,1,10) d FROM sessions').all())
         .map((r) => `${r.subject_class_id}|${r.d}`)
     );
-    db.prepare(
+    await db.prepare(
       `UPDATE sessions SET room_or_link = COALESCE(room_or_link, 'Phòng 5A1 – Dãy B'),
          session_status = CASE WHEN scheduled_end_at < ? THEN 'COMPLETED' ELSE session_status END
        WHERE subject_class_id = 'sc_toan5_5a1'`
@@ -892,9 +893,9 @@ export function seedTeachingData(db, { seed, hashPassword }) {
     ];
     const today = vnDate(now);
     const startDay = new Date(Date.parse(`${today}T00:00:00+07:00`) - 21 * 86400000);
-    const lessonTitles = db.prepare('SELECT title FROM lessons ORDER BY chapter_id, code').all().map((r) => r.title);
+    const lessonTitles = (await db.prepare('SELECT title FROM lessons ORDER BY chapter_id, code').all()).map((r) => r.title);
     for (const p of plan) {
-      const instrUser = p.instructor ? db.prepare('SELECT id, full_name FROM users WHERE id = ?').get(p.instructor.id) : null;
+      const instrUser = p.instructor ? await db.prepare('SELECT id, full_name FROM users WHERE id = ?').get(p.instructor.id) : null;
       let idx = 0;
       for (let d = 0; d <= 35; d++) {
         const day = new Date(startDay.getTime() + d * 86400000);
@@ -913,7 +914,7 @@ export function seedTeachingData(db, { seed, hashPassword }) {
         }
         const isPast = Date.parse(endAt) < now.getTime();
         const isOld = Date.parse(endAt) + 24 * 3600000 < now.getTime();
-        insertClassSession(db, {
+        await insertClassSession(db, {
           session_id: `ses_${p.code.toLowerCase()}_${dateStr.replace(/-/g, '')}`,
           subject_class_id: p.classId,
           subject_class_code: p.code,
@@ -932,82 +933,77 @@ export function seedTeachingData(db, { seed, hashPassword }) {
     }
 
     // Một buổi bị hủy trong quá khứ (không được tính vào chuyên cần).
-    const cancelTarget = db
+    const cancelTarget = await db
       .prepare(`SELECT session_id FROM sessions WHERE subject_class_id = 'sc_toan5_5a1' AND session_id LIKE 'ses_5a1_%'
                 AND scheduled_end_at < ? ORDER BY scheduled_start_at LIMIT 1 OFFSET 2`)
       .get(vnIso(now));
     if (cancelTarget) {
-      db.prepare("UPDATE sessions SET session_status = 'CANCELLED', cancel_reason = 'Nghỉ do trường tổ chức hội thao' WHERE session_id = ?")
+      await db.prepare("UPDATE sessions SET session_status = 'CANCELLED', cancel_reason = 'Nghỉ do trường tổ chức hội thao' WHERE session_id = ?")
         .run(cancelTarget.session_id);
     }
 
     // 8. Điểm danh cho các buổi đã diễn ra (trừ buổi hủy và buổi gần nhất → để giáo viên thực hiện).
-    const pastSessions = db
+    const pastSessions = await db
       .prepare(`SELECT session_id, subject_class_id, scheduled_start_at, scheduled_end_at FROM sessions
                 WHERE session_status = 'COMPLETED' AND scheduled_end_at < ? ORDER BY scheduled_start_at`)
       .all(vnIso(now));
     const latestPerClass = {};
     for (const s of pastSessions) latestPerClass[s.subject_class_id] = s.session_id;
     const insRec = db.prepare(
-      `INSERT OR IGNORE INTO attendance_records (id, subject_class_id, class_session_id, student_id, attendance_status,
+      `INSERT INTO attendance_records (id, subject_class_id, class_session_id, student_id, attendance_status,
          check_in_method, check_in_at, note, recorded_by, updated_by, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, 'MANUAL', ?, ?, ?, ?, ?, ?)`
+       VALUES (?, ?, ?, ?, ?, 'MANUAL', ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`
     );
     const insAudit = db.prepare(
       `INSERT INTO attendance_audit_logs (id, attendance_record_id, previous_status, new_status, change_reason, changed_by, changed_at)
        VALUES (?, ?, NULL, ?, 'Điểm danh lần đầu', ?, ?)`
     );
-    pastSessions.forEach((s, sIdx) => {
-      if (latestPerClass[s.subject_class_id] === s.session_id) return;
-      const roster = db
+    for (const [sIdx, s] of (pastSessions).entries()) {
+      if (latestPerClass[s.subject_class_id] === s.session_id) continue;
+      const roster = await db
         .prepare(`SELECT student_id FROM class_enrollments WHERE subject_class_id = ? AND status = 'ACTIVE' ORDER BY student_id`)
         .all(s.subject_class_id);
-      const staff = db
+      const staff = await db
         .prepare(`SELECT user_id FROM teaching_staff_assignments WHERE subject_class_id = ? AND staff_role = 'PRIMARY_INSTRUCTOR'`)
         .get(s.subject_class_id);
       const actor = staff ? staff.user_id : 'system';
-      roster.forEach((r, rIdx) => {
+      for (const [rIdx, r] of (roster).entries()) {
         const v = (rIdx * 7 + sIdx * 3) % 23;
         const status = v === 0 ? 'UNEXCUSED_ABSENCE' : v === 1 ? 'EXCUSED_ABSENCE' : v === 2 || v === 3 ? 'LATE' : 'PRESENT';
         const recId = crypto.randomUUID();
         const checkIn = status === 'PRESENT' || status === 'LATE' ? s.scheduled_start_at : null;
-        insRec.run(recId, s.subject_class_id, s.session_id, r.student_id, status, checkIn,
+        await insRec.run(recId, s.subject_class_id, s.session_id, r.student_id, status, checkIn,
           status === 'EXCUSED_ABSENCE' ? 'Phụ huynh xin phép' : null, actor, actor, s.scheduled_end_at, s.scheduled_end_at);
-        insAudit.run(crypto.randomUUID(), recId, status, actor, s.scheduled_end_at);
-      });
-      db.prepare('UPDATE sessions SET attendance_saved_at = ?, attendance_saved_by = ? WHERE session_id = ?')
+        await insAudit.run(crypto.randomUUID(), recId, status, actor, s.scheduled_end_at);
+      }
+      await db.prepare('UPDATE sessions SET attendance_saved_at = ?, attendance_saved_by = ? WHERE session_id = ?')
         .run(s.scheduled_end_at, actor, s.session_id);
-    });
+    }
 
-    db.prepare('INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)').run(TEACHING_SEED_MARKER, nowIso);
-    db.exec('COMMIT');
-  } catch (err) {
-    db.exec('ROLLBACK');
-    throw err;
-  }
+    await db.prepare('INSERT INTO app_meta (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value').run(TEACHING_SEED_MARKER, nowIso);
+  });
 
-  seedStudioStarterData(db);
-  seedVirtualClassroomStarterData(db);
+  await seedStudioStarterData(db);
+  await seedVirtualClassroomStarterData(db);
 }
 
 /**
  * Khởi tạo dữ liệu mẫu thực tế cho Lesson Studio (Ngân hàng câu hỏi Toán 5 + Video bài giảng có mốc Quiz tương tác ở Bài 1.1).
  * Tách marker riêng để CSDL phát triển hiện có vẫn nhận được dữ liệu mẫu mà không cần xóa dữ liệu cũ.
  */
-export function seedStudioStarterData(db) {
-  const marker = db.prepare('SELECT value FROM app_meta WHERE key = ?').get(STUDIO_SEED_MARKER);
+export async function seedStudioStarterData(db) {
+  const marker = await db.prepare('SELECT value FROM app_meta WHERE key = ?').get(STUDIO_SEED_MARKER);
   if (marker) return;
 
-  const course = db.prepare("SELECT id, subject, instructor_id FROM courses WHERE id = 'crs_toan5' OR code = 'TOAN5-2026' LIMIT 1").get();
+  const course = await db.prepare("SELECT id, subject, instructor_id FROM courses WHERE id = 'crs_toan5' OR code = 'TOAN5-2026' LIMIT 1").get();
   if (!course) return;
 
   const nowIso = new Date().toISOString();
   const actor = course.instructor_id || 'usr_gv01';
 
-  db.exec('BEGIN');
-  try {
+  await db.tx(async () => {
     const insQb = db.prepare(
-      `INSERT OR IGNORE INTO question_bank_items (
+      `INSERT INTO question_bank_items (
          id, course_id, subject, question_type, prompt, options_json, answer_key_json,
          points, explanation, correct_feedback, wrong_feedback, difficulty, tags_json, created_by, created_at, updated_at
        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
@@ -1019,7 +1015,7 @@ export function seedStudioStarterData(db) {
       { id: 'opt_c', text: '3/8', is_correct: false, feedback: 'Bạn mới chia tử số cho 2, cần chia cả mẫu số cho 2.' },
       { id: 'opt_d', text: '6/4', is_correct: false, feedback: 'Bạn mới chia mẫu số cho 2, cần chia cả tử số cho 2.' },
     ];
-    insQb.run(
+    await insQb.run(
       'qb_toan5_01', course.id, course.subject || 'Toán', 'SINGLE_CHOICE',
       'Rút gọn phân số 6/8 về phân số tối giản ta được kết quả nào?',
       JSON.stringify(qb1Options),
@@ -1035,7 +1031,7 @@ export function seedStudioStarterData(db) {
       { id: 'true', text: 'Đúng', is_correct: true, feedback: 'Đúng! Nhân cả tử và mẫu với cùng một số tự nhiên khác 0 thì giá trị phân số không đổi.' },
       { id: 'false', text: 'Sai', is_correct: false, feedback: 'Hãy nhớ lại tính chất cơ bản của phân số vừa xem trong video.' },
     ];
-    insQb.run(
+    await insQb.run(
       'qb_toan5_02', course.id, course.subject || 'Toán', 'TRUE_FALSE',
       'Phát biểu sau đúng hay sai: "Nếu nhân cả tử số và mẫu số của một phân số với cùng một số tự nhiên khác 0 thì ta được một phân số bằng phân số đã cho."',
       JSON.stringify(qb2Options),
@@ -1053,7 +1049,7 @@ export function seedStudioStarterData(db) {
       { id: 'm3', text: '4/9', is_correct: false, feedback: '' },
       { id: 'm4', text: '10/15', is_correct: true, feedback: '' },
     ];
-    insQb.run(
+    await insQb.run(
       'qb_toan5_03', course.id, course.subject || 'Toán', 'MULTIPLE_CHOICE',
       'Chọn TẤT CẢ các phân số bằng với phân số 4/6:',
       JSON.stringify(qb3Options),
@@ -1065,7 +1061,7 @@ export function seedStudioStarterData(db) {
       'MEDIUM', JSON.stringify(['phân số bằng nhau']), actor, nowIso, nowIso
     );
 
-    insQb.run(
+    await insQb.run(
       'qb_toan5_04', course.id, course.subject || 'Toán', 'FILL_BLANK',
       'Điền số thích hợp vào chỗ trống: 3/5 = ___ / 20',
       '[]',
@@ -1078,10 +1074,10 @@ export function seedStudioStarterData(db) {
     );
 
     // Gắn khối video tương tác & 3 mốc quiz vào bài les_101 (nếu tồn tại và chưa có khối video mẫu)
-    const les101 = db.prepare("SELECT * FROM lessons WHERE id = 'les_101'").get();
+    const les101 = await db.prepare("SELECT * FROM lessons WHERE id = 'les_101'").get();
     if (les101) {
       const videoBlockId = 'blk_101_vid1';
-      const hasVid = db.prepare('SELECT 1 FROM lesson_blocks WHERE id = ?').get(videoBlockId);
+      const hasVid = await db.prepare('SELECT 1 FROM lesson_blocks WHERE id = ?').get(videoBlockId);
       if (!hasVid) {
         const videoContent = {
           source_type: 'YOUTUBE',
@@ -1092,20 +1088,20 @@ export function seedStudioStarterData(db) {
           start_seconds: 0,
           allow_seeking_ahead: true,
         };
-        db.prepare(
+        await db.prepare(
           `INSERT INTO lesson_blocks (id, lesson_id, schema_version, block_type, sort_order, status, content_json)
            VALUES (?, ?, '1.2', 'video', 1500, 'ACTIVE', ?)`
         ).run(videoBlockId, les101.id, JSON.stringify(videoContent));
 
         const insMarker = db.prepare(
-          `INSERT OR IGNORE INTO video_quiz_markers (
+          `INSERT INTO video_quiz_markers (
              id, lesson_id, class_id, block_id, timestamp_sec, sort_order, behavior, title, info_body,
              question_id, question_snapshot_json, is_required, allow_skip, max_attempts,
              show_answer_after_submit, show_explanation, allow_review, created_by, created_at, updated_at
-           ) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, 1, ?, ?, ?)`
+           ) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, 1, ?, ?, ?) ON CONFLICT DO NOTHING`
         );
 
-        insMarker.run(
+        await insMarker.run(
           'vqm_101_01', les101.id, videoBlockId, 30, 10, 'PAUSE_AND_ASK',
           'Kiểm tra nhanh 1: Tính chất phân số', null, 'qb_toan5_02',
           JSON.stringify({
@@ -1121,7 +1117,7 @@ export function seedStudioStarterData(db) {
           1, 0, 2, actor, nowIso, nowIso
         );
 
-        insMarker.run(
+        await insMarker.run(
           'vqm_101_02', les101.id, videoBlockId, 135, 20, 'PAUSE_AND_ASK',
           'Kiểm tra nhanh 2: Rút gọn phân số', null, 'qb_toan5_01',
           JSON.stringify({
@@ -1137,7 +1133,7 @@ export function seedStudioStarterData(db) {
           1, 0, 3, actor, nowIso, nowIso
         );
 
-        insMarker.run(
+        await insMarker.run(
           'vqm_101_03', les101.id, videoBlockId, 280, 30, 'PAUSE_OPTIONAL',
           'Thử thách nâng cao: Điền số thích hợp', null, 'qb_toan5_04',
           JSON.stringify({
@@ -1154,29 +1150,25 @@ export function seedStudioStarterData(db) {
         );
 
         // Đồng bộ snapshot phiên bản xuất bản mới nhất của les_101 để học viên thấy ngay video + mốc quiz
-        const allBlocks = db
+        const allBlocks = (await db
           .prepare('SELECT id, block_type, sort_order, status, content_json FROM lesson_blocks WHERE lesson_id = ? ORDER BY sort_order')
-          .all(les101.id)
+          .all(les101.id))
           .map((b) => ({ id: b.id, block_type: b.block_type, sort_order: b.sort_order, status: b.status, content: JSON.parse(b.content_json) }));
-        const allMarkers = db
+        const allMarkers = await db
           .prepare('SELECT * FROM video_quiz_markers WHERE lesson_id = ? AND class_id IS NULL ORDER BY timestamp_sec, sort_order')
           .all(les101.id);
-        const latestVer = db
+        const latestVer = await db
           .prepare('SELECT id FROM lesson_versions WHERE lesson_id = ? ORDER BY version_number DESC LIMIT 1')
           .get(les101.id);
         if (latestVer) {
-          db.prepare('UPDATE lesson_versions SET blocks_snapshot_json = ?, markers_snapshot_json = ? WHERE id = ?')
+          await db.prepare('UPDATE lesson_versions SET blocks_snapshot_json = ?, markers_snapshot_json = ? WHERE id = ?')
             .run(JSON.stringify(allBlocks), JSON.stringify(allMarkers), latestVer.id);
         }
       }
     }
 
-    db.prepare('INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)').run(STUDIO_SEED_MARKER, nowIso);
-    db.exec('COMMIT');
-  } catch (err) {
-    db.exec('ROLLBACK');
-    throw err;
-  }
+    await db.prepare('INSERT INTO app_meta (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value').run(STUDIO_SEED_MARKER, nowIso);
+  });
 }
 
 /**
@@ -1184,26 +1176,25 @@ export function seedStudioStarterData(db) {
  * Giữ nguyên trạng thái `attendance_saved_at IS NULL` trên buổi học gần nhất của 5A1 để tương thích 100% với bộ test hiện hữu,
  * đồng thời cung cấp sẵn phiên tham gia Zoom thực tế + 1 người tham gia UNKNOWN chờ giảng viên đối soát.
  */
-export function seedVirtualClassroomStarterData(db) {
-  const marker = db.prepare('SELECT value FROM app_meta WHERE key = ?').get(VIRTUAL_SEED_MARKER);
+export async function seedVirtualClassroomStarterData(db) {
+  const marker = await db.prepare('SELECT value FROM app_meta WHERE key = ?').get(VIRTUAL_SEED_MARKER);
   if (marker) return;
 
   const now = new Date();
   const nowIso = now.toISOString();
   const nowVnStr = vnIso(now);
 
-  db.exec('BEGIN');
-  try {
+  await db.tx(async () => {
     // 1. Cấu hình nhà cung cấp mặc định (Zoom, Google Meet, Link bên ngoài)
     const insProv = db.prepare(
-      `INSERT OR IGNORE INTO virtual_provider_configs (
+      `INSERT INTO virtual_provider_configs (
          provider, display_name, auth_mode, account_id, client_id,
          encrypted_credentials_json, scopes_json, capabilities_json,
          connection_status, last_verified_at, status_message, updated_by, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'system', ?)`
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'system', ?) ON CONFLICT DO NOTHING`
     );
 
-    insProv.run(
+    await insProv.run(
       'ZOOM',
       'Zoom Meetings (REST API v2 & Webhooks)',
       'SERVER_TO_SERVER_OAUTH',
@@ -1234,7 +1225,7 @@ export function seedVirtualClassroomStarterData(db) {
       nowIso
     );
 
-    insProv.run(
+    await insProv.run(
       'GOOGLE_MEET',
       'Google Meet (Google Workspace Meet REST API v2)',
       'GOOGLE_WORKSPACE_OAUTH2',
@@ -1262,7 +1253,7 @@ export function seedVirtualClassroomStarterData(db) {
       nowIso
     );
 
-    insProv.run(
+    await insProv.run(
       'EXTERNAL',
       'Link phòng học bên ngoài (Thủ công)',
       'MANUAL_LINK',
@@ -1282,7 +1273,7 @@ export function seedVirtualClassroomStarterData(db) {
     );
 
     // 2. Gắn phòng học Zoom & dữ liệu tham gia vào buổi học gần nhất chưa chốt điểm danh của lớp 5A1
-    const reviewSession = db
+    const reviewSession = await db
       .prepare(
         `SELECT * FROM sessions
          WHERE subject_class_id = 'sc_toan5_5a1'
@@ -1299,13 +1290,13 @@ export function seedVirtualClassroomStarterData(db) {
       const joinUrl = `https://zoom.us/j/${meetingId}?pwd=lmsplus5a1`;
       const hostStartUrl = `https://zoom.us/s/${meetingId}?zak=host_zak_token_5a1_review`;
 
-      db.prepare(
-        `INSERT OR IGNORE INTO virtual_meeting_rooms (
+      await db.prepare(
+        `INSERT INTO virtual_meeting_rooms (
            id, subject_class_id, session_id, provider, external_platform_name, creation_mode,
            is_recurring_room, room_title, external_meeting_id, external_meeting_uuid, join_url,
            encrypted_host_start_url, encrypted_passcode, scheduled_start_at, scheduled_end_at,
            room_status, supports_auto_sync, provider_metadata_json, created_by, created_at, updated_at
-         ) VALUES (?, 'sc_toan5_5a1', ?, 'ZOOM', 'Zoom Meeting', 'AUTO_API', 0, ?, ?, ?, ?, ?, ?, ?, ?, 'ENDED', 1, ?, 'usr_gv01', ?, ?)`
+         ) VALUES (?, 'sc_toan5_5a1', ?, 'ZOOM', 'Zoom Meeting', 'AUTO_API', 0, ?, ?, ?, ?, ?, ?, ?, ?, 'ENDED', 1, ?, 'usr_gv01', ?, ?) ON CONFLICT DO NOTHING`
       ).run(
         roomId,
         reviewSession.session_id,
@@ -1322,7 +1313,7 @@ export function seedVirtualClassroomStarterData(db) {
         nowIso
       );
 
-      db.prepare(
+      await db.prepare(
         `UPDATE sessions SET
            delivery_mode = 'ONLINE',
            teaching_content = COALESCE(teaching_content, 'Ôn tập phân số, quy đồng mẫu số và giải bài toán tỉ số phần trăm trực tuyến qua Zoom.'),
@@ -1342,7 +1333,7 @@ export function seedVirtualClassroomStarterData(db) {
       );
 
       // Tạo log phiên tham gia thực tế cho học sinh lớp 5A1
-      const roster = db
+      const roster = await db
         .prepare(
           `SELECT u.id, u.code, u.full_name, u.email
            FROM class_enrollments e JOIN users u ON u.id = e.student_id
@@ -1356,25 +1347,25 @@ export function seedVirtualClassroomStarterData(db) {
       const windowSec = Math.max(60, Math.round((endMs - startMs) / 1000)); // 35 phút = 2100s
 
       const insPart = db.prepare(
-        `INSERT OR IGNORE INTO virtual_participant_sessions (
+        `INSERT INTO virtual_participant_sessions (
            id, session_key, session_id, virtual_room_id, provider,
            external_participant_id, registrant_id, lms_join_token, participant_email, display_name,
            matched_student_id, identity_match_method, join_at, leave_at, duration_sec,
            is_currently_in_room, device_info, source, created_at, updated_at
-         ) VALUES (?, ?, ?, ?, 'ZOOM', ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, 0, ?, 'WEBHOOK', ?, ?)`
+         ) VALUES (?, ?, ?, ?, 'ZOOM', ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, 0, ?, 'WEBHOOK', ?, ?) ON CONFLICT DO NOTHING`
       );
 
       const insCalc = db.prepare(
-        `INSERT OR IGNORE INTO virtual_attendance_calculations (
+        `INSERT INTO virtual_attendance_calculations (
            id, session_id, subject_class_id, student_id,
            first_join_at, last_leave_at, raw_sessions_count, merged_intervals_json,
            total_merged_duration_sec, valid_window_duration_sec, required_window_duration_sec,
            attendance_ratio_pct, late_minutes, calculated_status, final_status,
            identity_match_method, is_manually_adjusted, calculated_at
-         ) VALUES (?, ?, 'sc_toan5_5a1', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`
+         ) VALUES (?, ?, 'sc_toan5_5a1', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?) ON CONFLICT DO NOTHING`
       );
 
-      roster.forEach((stu, idx) => {
+      for (const [idx, stu] of (roster).entries()) {
         if (idx === 0) {
           // Học sinh đầu tiên: vào 3 lần (mất mạng vào lại) -> 3 khoảng rời nhau
           const s1Start = vnIso(new Date(startMs));
@@ -1383,12 +1374,12 @@ export function seedVirtualClassroomStarterData(db) {
           const s2End = vnIso(new Date(startMs + 24 * 60000));
           const s3Start = vnIso(new Date(startMs + 25 * 60000));
           const s3End = vnIso(new Date(endMs));
-          insPart.run(`vps_${reviewSession.session_id}_${idx}_1`, `sk_${reviewSession.session_id}_${idx}_1`, reviewSession.session_id, roomId, `zp_${stu.code}_1`, `reg_${stu.code}`, stu.email, stu.full_name, stu.id, 'VERIFIED_EMAIL', s1Start, s1End, 720, 'Zoom Desktop (Windows)', nowIso, nowIso);
-          insPart.run(`vps_${reviewSession.session_id}_${idx}_2`, `sk_${reviewSession.session_id}_${idx}_2`, reviewSession.session_id, roomId, `zp_${stu.code}_2`, `reg_${stu.code}`, stu.email, stu.full_name, stu.id, 'VERIFIED_EMAIL', s2Start, s2End, 600, 'Zoom Desktop (Windows)', nowIso, nowIso);
-          insPart.run(`vps_${reviewSession.session_id}_${idx}_3`, `sk_${reviewSession.session_id}_${idx}_3`, reviewSession.session_id, roomId, `zp_${stu.code}_3`, `reg_${stu.code}`, stu.email, stu.full_name, stu.id, 'VERIFIED_EMAIL', s3Start, s3End, 600, 'Zoom Mobile (iOS)', nowIso, nowIso);
+          await insPart.run(`vps_${reviewSession.session_id}_${idx}_1`, `sk_${reviewSession.session_id}_${idx}_1`, reviewSession.session_id, roomId, `zp_${stu.code}_1`, `reg_${stu.code}`, stu.email, stu.full_name, stu.id, 'VERIFIED_EMAIL', s1Start, s1End, 720, 'Zoom Desktop (Windows)', nowIso, nowIso);
+          await insPart.run(`vps_${reviewSession.session_id}_${idx}_2`, `sk_${reviewSession.session_id}_${idx}_2`, reviewSession.session_id, roomId, `zp_${stu.code}_2`, `reg_${stu.code}`, stu.email, stu.full_name, stu.id, 'VERIFIED_EMAIL', s2Start, s2End, 600, 'Zoom Desktop (Windows)', nowIso, nowIso);
+          await insPart.run(`vps_${reviewSession.session_id}_${idx}_3`, `sk_${reviewSession.session_id}_${idx}_3`, reviewSession.session_id, roomId, `zp_${stu.code}_3`, `reg_${stu.code}`, stu.email, stu.full_name, stu.id, 'VERIFIED_EMAIL', s3Start, s3End, 600, 'Zoom Mobile (iOS)', nowIso, nowIso);
           const validSec = 720 + 600 + 600; // 1920s / 2100s = 91.4%
           const pct = Math.round((validSec / windowSec) * 1000) / 10;
-          insCalc.run(
+          await insCalc.run(
             `vac_${reviewSession.session_id}_${stu.id}`,
             reviewSession.session_id,
             stu.id,
@@ -1416,8 +1407,8 @@ export function seedVirtualClassroomStarterData(db) {
           const lAt = vnIso(new Date(endMs));
           const dur = Math.max(60, Math.round((endMs - (startMs + 12 * 60000)) / 1000));
           const pct = Math.round((dur / windowSec) * 1000) / 10;
-          insPart.run(`vps_${reviewSession.session_id}_${idx}_1`, `sk_${reviewSession.session_id}_${idx}_1`, reviewSession.session_id, roomId, `zp_${stu.code}_1`, `reg_${stu.code}`, stu.email, stu.full_name, stu.id, 'VERIFIED_EMAIL', jAt, lAt, dur, 'Zoom Web Client', nowIso, nowIso);
-          insCalc.run(
+          await insPart.run(`vps_${reviewSession.session_id}_${idx}_1`, `sk_${reviewSession.session_id}_${idx}_1`, reviewSession.session_id, roomId, `zp_${stu.code}_1`, `reg_${stu.code}`, stu.email, stu.full_name, stu.id, 'VERIFIED_EMAIL', jAt, lAt, dur, 'Zoom Web Client', nowIso, nowIso);
+          await insCalc.run(
             `vac_${reviewSession.session_id}_${stu.id}`,
             reviewSession.session_id,
             stu.id,
@@ -1441,8 +1432,8 @@ export function seedVirtualClassroomStarterData(db) {
           const lAt = vnIso(new Date(startMs + 12 * 60000));
           const dur = 600;
           const pct = Math.round((dur / windowSec) * 1000) / 10;
-          insPart.run(`vps_${reviewSession.session_id}_${idx}_1`, `sk_${reviewSession.session_id}_${idx}_1`, reviewSession.session_id, roomId, `zp_${stu.code}_1`, `reg_${stu.code}`, stu.email, stu.full_name, stu.id, 'VERIFIED_EMAIL', jAt, lAt, dur, 'Zoom Desktop', nowIso, nowIso);
-          insCalc.run(
+          await insPart.run(`vps_${reviewSession.session_id}_${idx}_1`, `sk_${reviewSession.session_id}_${idx}_1`, reviewSession.session_id, roomId, `zp_${stu.code}_1`, `reg_${stu.code}`, stu.email, stu.full_name, stu.id, 'VERIFIED_EMAIL', jAt, lAt, dur, 'Zoom Desktop', nowIso, nowIso);
+          await insCalc.run(
             `vac_${reviewSession.session_id}_${stu.id}`,
             reviewSession.session_id,
             stu.id,
@@ -1462,7 +1453,7 @@ export function seedVirtualClassroomStarterData(db) {
           );
         } else if (idx === roster.length - 1) {
           // Học sinh cuối danh sách: chưa đối chiếu vì vào bằng thiết bị ngoài không có email -> MANUAL_REVIEW
-          insCalc.run(
+          await insCalc.run(
             `vac_${reviewSession.session_id}_${stu.id}`,
             reviewSession.session_id,
             stu.id,
@@ -1486,8 +1477,8 @@ export function seedVirtualClassroomStarterData(db) {
           const lAt = vnIso(new Date(endMs));
           const dur = Math.max(60, Math.round((endMs - (startMs + (idx % 4) * 60000)) / 1000));
           const pct = Math.round((dur / windowSec) * 1000) / 10;
-          insPart.run(`vps_${reviewSession.session_id}_${idx}_1`, `sk_${reviewSession.session_id}_${idx}_1`, reviewSession.session_id, roomId, `zp_${stu.code}_1`, `reg_${stu.code}`, stu.email, stu.full_name, stu.id, 'VERIFIED_EMAIL', jAt, lAt, dur, 'Zoom Desktop', nowIso, nowIso);
-          insCalc.run(
+          await insPart.run(`vps_${reviewSession.session_id}_${idx}_1`, `sk_${reviewSession.session_id}_${idx}_1`, reviewSession.session_id, roomId, `zp_${stu.code}_1`, `reg_${stu.code}`, stu.email, stu.full_name, stu.id, 'VERIFIED_EMAIL', jAt, lAt, dur, 'Zoom Desktop', nowIso, nowIso);
+          await insCalc.run(
             `vac_${reviewSession.session_id}_${stu.id}`,
             reviewSession.session_id,
             stu.id,
@@ -1506,13 +1497,13 @@ export function seedVirtualClassroomStarterData(db) {
             nowIso
           );
         }
-      });
+      }
 
       // Thêm 1 người tham gia UNKNOWN (chỉ có display_name "iPad Phụ huynh (Chưa đăng nhập email)", không có email)
       const unkJoin = vnIso(new Date(startMs + 3 * 60000));
       const unkLeave = vnIso(new Date(endMs - 2 * 60000));
       const unkDur = Math.max(60, Math.round((Date.parse(unkLeave) - Date.parse(unkJoin)) / 1000));
-      insPart.run(
+      await insPart.run(
         `vps_${reviewSession.session_id}_unknown_1`,
         `sk_${reviewSession.session_id}_unknown_1`,
         reviewSession.session_id,
@@ -1531,11 +1522,11 @@ export function seedVirtualClassroomStarterData(db) {
         nowIso
       );
 
-      db.prepare(
-        `INSERT OR IGNORE INTO virtual_sync_jobs (
+      await db.prepare(
+        `INSERT INTO virtual_sync_jobs (
            id, session_id, virtual_room_id, provider, trigger_source, status, attempt_count,
            participants_fetched, matched_students, unknown_participants, started_at, completed_at
-         ) VALUES (?, ?, ?, 'ZOOM', 'WEBHOOK_MEETING_ENDED', 'COMPLETED', 1, ?, ?, 1, ?, ?)`
+         ) VALUES (?, ?, ?, 'ZOOM', 'WEBHOOK_MEETING_ENDED', 'COMPLETED', 1, ?, ?, 1, ?, ?) ON CONFLICT DO NOTHING`
       ).run(
         `vsj_${reviewSession.session_id}_1`,
         reviewSession.session_id,
@@ -1548,7 +1539,7 @@ export function seedVirtualClassroomStarterData(db) {
     }
 
     // 3. Gắn phòng Zoom cho buổi học sắp tới của lớp 5A1 để Giảng viên & Học viên có thể bấm "Tham gia lớp học trực tuyến" ngay
-    const upcoming5a1 = db
+    const upcoming5a1 = await db
       .prepare(
         `SELECT * FROM sessions
          WHERE subject_class_id = 'sc_toan5_5a1'
@@ -1563,13 +1554,13 @@ export function seedVirtualClassroomStarterData(db) {
       const meetingId = '89512039944';
       const joinUrl = `https://zoom.us/j/${meetingId}?pwd=lmsplus5a1live`;
       const hostStartUrl = `https://zoom.us/s/${meetingId}?zak=host_zak_token_5a1_upcoming`;
-      db.prepare(
-        `INSERT OR IGNORE INTO virtual_meeting_rooms (
+      await db.prepare(
+        `INSERT INTO virtual_meeting_rooms (
            id, subject_class_id, session_id, provider, external_platform_name, creation_mode,
            is_recurring_room, room_title, external_meeting_id, external_meeting_uuid, join_url,
            encrypted_host_start_url, encrypted_passcode, scheduled_start_at, scheduled_end_at,
            room_status, supports_auto_sync, provider_metadata_json, created_by, created_at, updated_at
-         ) VALUES (?, 'sc_toan5_5a1', ?, 'ZOOM', 'Zoom Meeting', 'AUTO_API', 1, ?, ?, ?, ?, ?, ?, ?, ?, 'SCHEDULED', 1, ?, 'usr_gv01', ?, ?)`
+         ) VALUES (?, 'sc_toan5_5a1', ?, 'ZOOM', 'Zoom Meeting', 'AUTO_API', 1, ?, ?, ?, ?, ?, ?, ?, ?, 'SCHEDULED', 1, ?, 'usr_gv01', ?, ?) ON CONFLICT DO NOTHING`
       ).run(
         roomId,
         upcoming5a1.session_id,
@@ -1586,7 +1577,7 @@ export function seedVirtualClassroomStarterData(db) {
         nowIso
       );
 
-      db.prepare(
+      await db.prepare(
         `UPDATE sessions SET
            delivery_mode = 'ONLINE',
            teaching_content = COALESCE(teaching_content, 'Bài giảng trực tuyến qua Zoom: Giải toán tỉ số phần trăm & luyện tập tương tác.'),
@@ -1597,11 +1588,11 @@ export function seedVirtualClassroomStarterData(db) {
          WHERE session_id = ?`
       ).run(roomId, 'Zoom · ID: 895 1203 9944', upcoming5a1.session_id);
 
-      db.prepare(`UPDATE subject_classes SET default_virtual_room_id = ? WHERE id = 'sc_toan5_5a1'`).run(roomId);
+      await db.prepare(`UPDATE subject_classes SET default_virtual_room_id = ? WHERE id = 'sc_toan5_5a1'`).run(roomId);
     }
 
     // 4. Gắn phòng Google Meet cho buổi học sắp tới của lớp 5A2
-    const upcoming5a2 = db
+    const upcoming5a2 = await db
       .prepare(
         `SELECT * FROM sessions
          WHERE subject_class_id = 'sc_toan5_5a2'
@@ -1615,13 +1606,13 @@ export function seedVirtualClassroomStarterData(db) {
       const roomId = 'vmr_5a2_upcoming';
       const meetCode = 'kxm-pqrs-tuv';
       const joinUrl = `https://meet.google.com/${meetCode}`;
-      db.prepare(
-        `INSERT OR IGNORE INTO virtual_meeting_rooms (
+      await db.prepare(
+        `INSERT INTO virtual_meeting_rooms (
            id, subject_class_id, session_id, provider, external_platform_name, creation_mode,
            is_recurring_room, room_title, external_meeting_id, external_meeting_uuid, join_url,
            encrypted_host_start_url, encrypted_passcode, scheduled_start_at, scheduled_end_at,
            room_status, supports_auto_sync, provider_metadata_json, created_by, created_at, updated_at
-         ) VALUES (?, 'sc_toan5_5a2', ?, 'GOOGLE_MEET', 'Google Meet', 'AUTO_API', 0, ?, ?, ?, ?, ?, NULL, ?, ?, 'SCHEDULED', 1, ?, 'gv_5002', ?, ?)`
+         ) VALUES (?, 'sc_toan5_5a2', ?, 'GOOGLE_MEET', 'Google Meet', 'AUTO_API', 0, ?, ?, ?, ?, ?, NULL, ?, ?, 'SCHEDULED', 1, ?, 'gv_5002', ?, ?) ON CONFLICT DO NOTHING`
       ).run(
         roomId,
         upcoming5a2.session_id,
@@ -1637,7 +1628,7 @@ export function seedVirtualClassroomStarterData(db) {
         nowIso
       );
 
-      db.prepare(
+      await db.prepare(
         `UPDATE sessions SET
            delivery_mode = 'HYBRID',
            teaching_content = COALESCE(teaching_content, 'Học kết hợp tại Phòng 5A2 và trực tuyến qua Google Meet.'),
@@ -1649,10 +1640,6 @@ export function seedVirtualClassroomStarterData(db) {
       ).run(roomId, `Google Meet · ${meetCode}`, upcoming5a2.session_id);
     }
 
-    db.prepare('INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)').run(VIRTUAL_SEED_MARKER, nowIso);
-    db.exec('COMMIT');
-  } catch (err) {
-    db.exec('ROLLBACK');
-    throw err;
-  }
+    await db.prepare('INSERT INTO app_meta (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value').run(VIRTUAL_SEED_MARKER, nowIso);
+  });
 }

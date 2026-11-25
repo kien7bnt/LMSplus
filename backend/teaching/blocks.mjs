@@ -19,6 +19,7 @@
  */
 
 import crypto from 'node:crypto';
+import { mapAsync } from './http.mjs';
 import { normalizeImageUrl } from '../../shared/imageUrl.mjs';
 import { parseYouTubeUrl, isValidYouTubeVideoId } from '../../shared/youtube.mjs';
 import {
@@ -93,8 +94,8 @@ function normalizeDisplayConfig(rawDisplay) {
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
-function findResourceInScope(ctx, resourceId, idx, allowedTypes = null) {
-  const res = ctx.db
+async function findResourceInScope(ctx, resourceId, idx, allowedTypes = null) {
+  const res = await ctx.db
     .prepare(
       `SELECT * FROM learning_resources
        WHERE id = ? AND course_id = ? AND deleted_at IS NULL
@@ -133,7 +134,7 @@ export function validateDirectVideoUrl(rawUrl) {
   return { ok: true, url: u.toString(), host };
 }
 
-function normalizeContent(type, c, idx, ctx) {
+async function normalizeContent(type, c, idx, ctx) {
   switch (type) {
     case 'heading':
       return { text: str(c.text, 300, 'text', idx, { required: true }), level: c.level === 3 ? 3 : 2 };
@@ -210,7 +211,7 @@ function normalizeContent(type, c, idx, ctx) {
       };
       if (sourceType === 'UPLOAD') {
         const resId = str(c.resource_id, 64, 'resource_id', idx, { required: true });
-        const res = findResourceInScope(ctx, resId, idx, ['VIDEO']);
+        const res = await findResourceInScope(ctx, resId, idx, ['VIDEO']);
         const resHttpsThumb =
           typeof res.thumbnail_url === 'string' && res.thumbnail_url.startsWith('https://') ? res.thumbnail_url : '';
         return {
@@ -247,7 +248,7 @@ function normalizeContent(type, c, idx, ctx) {
     }
     case 'pdf': {
       const resourceId = str(c.resource_id, 64, 'resource_id', idx, { required: true });
-      const res = findResourceInScope(ctx, resourceId, idx, ['PDF', 'FILE']);
+      const res = await findResourceInScope(ctx, resourceId, idx, ['PDF', 'FILE']);
       if (res.resource_type === 'FILE' && res.mime_type !== 'application/pdf') {
         throw new BlockError(idx, 'tài nguyên được chọn không phải tệp PDF.');
       }
@@ -260,7 +261,7 @@ function normalizeContent(type, c, idx, ctx) {
     }
     case 'file': {
       const resourceId = str(c.resource_id, 64, 'resource_id', idx, { required: true });
-      const res = findResourceInScope(ctx, resourceId, idx);
+      const res = await findResourceInScope(ctx, resourceId, idx);
       return {
         resource_id: res.id,
         title: str(c.title, 200, 'title', idx) || res.title,
@@ -400,14 +401,14 @@ function normalizeContent(type, c, idx, ctx) {
  * @returns {{ ok: true, blocks: Array<{id:string, block_type:string, sort_order:number, content:object, anchor_block_id?:string|null}> }
  *          | { ok: false, code: string, message: string, block_index?: number }}
  */
-export function validateBlocks(input, ctx) {
+export async function validateBlocks(input, ctx) {
   if (!Array.isArray(input)) return { ok: false, code: 'INVALID_BLOCKS', message: 'Nội dung bài học phải là danh sách khối.' };
   if (input.length > MAX_BLOCKS_PER_LESSON) {
     return { ok: false, code: 'TOO_MANY_BLOCKS', message: `Mỗi bài học tối đa ${MAX_BLOCKS_PER_LESSON} khối.` };
   }
   const seen = new Set();
   try {
-    const blocks = input.map((b, idx) => {
+    const blocks = await mapAsync(input, async (b, idx) => {
       if (!b || typeof b !== 'object') throw new BlockError(idx, 'dữ liệu không hợp lệ.');
       const type = b.block_type || b.type;
       if (!ALLOWED_BLOCK_TYPES.includes(type)) throw new BlockError(idx, `loại khối "${type}" không được hỗ trợ.`);
@@ -415,7 +416,7 @@ export function validateBlocks(input, ctx) {
       if (seen.has(id)) id = `blk_${crypto.randomBytes(6).toString('hex')}`;
       seen.add(id);
       const rawContent = b.content || {};
-      const content = normalizeContent(type, rawContent, idx, ctx);
+      const content = await normalizeContent(type, rawContent, idx, ctx);
       const display = normalizeDisplayConfig(rawContent.display);
       if (display) content.display = display;
       const maxBytes = type === 'image' ? MAX_IMAGE_BLOCK_JSON_BYTES : MAX_BLOCK_JSON_BYTES;
