@@ -84,19 +84,19 @@ export const CourseFormModal: React.FC<{
       const saved = editing
         ? await teachingApi.updateCourse(course!.id, payload)
         : await teachingApi.createCourse(payload);
-      toast({ tone: 'success', title: editing ? 'Đã lưu thay đổi khóa học' : 'Đã tạo khóa học', detail: `${saved.code} · ${saved.title}` });
+      toast({ tone: 'success', title: editing ? 'Đã lưu thay đổi môn học' : 'Đã tạo môn học', detail: `${saved.code} · ${saved.title}` });
       onSaved(saved);
     } catch (e) {
       if (e instanceof ApiHttpError && typeof e.detail.field === 'string') {
         const fieldName = e.detail.field as string;
         const msg =
           fieldName === 'thumbnail_url' && f.thumbnail_url.startsWith('data:image/')
-            ? 'Máy chủ Backend cần nhấn phím [R] trong cửa sổ chạy hệ thống để nhận tính năng tải ảnh từ máy, hoặc bạn có thể dán đường dẫn ảnh https://'
+            ? 'Không thể lưu ảnh từ thiết bị. Vui lòng thử tải lại hoặc dán đường dẫn ảnh https://'
             : e.message;
         setErrors({ [fieldName]: msg });
         setStep(['objectives', 'target_audience', 'prerequisites', 'intro'].includes(fieldName) ? 2 : 1);
       } else {
-        toast({ tone: 'error', title: 'Không lưu được khóa học', detail: errMsg(e) });
+        toast({ tone: 'error', title: 'Không lưu được môn học', detail: errMsg(e) });
       }
     } finally {
       setBusy(false);
@@ -105,7 +105,7 @@ export const CourseFormModal: React.FC<{
 
   return (
     <Modal
-      title={editing ? 'Chỉnh sửa thông tin giáo trình' : 'Tạo giáo trình mới'}
+      title={editing ? 'Chỉnh sửa thông tin môn học & giáo trình' : 'Tạo môn học & giáo trình mới'}
       onClose={onClose}
       width={760}
       footer={

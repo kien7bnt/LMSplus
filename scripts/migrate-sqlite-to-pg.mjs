@@ -1,17 +1,17 @@
 #!/usr/bin/env node
 /**
- * LMSPLUS E-Learning — Khởi tạo Schema PostgreSQL 18 (80 bảng) & Migrate toàn bộ dữ liệu từ SQLite.
+ * LMSPLUS E-Learning — Khởi tạo Schema PostgreSQL 18 (80 bảng + Migrations 011+) & Migrate dữ liệu từ SQLite.
  *
  * Cách dùng:
- *   node scripts/migrate-sqlite-to-pg.mjs               # Áp dụng schema + copy dữ liệu từ database/lmsplus_elearning.sqlite
- *   node scripts/migrate-sqlite-to-pg.mjs --schema-only # Chỉ khởi tạo 80 bảng & 43 index trên PostgreSQL 18
- *   node scripts/migrate-sqlite-to-pg.mjs --truncate    # Xóa sạch dữ liệu cũ trên PG rồi nạp lại toàn bộ từ SQLite
+ *   node scripts/migrate-sqlite-to-pg.mjs                    # Áp dụng schema 010 + migrations 011+ & copy dữ liệu
+ *   node scripts/migrate-sqlite-to-pg.mjs --schema-only      # Chỉ áp dụng schema 010 + migrations 011+ trên PG18
+ *   node scripts/migrate-sqlite-to-pg.mjs --truncate         # (Yêu cầu sao lưu tự động) Truncate & nạp lại từ SQLite
  */
 
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
-import { fileURLToPath } from 'node:url';
 
 process.env.LMSPLUS_DB_CLIENT = 'postgres';
 const { createDbClient, ROOT_DIR } = await import('../backend/db/client.mjs');
@@ -24,16 +24,32 @@ const sqlitePath = customSqlite
   ? path.resolve(ROOT_DIR, customSqlite.slice('--sqlite='.length))
   : path.join(ROOT_DIR, 'database', 'lmsplus_elearning.sqlite');
 
-const schemaPath = path.join(ROOT_DIR, 'database', 'migrations', '010_postgres18_live_schema.sql');
+const migrationsDir = path.join(ROOT_DIR, 'database', 'migrations');
+const schemaPath = path.join(migrationsDir, '010_postgres18_live_schema.sql');
 if (!fs.existsSync(schemaPath)) {
   console.error(`[ERROR] Không tìm thấy schema PostgreSQL 18: ${schemaPath}`);
   process.exit(1);
 }
 
+// Gom tất cả migration gia tăng từ 011 trở đi (*_up.sql) theo thứ tự tự nhiên
+const incrementalUps = fs
+  .readdirSync(migrationsDir)
+  .filter((f) => /^(0[1-9][1-9]|[1-9]\d{2,})_.*_up\.sql$/i.test(f))
+  .sort();
+
 const schemaSql = fs.readFileSync(schemaPath, 'utf8');
-const tableOrder = [...schemaSql.matchAll(/CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\s+([a-z0-9_]+)/gi)].map(
-  (m) => m[1]
-);
+const allSqlFiles = [schemaPath, ...incrementalUps.map((f) => path.join(migrationsDir, f))];
+const tableOrder = [];
+const seenTables = new Set();
+for (const filePath of allSqlFiles) {
+  const txt = fs.readFileSync(filePath, 'utf8');
+  for (const m of txt.matchAll(/CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\s+([a-z0-9_]+)/gi)) {
+    if (!seenTables.has(m[1])) {
+      seenTables.add(m[1]);
+      tableOrder.push(m[1]);
+    }
+  }
+}
 
 const db = createDbClient();
 try {
@@ -41,7 +57,11 @@ try {
   console.log(`[PG] Đã kết nối: ${ver?.v || db.targetLabel}`);
 
   await db.exec(schemaSql);
-  console.log(`[PG] Đã áp dụng schema PostgreSQL 18 (${tableOrder.length} bảng).`);
+  for (const upFile of incrementalUps) {
+    const upSql = fs.readFileSync(path.join(migrationsDir, upFile), 'utf8');
+    await db.exec(upSql);
+  }
+  console.log(`[PG] Đã áp dụng schema PostgreSQL 18 (${tableOrder.length} bảng, ${incrementalUps.length} incremental migration).`);
 
   if (schemaOnly) {
     process.exit(0);
@@ -50,6 +70,29 @@ try {
   if (!fs.existsSync(sqlitePath)) {
     console.error(`[ERROR] Không tìm thấy file SQLite nguồn: ${sqlitePath}`);
     process.exit(1);
+  }
+
+  // Bảo vệ chống mất dữ liệu: trước khi --truncate, tự động chụp snapshot JSON vào database/backups/
+  if (truncateFirst) {
+    const existingUsers = (await db.prepare('SELECT COUNT(*) AS c FROM users').get())?.c || 0;
+    if (existingUsers > 0 && !args.has('--skip-backup')) {
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+      const backupFile = path.join(ROOT_DIR, 'database', 'backups', `pre-truncate-${stamp}.json`);
+      fs.mkdirSync(path.dirname(backupFile), { recursive: true });
+      const tables = {};
+      let totalRows = 0;
+      for (const tbl of tableOrder) {
+        const exists = await db.prepare(`SELECT to_regclass('public.' || ?) AS t`).get(tbl);
+        if (!exists?.t) continue;
+        const r = await db.prepare(`SELECT * FROM "${tbl}"`).all();
+        tables[tbl] = r;
+        totalRows += r.length;
+      }
+      const body = { format: 'lmsplus-pg18-snapshot-v1', created_at: new Date().toISOString(), table_order: Object.keys(tables), total_rows: totalRows, tables };
+      const integrity_sha256 = crypto.createHash('sha256').update(JSON.stringify(body)).digest('hex');
+      fs.writeFileSync(backupFile, JSON.stringify({ ...body, integrity_sha256 }), 'utf8');
+      console.log(`[BACKUP] Đã tự động sao lưu ${totalRows} dòng trước khi truncate -> ${backupFile}`);
+    }
   }
 
   const sqlite = new DatabaseSync(sqlitePath, { readOnly: true });
@@ -68,7 +111,7 @@ try {
       for (const tbl of [...tableOrder].reverse()) {
         await txDb.exec(`TRUNCATE TABLE "${tbl}" CASCADE`);
       }
-      console.log('[PG] Đã làm sạch toàn bộ 80 bảng trước khi nạp.');
+      console.log('[PG] Đã làm sạch toàn bộ bảng trước khi nạp.');
     }
 
     const BATCH_SIZE = 200;
@@ -99,9 +142,8 @@ try {
 
   // Kiểm tra đối chiếu số dòng giữa SQLite và PostgreSQL 18
   for (const tbl of tableOrder) {
-    const srcCount = sqliteTables.has(tbl)
-      ? sqlite.prepare(`SELECT COUNT(*) AS c FROM "${tbl}"`).get().c
-      : 0;
+    if (!sqliteTables.has(tbl)) continue;
+    const srcCount = sqlite.prepare(`SELECT COUNT(*) AS c FROM "${tbl}"`).get().c;
     const dstCount = (await db.prepare(`SELECT COUNT(*) AS c FROM "${tbl}"`).get())?.c || 0;
     if (dstCount < srcCount) {
       mismatches++;

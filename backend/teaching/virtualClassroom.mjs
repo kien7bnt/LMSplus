@@ -4,6 +4,7 @@
  */
 
 import crypto from 'node:crypto';
+import { resolveJwtSecret } from '../common/security.mjs';
 import { vnIso } from './schema.mjs';
 import { isAdmin, isStaff, isInstructor, isStudent, safeJson } from './scope.mjs';
 import { fail, nowIso, nowVn, text, intField, oneOf, tx, compareVietnameseName } from './http.mjs';
@@ -967,20 +968,22 @@ export async function processProviderWebhook({ db, provider, headers, rawBody, b
   const normProvider = String(provider || 'ZOOM').toUpperCase();
   const adapter = createProviderAdapter(normProvider, { db, jwtSecret, log });
 
-  // 1. Zoom URL Validation Challenge (endpoint.url_validation)
+  // 1. Zoom URL Validation Challenge (endpoint.url_validation) — bắt buộc có chữ ký hợp lệ (tránh HMAC oracle)
   if (normProvider === 'ZOOM' && body?.event === 'endpoint.url_validation') {
     const plainToken = body?.payload?.plainToken;
     if (!plainToken) fail(400, 'MISSING_PLAIN_TOKEN', 'Thiếu plainToken trong yêu cầu xác thực URL Webhook.');
-    if (!skipSignatureVerify && headers['x-zm-signature']) {
+    if (!skipSignatureVerify) {
       await adapter.verifyWebhookSignature({ headers, rawBody });
     }
     return await adapter.createValidationChallengeResponse(plainToken);
   }
 
-  // 2. Xác thực chữ ký HMAC-SHA256 & chống replay
+  // 2. Xác thực chữ ký HMAC-SHA256 / Channel Token & chống replay cho MỌI provider hỗ trợ Webhook
   if (!skipSignatureVerify) {
-    if (normProvider === 'ZOOM') {
+    if (typeof adapter.verifyWebhookSignature === 'function') {
       await adapter.verifyWebhookSignature({ headers, rawBody });
+    } else {
+      fail(403, 'WEBHOOK_NOT_SUPPORTED', `Nền tảng ${normProvider} không hỗ trợ nhận sự kiện Webhook.`);
     }
   }
 
@@ -1121,7 +1124,7 @@ export async function processProviderWebhook({ db, provider, headers, rawBody, b
       `INSERT INTO virtual_webhook_events (
          id, event_key, provider, event_type, external_meeting_id, session_id,
          event_timestamp_ms, signature_verified, processing_status, raw_payload_json, received_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       webhookRowId,
       eventKey,
@@ -1130,6 +1133,7 @@ export async function processProviderWebhook({ db, provider, headers, rawBody, b
       rawMeetingId || null,
       session ? session.session_id : null,
       eventTs,
+      skipSignatureVerify ? 0 : 1,
       processingStatus,
       rawBody || JSON.stringify(body || {}),
       now
@@ -1155,11 +1159,11 @@ function csvSafeCell(v) {
   return /[",\n\r;]/.test(safe) ? `"${safe.replace(/"/g, '""')}"` : safe;
 }
 
-export function registerVirtualClassroomRoutes(route, { jwtSecret = 'lmsplus-production-grade-hmac-secret-2026' } = {}) {
-  // 1. Danh sách cấu hình nhà cung cấp (Zoom, Google Meet, External)
+export function registerVirtualClassroomRoutes(route, { jwtSecret = resolveJwtSecret() } = {}) {
+  // 1. Danh sách cấu hình nhà cung cấp (Chỉ Quản trị viên hệ thống)
   route('GET', '/virtual-providers', async ({ db, user }) => {
-    if (!isAdmin(user) && !isStaff(user) && !isInstructor(user)) {
-      fail(403, 'FORBIDDEN', 'Bạn không có quyền xem cấu hình tích hợp phòng học trực tuyến.');
+    if (!isAdmin(user)) {
+      fail(403, 'VIRTUAL_PROVIDER_ADMIN_ONLY', 'Chỉ Quản trị viên hệ thống mới được xem cấu hình tích hợp phòng học trực tuyến.');
     }
     const rows = await db.prepare('SELECT * FROM virtual_provider_configs ORDER BY provider').all();
     return {
@@ -1187,10 +1191,10 @@ export function registerVirtualClassroomRoutes(route, { jwtSecret = 'lmsplus-pro
     };
   });
 
-  // 2. Cập nhật thông tin xác thực OAuth / Webhook cho Provider
+  // 2. Cập nhật thông tin xác thực OAuth / Webhook cho Provider (Chỉ Quản trị viên hệ thống)
   route('PUT', '/virtual-providers/:provider', async ({ db, user, params, body, log }) => {
-    if (!isAdmin(user) && !isStaff(user) && !isInstructor(user)) {
-      fail(403, 'FORBIDDEN', 'Chỉ Quản trị viên, Giáo vụ hoặc Giảng viên được cấu hình kết nối nền tảng.');
+    if (!isAdmin(user)) {
+      fail(403, 'VIRTUAL_PROVIDER_ADMIN_ONLY', 'Chỉ Quản trị viên hệ thống được cấu hình kết nối và khóa bí mật nền tảng.');
     }
     const provider = String(params.provider || '').toUpperCase();
     if (!VIRTUAL_PROVIDERS.includes(provider)) {
@@ -1244,10 +1248,10 @@ export function registerVirtualClassroomRoutes(route, { jwtSecret = 'lmsplus-pro
     };
   });
 
-  // 3. Kiểm tra kết nối Provider
+  // 3. Kiểm tra kết nối Provider (Chỉ Quản trị viên hệ thống)
   route('POST', '/virtual-providers/:provider/validate', async ({ db, user, params, log }) => {
-    if (!isAdmin(user) && !isStaff(user) && !isInstructor(user)) {
-      fail(403, 'FORBIDDEN', 'Bạn không có quyền kiểm tra kết nối nền tảng.');
+    if (!isAdmin(user)) {
+      fail(403, 'VIRTUAL_PROVIDER_ADMIN_ONLY', 'Chỉ Quản trị viên hệ thống mới được kiểm tra kết nối nền tảng.');
     }
     const provider = String(params.provider || '').toUpperCase();
     const adapter = createProviderAdapter(provider, { db, jwtSecret, log });
@@ -2018,62 +2022,64 @@ export function registerVirtualClassroomRoutes(route, { jwtSecret = 'lmsplus-pro
     const adapter = createProviderAdapter(room.provider, { db, jwtSecret, log });
     const report = await adapter.getMeetingReport({ room, session });
 
-    // Nếu Provider trả thêm các bản ghi từ past_meetings report, hợp nhất idempotent vào virtual_participant_sessions
-    for (const p of report.participants || []) {
-      const key = `rep_${room.id}_${p.external_participant_id || p.display_name}_${p.join_at}`;
-      const exists = await db
-        .prepare(
-          `SELECT id FROM virtual_participant_sessions
-           WHERE session_id = ? AND virtual_room_id = ?
-             AND (session_key = ? OR (external_participant_id = ? AND join_at = ?))`
-        )
-        .get(session.session_id, room.id, key, p.external_participant_id || '', p.join_at);
-      if (!exists && p.join_at) {
-        const jRes = await recordParticipantJoinEvent(db, {
-          session,
-          room,
-          externalParticipantId: p.external_participant_id,
-          registrantId: p.registrant_id || null,
-          participantEmail: p.participant_email,
-          displayName: p.display_name,
-          joinAtIso: p.join_at,
-          source: 'PROVIDER_REPORT',
-          sessionKey: key,
-        });
-        if (p.leave_at && !jRes.deduplicated) {
-          const durSec = Math.max(0, Math.round((Date.parse(p.leave_at) - Date.parse(p.join_at)) / 1000));
-          await db.prepare(
-            'UPDATE virtual_participant_sessions SET leave_at = ?, duration_sec = ?, is_currently_in_room = 0 WHERE id = ?'
-          ).run(vnIso(new Date(p.leave_at)), durSec, jRes.id);
+    // Thực hiện hợp nhất report & tính lại điểm danh trong 1 transaction nguyên tử
+    await tx(db, async () => {
+      for (const p of report.participants || []) {
+        const key = `rep_${room.id}_${p.external_participant_id || p.display_name}_${p.join_at}`;
+        const exists = await db
+          .prepare(
+            `SELECT id FROM virtual_participant_sessions
+             WHERE session_id = ? AND virtual_room_id = ?
+               AND (session_key = ? OR (external_participant_id = ? AND join_at = ?))`
+          )
+          .get(session.session_id, room.id, key, p.external_participant_id || '', p.join_at);
+        if (!exists && p.join_at) {
+          const jRes = await recordParticipantJoinEvent(db, {
+            session,
+            room,
+            externalParticipantId: p.external_participant_id,
+            registrantId: p.registrant_id || null,
+            participantEmail: p.participant_email,
+            displayName: p.display_name,
+            joinAtIso: p.join_at,
+            source: 'PROVIDER_REPORT',
+            sessionKey: key,
+          });
+          if (p.leave_at && !jRes.deduplicated) {
+            const durSec = Math.max(0, Math.round((Date.parse(p.leave_at) - Date.parse(p.join_at)) / 1000));
+            await db.prepare(
+              'UPDATE virtual_participant_sessions SET leave_at = ?, duration_sec = ?, is_currently_in_room = 0 WHERE id = ?'
+            ).run(vnIso(new Date(p.leave_at)), durSec, jRes.id);
+          }
         }
       }
-    }
 
-    const refreshedForCalc = await db.prepare('SELECT * FROM sessions WHERE session_id = ?').get(session.session_id);
-    if (refreshedForCalc.attendance_sync_status === 'WAITING_PROVIDER_DATA') {
-      await db.prepare("UPDATE sessions SET attendance_sync_status = 'SYNCING' WHERE session_id = ?").run(session.session_id);
-    }
+      const refreshedForCalc = await db.prepare('SELECT * FROM sessions WHERE session_id = ?').get(session.session_id);
+      if (refreshedForCalc.attendance_sync_status === 'WAITING_PROVIDER_DATA') {
+        await db.prepare("UPDATE sessions SET attendance_sync_status = 'SYNCING' WHERE session_id = ?").run(session.session_id);
+      }
 
-    const calcResult = await calculateSessionVirtualAttendance(
-      db,
-      await db.prepare('SELECT * FROM sessions WHERE session_id = ?').get(session.session_id),
-      { preserveManualAdjustments: true }
-    );
+      const calcResult = await calculateSessionVirtualAttendance(
+        db,
+        await db.prepare('SELECT * FROM sessions WHERE session_id = ?').get(session.session_id),
+        { preserveManualAdjustments: true }
+      );
 
-    const totalFetched = (await db
-      .prepare('SELECT COUNT(*) n FROM virtual_participant_sessions WHERE session_id = ? AND virtual_room_id = ?')
-      .get(session.session_id, room.id)).n;
-    const matchedCnt = (await db
-      .prepare(
-        'SELECT COUNT(DISTINCT matched_student_id) n FROM virtual_participant_sessions WHERE session_id = ? AND virtual_room_id = ? AND matched_student_id IS NOT NULL'
-      )
-      .get(session.session_id, room.id)).n;
+      const totalFetched = (await db
+        .prepare('SELECT COUNT(*) n FROM virtual_participant_sessions WHERE session_id = ? AND virtual_room_id = ?')
+        .get(session.session_id, room.id)).n;
+      const matchedCnt = (await db
+        .prepare(
+          'SELECT COUNT(DISTINCT matched_student_id) n FROM virtual_participant_sessions WHERE session_id = ? AND virtual_room_id = ? AND matched_student_id IS NOT NULL'
+        )
+        .get(session.session_id, room.id)).n;
 
-    await db.prepare(
-      `UPDATE virtual_sync_jobs
-       SET status = 'COMPLETED', participants_fetched = ?, matched_students = ?, unknown_participants = ?, completed_at = ?
-       WHERE id = ?`
-    ).run(totalFetched, matchedCnt, calcResult.unknown_participants_count || 0, nowIso(), jobId);
+      await db.prepare(
+        `UPDATE virtual_sync_jobs
+         SET status = 'COMPLETED', participants_fetched = ?, matched_students = ?, unknown_participants = ?, completed_at = ?
+         WHERE id = ?`
+      ).run(totalFetched, matchedCnt, calcResult.unknown_participants_count || 0, nowIso(), jobId);
+    });
 
     log('INFO', `[virtual-sync] synced session ${session.session_id} (${totalFetched} slices, ${matchedCnt} matched) by ${user.id}`);
     return await buildVirtualSessionDetailDto(

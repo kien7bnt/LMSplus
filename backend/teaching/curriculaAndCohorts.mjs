@@ -12,7 +12,10 @@ import {
   fail, pageParams, nowIso, text, intField, oneOf, dateField, tx, publicUser, compareVietnameseName,
   mapAsync,
 } from './http.mjs';
-import { isAdmin, isStaff, isInstructor, isStudent, safeJson } from './scope.mjs';
+import {
+  isAdmin, isStaff, isHeadOfDepartment, isInstructor, isStudent,
+  assertDepartmentScope, sameDept, safeJson,
+} from './scope.mjs';
 import { getAttendancePolicy, rateFromCounts } from './attendance.mjs';
 
 const CURR_CODE_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{1,39}$/;
@@ -20,16 +23,14 @@ const CURR_CODE_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{1,39}$/;
 function requireAdminOrStaff(user, deptId = null) {
   if (isAdmin(user)) return;
   if (isStaff(user)) {
-    if (deptId && user.department_id && deptId !== user.department_id) {
-      fail(403, 'OUT_OF_SCOPE', 'Bạn không có quyền thao tác ngoài đơn vị phụ trách.');
-    }
+    assertDepartmentScope(user, deptId, 'Bạn không có quyền thao tác ngoài đơn vị phụ trách.');
     return;
   }
   fail(403, 'PROGRAM_MANAGE_FORBIDDEN', 'Chỉ Giáo vụ hoặc Quản trị viên mới có quyền quản lý Khung chương trình và Lớp khóa học.');
 }
 
 function canViewPrograms(user) {
-  return isAdmin(user) || isStaff(user) || isInstructor(user);
+  return isAdmin(user) || isStaff(user) || isHeadOfDepartment(user) || isInstructor(user);
 }
 
 async function logCurriculumAudit(db, curriculumId, actionType, payload, user) {
@@ -177,9 +178,13 @@ export function registerCurriculaAndCohortRoutes(route) {
     const { page, size, offset } = pageParams(url, 20, 100);
     const where = ['1 = 1'];
     const params = [];
-    if (!isAdmin(user) && user.department_id) {
-      where.push('(department_id = ? OR department_id IS NULL)');
-      params.push(user.department_id);
+    if (!isAdmin(user)) {
+      if (!user.department_id) {
+        where.push('1 = 0');
+      } else {
+        where.push('department_id = ?');
+        params.push(user.department_id);
+      }
     }
     const q = (url.searchParams.get('q') || '').trim();
     if (q) {
@@ -241,6 +246,9 @@ export function registerCurriculaAndCohortRoutes(route) {
     if (!canViewPrograms(user)) fail(403, 'PROGRAM_ACCESS_DENIED', 'Bạn không có quyền xem Khung chương trình.');
     const curr = await db.prepare('SELECT * FROM curricula WHERE id = ?').get(params.id);
     if (!curr) fail(404, 'CURRICULUM_NOT_FOUND', 'Không tìm thấy khung chương trình.');
+    if (!isAdmin(user) && !sameDept(user, curr.department_id)) {
+      fail(403, 'OUT_OF_SCOPE', 'Bạn không có quyền xem khung chương trình ngoài đơn vị/bộ môn.');
+    }
     const subjects = await db
       .prepare(
         `SELECT cs.*, c.code AS course_code, c.title AS course_title, c.subject AS subject_name,
@@ -331,7 +339,10 @@ export function registerCurriculaAndCohortRoutes(route) {
     const itemId = `cs_${crypto.randomBytes(5).toString('hex')}`;
     const sem = intField(body, 'semester_order', { min: 1, max: 12, label: 'học kỳ' }) ?? 1;
     const periods = intField(body, 'planned_periods', { min: 1, max: 1000, label: 'số tiết' }) ?? 30;
-    const hours = Number.isFinite(Number(body.planned_hours)) ? Number(body.planned_hours) : Math.round(periods * 0.75 * 10) / 10;
+    const minsPerPeriod = Math.max(15, Number(course.minutes_per_period || 45));
+    const hours = Number.isFinite(Number(body.planned_hours))
+      ? Number(body.planned_hours)
+      : Math.round(((periods * minsPerPeriod) / 60) * 10) / 10;
     const isMandatory = body.is_mandatory === false ? 0 : 1;
     const note = text(body, 'note', { max: 500, label: 'ghi chú' }) || '';
 
@@ -398,12 +409,16 @@ export function registerCurriculaAndCohortRoutes(route) {
     const { page, size, offset } = pageParams(url, 20, 100);
     const where = ['1 = 1'];
     const params = [];
-    if (isStudent(user) && !isAdmin(user) && !isStaff(user) && !isInstructor(user)) {
+    if (isStudent(user) && !isAdmin(user) && !isStaff(user) && !isHeadOfDepartment(user) && !isInstructor(user)) {
       where.push(`id IN (SELECT cohort_id FROM cohort_enrollments WHERE student_id = ? AND status = 'ACTIVE')`);
       params.push(user.id);
-    } else if (!isAdmin(user) && user.department_id) {
-      where.push('(department_id = ? OR department_id IS NULL)');
-      params.push(user.department_id);
+    } else if (!isAdmin(user)) {
+      if (!user.department_id) {
+        where.push('1 = 0');
+      } else {
+        where.push('department_id = ?');
+        params.push(user.department_id);
+      }
     }
     const q = (url.searchParams.get('q') || '').trim();
     if (q) {
@@ -492,6 +507,8 @@ export function registerCurriculaAndCohortRoutes(route) {
     if (isStudent(user) && !canViewPrograms(user)) {
       const mem = await db.prepare(`SELECT 1 FROM cohort_enrollments WHERE cohort_id = ? AND student_id = ? AND status = 'ACTIVE'`).get(cohort.id, user.id);
       if (!mem) fail(403, 'COHORT_ACCESS_DENIED', 'Bạn không thuộc lớp khóa học này.');
+    } else if (!isAdmin(user) && !sameDept(user, cohort.department_id)) {
+      fail(403, 'OUT_OF_SCOPE', 'Bạn không có quyền truy cập lớp khóa học ngoài đơn vị/bộ môn.');
     }
 
     const summary = await cohortSummaryDto(db, cohort);
@@ -810,6 +827,9 @@ export function registerCurriculaAndCohortRoutes(route) {
     if (!canViewPrograms(user)) fail(403, 'COHORT_ACCESS_DENIED', 'Bạn không có quyền xuất danh sách lớp khóa học.');
     const cohort = await db.prepare('SELECT * FROM program_cohorts WHERE id = ?').get(params.id);
     if (!cohort) fail(404, 'COHORT_NOT_FOUND', 'Không tìm thấy lớp khóa học.');
+    if (!isAdmin(user) && !sameDept(user, cohort.department_id)) {
+      fail(403, 'OUT_OF_SCOPE', 'Bạn không có quyền xuất danh sách lớp khóa học ngoài đơn vị phụ trách.');
+    }
     const rows = await db
       .prepare(
         `SELECT u.code, u.full_name, u.email, ce.status, ce.enrolled_at, ce.ended_at
@@ -861,6 +881,7 @@ export function registerCurriculaAndCohortRoutes(route) {
     if (targetCohortId === srcCohort.id) fail(422, 'VALIDATION_ERROR', 'Lớp khóa học đích phải khác lớp nguồn.');
     const dstCohort = await db.prepare('SELECT * FROM program_cohorts WHERE id = ?').get(targetCohortId);
     if (!dstCohort) fail(404, 'COHORT_NOT_FOUND', 'Không tìm thấy lớp khóa học đích.');
+    requireAdminOrStaff(user, dstCohort.department_id);
     const enr = await db.prepare(`SELECT * FROM cohort_enrollments WHERE cohort_id = ? AND student_id = ? AND status = 'ACTIVE'`).get(srcCohort.id, params.studentId);
     if (!enr) fail(404, 'ENROLLMENT_NOT_FOUND', 'Học viên không thuộc lớp khóa học nguồn.');
     const note = text(body, 'note', { max: 500, label: 'ghi chú chuyển lớp' }) || `Chuyển sang ${dstCohort.code}`;

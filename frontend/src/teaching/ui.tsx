@@ -1,6 +1,8 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { extractImageUrlCandidates, isSafeImageDataUrl, normalizeImageUrl } from '../../../shared/imageUrl.mjs';
 import { ApiHttpError } from '../api/elearningClient';
+import { ThemeMode } from '../types/elearning';
+import { IconGraduation, IconMoon, IconSun } from './components/Icons';
 
 // ------------------------------------------------------------------ formatting
 
@@ -366,11 +368,19 @@ const LABELS: Record<string, Record<string, [string, string]>> = {
     CANCELLED: ['Đã hủy', 'muted'],
   },
   leaveReason: {
+    SICK: ['Ốm đau / Y tế', 'warning'],
     ILLNESS: ['Ốm đau / Y tế', 'warning'],
     FAMILY: ['Việc gia đình', 'info'],
+    OFFICIAL_DUTY: ['Công tác / Làm việc', 'neutral'],
     WORK: ['Công tác / Làm việc', 'neutral'],
     ACADEMIC_CONFLICT: ['Trùng lịch học/thi', 'warning'],
     OTHER: ['Lý do khác', 'neutral'],
+  },
+  appealStatus: {
+    PENDING: ['Chờ xem xét', 'warning'],
+    UNDER_REVIEW: ['Đang xử lý', 'info'],
+    APPROVED: ['Chấp thuận điều chỉnh', 'success'],
+    REJECTED: ['Từ chối phúc khảo', 'danger'],
   },
   forumCategory: {
     QA: ['Hỏi đáp bài học', 'info'],
@@ -402,7 +412,7 @@ const LABELS: Record<string, Record<string, [string, string]>> = {
   },
   programType: {
     INSTRUCTOR_LED: ['Có lớp & Giảng viên', 'success'],
-    SELF_PACED: ['Tự học (EL-Q4)', 'info'],
+    SELF_PACED: ['Tự học trực tuyến', 'info'],
   },
   scheduleState: {
     UNSCHEDULED: ['Chưa xếp lịch', 'muted'],
@@ -914,6 +924,86 @@ export const ImageUrlInput: React.FC<ImageUrlInputProps> = ({
           />
         </div>
       )}
+    </div>
+  );
+};
+
+/** Chỉ cho phép liên kết http/https hoặc đường dẫn nội bộ an toàn (chặn javascript:/data: XSS). */
+export function safeHref(raw?: string | null): string | undefined {
+  if (!raw || typeof raw !== 'string') return undefined;
+  const trimmed = raw.trim();
+  if (!trimmed) return undefined;
+  if (trimmed.startsWith('/') && !trimmed.startsWith('//')) return trimmed;
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+      return parsed.toString();
+    }
+  } catch {
+    return undefined;
+  }
+  return undefined;
+}
+
+export const ThemeSwitcher: React.FC<{
+  theme: ThemeMode;
+  onChange: (next: ThemeMode) => void;
+}> = ({ theme, onChange }) => {
+  const options: Array<{ id: ThemeMode; label: string; icon: React.ReactNode }> = [
+    { id: 'airbnb-light', label: 'Daylight', icon: <IconSun size={14} /> },
+    { id: 'cinema-dark', label: 'Cinema Dark', icon: <IconMoon size={14} /> },
+    { id: 'babu-academy', label: 'Babu Teal', icon: <IconGraduation size={14} /> },
+  ];
+
+  return (
+    <div
+      role="group"
+      aria-label="Chế độ giao diện"
+      style={{
+        display: 'inline-flex',
+        flexWrap: 'wrap',
+        maxWidth: '100%',
+        gap: '4px',
+        padding: '4px',
+        backgroundColor: 'var(--bg-surface-subtle)',
+        border: '1px solid var(--border-strong)',
+        borderRadius: 'var(--radius-lg)',
+      }}
+    >
+      {options.map((opt) => {
+        const active = theme === opt.id;
+        return (
+          <button
+            key={opt.id}
+            type="button"
+            aria-pressed={active}
+            onClick={() => onChange(opt.id)}
+            style={{
+              flex: '1 1 auto',
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: '6px',
+              minHeight: '44px',
+              padding: '0 12px',
+              borderRadius: 'var(--radius-md)',
+              border: active ? '1px solid var(--border-strong)' : '1px solid transparent',
+              backgroundColor: active ? 'var(--bg-surface)' : 'transparent',
+              color: active ? 'var(--text-primary)' : 'var(--text-secondary)',
+              fontFamily: 'var(--font-sans)',
+              fontSize: '12px',
+              fontWeight: 600,
+              whiteSpace: 'nowrap',
+              cursor: 'pointer',
+              boxShadow: active ? 'var(--shadow-card)' : 'none',
+              transition: 'background-color 150ms var(--ease-standard), color 150ms var(--ease-standard)',
+            }}
+          >
+            {opt.icon}
+            {opt.label}
+          </button>
+        );
+      })}
     </div>
   );
 };

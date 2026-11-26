@@ -7,8 +7,97 @@
  */
 
 import crypto from 'node:crypto';
+import path from 'node:path';
 import { fail, nowIso, text, intField, oneOf, tx, compareVietnameseName , mapAsync} from './http.mjs';
-import { isAdmin, safeJson } from './scope.mjs';
+import { sanitizeExternalHttpUrl, validateUploadMagicBytes } from '../common/security.mjs';
+import { createStorageAdapter } from '../storage/adapter.mjs';
+import { isAdmin, isStaff, isHeadOfDepartment, sameDept, canApproveDepartmentAcademic, safeJson } from './scope.mjs';
+
+const STUDENT_UPLOAD_MIME_MAP = {
+  pdf: 'application/pdf',
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  webp: 'image/webp',
+  txt: 'text/plain; charset=utf-8',
+  csv: 'text/csv; charset=utf-8',
+  zip: 'application/zip',
+  doc: 'application/msword',
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  xls: 'application/vnd.ms-excel',
+  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  ppt: 'application/vnd.ms-powerpoint',
+  pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+};
+
+function normalizeRubricArray(rawList) {
+  if (!Array.isArray(rawList)) return [];
+  return rawList.slice(0, 20).map((item, idx) => {
+    if (!item || typeof item !== 'object') {
+      fail(422, 'INVALID_RUBRIC', 'Tiêu chí Rubric không hợp lệ.');
+    }
+    const criterion = String(item.criterion || item.title || '').trim();
+    if (!criterion || criterion.length > 200) {
+      fail(422, 'INVALID_RUBRIC', `Tiêu chí Rubric #${idx + 1} cần có tên (tối đa 200 ký tự).`);
+    }
+    const maxPoints = Number(item.max_points ?? item.points ?? 1);
+    if (Number.isNaN(maxPoints) || maxPoints <= 0 || maxPoints > 1000) {
+      fail(422, 'INVALID_RUBRIC', `Điểm tối đa của tiêu chí "${criterion}" không hợp lệ.`);
+    }
+    const idRaw = String(item.id || `crit_${idx + 1}`).trim();
+    const id = /^[A-Za-z0-9_-]{1,64}$/.test(idRaw) ? idRaw : `crit_${idx + 1}`;
+    const description = String(item.description || '').trim().slice(0, 500);
+    return {
+      id,
+      criterion,
+      description,
+      max_points: Math.round(maxPoints * 100) / 100,
+    };
+  });
+}
+
+function normalizeRubricScores(rawList) {
+  if (!Array.isArray(rawList)) return [];
+  return rawList.slice(0, 20).map((item, idx) => {
+    if (!item || typeof item !== 'object') {
+      fail(422, 'INVALID_RUBRIC_SCORE', 'Dữ liệu điểm theo Rubric không hợp lệ.');
+    }
+    const criterion = String(item.criterion || item.title || `Tiêu chí ${idx + 1}`).trim().slice(0, 200);
+    const maxPoints = Number(item.max_points ?? 10);
+    const points = Number(item.points ?? 0);
+    if (Number.isNaN(points) || Number.isNaN(maxPoints) || points < 0 || points > maxPoints) {
+      fail(422, 'INVALID_RUBRIC_SCORE', `Điểm cho tiêu chí "${criterion}" phải nằm trong khoảng 0 - ${maxPoints}.`);
+    }
+    return {
+      criterion_id: String(item.criterion_id || item.id || `crit_${idx + 1}`).slice(0, 64),
+      criterion,
+      max_points: Math.round(maxPoints * 100) / 100,
+      points: Math.round(points * 100) / 100,
+      comment: String(item.comment || '').trim().slice(0, 500),
+    };
+  });
+}
+
+function sanitizeAttachmentArray(rawList) {
+  if (!Array.isArray(rawList)) return [];
+  return rawList.slice(0, 20).map((item) => {
+    if (typeof item === 'string') {
+      const chk = sanitizeExternalHttpUrl(item, { allowRelative: true });
+      if (!chk.ok) fail(422, 'INVALID_ATTACHMENT_URL', chk.message);
+      return chk.url;
+    }
+    if (item && typeof item === 'object') {
+      const next = { ...item };
+      if (next.url !== undefined && next.url !== null && String(next.url).trim() !== '') {
+        const chk = sanitizeExternalHttpUrl(String(next.url), { allowRelative: true });
+        if (!chk.ok) fail(422, 'INVALID_ATTACHMENT_URL', chk.message);
+        next.url = chk.url;
+      }
+      return next;
+    }
+    return item;
+  });
+}
 import { requireClassAccess, getClass } from './classes.mjs';
 import { getClassContentVersionKey, resolveLessonTreeIds } from './masterSchema.mjs';
 import {
@@ -292,6 +381,7 @@ async function hydrateAssignmentDto(db, a) {
     max_attempts: Number(a.max_attempts || 3),
     allow_resubmit: Boolean(a.allow_resubmit),
     due_at: a.due_at || null,
+    rubric: safeJson(a.rubric_json, []),
     attachments: safeJson(a.attachments_json, []),
     status: a.status,
     students_touched: Number(agg?.students_touched || 0),
@@ -447,7 +537,8 @@ function studentAttemptDto(attempt, exam, qRows, revealAnswers = false) {
   };
 }
 
-export function registerAssessmentAndAssignmentRoutes(route) {
+export function registerAssessmentAndAssignmentRoutes(route, { storage } = {}) {
+  const store = storage || createStorageAdapter();
   // =========================================================================
   // 1. BÀI KIỂM TRA THEO LỚP MÔN HỌC (STAFF / INSTRUCTOR)
   // =========================================================================
@@ -1046,9 +1137,14 @@ export function registerAssessmentAndAssignmentRoutes(route) {
       : bankItem ? Number(bankItem.allow_resubmit) : 1;
     const dueAt = text(body, 'due_at', { max: 40, label: 'hạn nộp' }) || null;
     const status = oneOf(body, 'status', ['DRAFT', 'PUBLISHED', 'CLOSED'], { fallback: 'PUBLISHED', label: 'trạng thái' });
-    const attachments = Array.isArray(body?.attachments)
-      ? body.attachments
-      : bankItem ? safeJson(bankItem.attachments_json, []) : [];
+    const rubric = body?.rubric !== undefined
+      ? normalizeRubricArray(body.rubric)
+      : bankItem ? normalizeRubricArray(safeJson(bankItem.rubric_json, [])) : [];
+    const attachments = sanitizeAttachmentArray(
+      Array.isArray(body?.attachments)
+        ? body.attachments
+        : bankItem ? safeJson(bankItem.attachments_json, []) : []
+    );
 
     const scopeLinks = await validateScopeLinks(db, cls.course_id, 'LESSON', {
       lesson_id: body?.lesson_id ?? bankItem?.lesson_id,
@@ -1062,8 +1158,8 @@ export function registerAssessmentAndAssignmentRoutes(route) {
       `INSERT INTO class_assignments
          (id, subject_class_id, course_id, assignment_bank_item_id, topic_id, chapter_id, lesson_id,
           title, instructions, submission_type, max_score, max_attempts, allow_resubmit, due_at,
-          attachments_json, status, created_by, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          rubric_json, attachments_json, status, created_by, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       id,
       cls.id,
@@ -1079,6 +1175,7 @@ export function registerAssessmentAndAssignmentRoutes(route) {
       maxAttempts,
       allowResubmit,
       dueAt,
+      JSON.stringify(rubric),
       JSON.stringify(attachments),
       status,
       user.id,
@@ -1115,12 +1212,13 @@ export function registerAssessmentAndAssignmentRoutes(route) {
     const allowResubmit = body?.allow_resubmit !== undefined ? (body.allow_resubmit ? 1 : 0) : a.allow_resubmit;
     const dueAt = body?.due_at !== undefined ? text(body, 'due_at', { max: 40 }) || null : a.due_at;
     const status = body?.status !== undefined ? oneOf(body, 'status', ['DRAFT', 'PUBLISHED', 'CLOSED']) : a.status;
-    const attachments = Array.isArray(body?.attachments) ? body.attachments : safeJson(a.attachments_json, []);
+    const rubric = body?.rubric !== undefined ? normalizeRubricArray(body.rubric) : safeJson(a.rubric_json, []);
+    const attachments = sanitizeAttachmentArray(Array.isArray(body?.attachments) ? body.attachments : safeJson(a.attachments_json, []));
 
     await db.prepare(
       `UPDATE class_assignments
        SET title = ?, instructions = ?, submission_type = ?, max_score = ?, max_attempts = ?,
-           allow_resubmit = ?, due_at = ?, attachments_json = ?, status = ?, updated_at = ?
+           allow_resubmit = ?, due_at = ?, rubric_json = ?, attachments_json = ?, status = ?, updated_at = ?
        WHERE id = ?`
     ).run(
       title,
@@ -1130,6 +1228,7 @@ export function registerAssessmentAndAssignmentRoutes(route) {
       maxAttempts,
       allowResubmit,
       dueAt,
+      JSON.stringify(rubric),
       JSON.stringify(attachments),
       status,
       nowIso(),
@@ -1181,7 +1280,11 @@ export function registerAssessmentAndAssignmentRoutes(route) {
     const latestByStudent = new Map();
     for (const s of allSubs) {
       if (!latestByStudent.has(s.student_id)) {
-        latestByStudent.set(s.student_id, { ...s, attachments: safeJson(s.attachments_json, []) });
+        latestByStudent.set(s.student_id, {
+          ...s,
+          attachments: safeJson(s.attachments_json, []),
+          rubric_scores: safeJson(s.rubric_scores_json, []),
+        });
       }
     }
 
@@ -1197,7 +1300,11 @@ export function registerAssessmentAndAssignmentRoutes(route) {
 
     return {
       assignment: await hydrateAssignmentDto(db, a),
-      submissions: allSubs.map((s) => ({ ...s, attachments: safeJson(s.attachments_json, []) })),
+      submissions: allSubs.map((s) => ({
+        ...s,
+        attachments: safeJson(s.attachments_json, []),
+        rubric_scores: safeJson(s.rubric_scores_json, []),
+      })),
       roster_status: rosterStatus,
     };
   });
@@ -1215,14 +1322,22 @@ export function registerAssessmentAndAssignmentRoutes(route) {
 
     const targetStatus = oneOf(body, 'status', ['GRADED', 'RETURNED'], { fallback: 'GRADED', label: 'trạng thái chấm' });
     const maxScore = Number(a.max_score || 10);
+    const rubricScores = body?.rubric_scores !== undefined
+      ? normalizeRubricScores(body.rubric_scores)
+      : safeJson(sub.rubric_scores_json, []);
     let score = sub.score;
 
     if (targetStatus === 'GRADED') {
-      if (body?.score === undefined || body.score === null) {
+      const rawScore = body?.score !== undefined && body.score !== null
+        ? Number(body.score)
+        : rubricScores.length > 0
+          ? rubricScores.reduce((sum, r) => sum + Number(r.points || 0), 0)
+          : NaN;
+      if (Number.isNaN(rawScore)) {
         fail(400, 'SCORE_REQUIRED', 'Vui lòng nhập điểm số cho bài tập.');
       }
-      score = Number(body.score);
-      if (Number.isNaN(score) || score < 0 || score > maxScore) {
+      score = rawScore;
+      if (score < 0 || score > maxScore) {
         fail(400, 'INVALID_SCORE', `Điểm phải nằm trong khoảng 0 - ${maxScore}.`);
       }
       score = Math.round(score * 100) / 100;
@@ -1234,9 +1349,9 @@ export function registerAssessmentAndAssignmentRoutes(route) {
     await tx(db, async () => {
       await db.prepare(
         `UPDATE class_assignment_submissions
-         SET score = ?, status = ?, teacher_feedback = ?, graded_by = ?, graded_at = ?, updated_at = ?
+         SET score = ?, status = ?, rubric_scores_json = ?, teacher_feedback = ?, graded_by = ?, graded_at = ?, updated_at = ?
          WHERE id = ?`
-      ).run(score, targetStatus, feedback, user.id, now, now, sub.id);
+      ).run(score, targetStatus, JSON.stringify(rubricScores), feedback, user.id, now, now, sub.id);
 
       if (targetStatus === 'GRADED' && score !== null) {
         await syncGradebookEntry(db, {
@@ -1270,7 +1385,11 @@ export function registerAssessmentAndAssignmentRoutes(route) {
     });
 
     const updated = await db.prepare('SELECT * FROM class_assignment_submissions WHERE id = ?').get(sub.id);
-    return { ...updated, attachments: safeJson(updated.attachments_json, []) };
+    return {
+      ...updated,
+      attachments: safeJson(updated.attachments_json, []),
+      rubric_scores: safeJson(updated.rubric_scores_json, []),
+    };
   });
 
   // =========================================================================
@@ -1313,7 +1432,11 @@ export function registerAssessmentAndAssignmentRoutes(route) {
            ORDER BY attempt_number DESC`
         )
         .all(a.id, user.id))
-        .map((s) => ({ ...s, attachments: safeJson(s.attachments_json, []) }));
+        .map((s) => ({
+          ...s,
+          attachments: safeJson(s.attachments_json, []),
+          rubric_scores: safeJson(s.rubric_scores_json, []),
+        }));
 
       const latest = subs[0] || null;
       const submittedCount = subs.filter((s) => s.status !== 'DRAFT').length;
@@ -1346,8 +1469,13 @@ export function registerAssessmentAndAssignmentRoutes(route) {
     }
 
     const submissionText = text(body, 'submission_text', { max: 20000, label: 'nội dung bài làm' });
-    const submissionLink = text(body, 'submission_link', { max: 1000, label: 'liên kết bài làm' });
-    const attachments = Array.isArray(body?.attachments) ? body.attachments : [];
+    const rawSubLink = text(body, 'submission_link', { max: 1000, label: 'liên kết bài làm' });
+    const subLinkCheck = sanitizeExternalHttpUrl(rawSubLink);
+    if (!subLinkCheck.ok) {
+      fail(422, 'INVALID_SUBMISSION_LINK', subLinkCheck.message, { field: 'submission_link' });
+    }
+    const submissionLink = subLinkCheck.url;
+    const attachments = sanitizeAttachmentArray(Array.isArray(body?.attachments) ? body.attachments : []);
 
     if (targetState === 'SUBMITTED') {
       if (!submissionText && !submissionLink && attachments.length === 0) {
@@ -1504,6 +1632,8 @@ export function registerAssessmentAndAssignmentRoutes(route) {
 
       return {
         ...st,
+        code: st.student_code,
+        full_name: st.student_name,
         scores,
         graded_count: gradedItems,
         average_scale_10: gradedItems > 0 ? Math.round((sumPct / gradedItems) * 100) / 100 : null,
@@ -1558,10 +1688,367 @@ export function registerAssessmentAndAssignmentRoutes(route) {
       average_scale_10: avg10,
       gradebook_entries: entries,
       exam_attempts: examAttempts,
-      assignment_submissions: assignmentSubs.map((s) => ({ ...s, attachments: safeJson(s.attachments_json, []) })),
+      assignment_submissions: assignmentSubs.map((s) => ({
+        ...s,
+        attachments: safeJson(s.attachments_json, []),
+        rubric_scores: safeJson(s.rubric_scores_json, []),
+      })),
     };
+  });
+
+  // =========================================================================
+  // 6. TẢI LÊN & TẢI XUỐNG TỆP BÀI TẬP HỌC VIÊN (STORAGE ADAPTER + RBAC)
+  // =========================================================================
+
+  route('POST', '/learn/assignments/:assignmentId/upload', async ({ db, user, body, params }) => {
+    const a = await db.prepare('SELECT * FROM class_assignments WHERE id = ?').get(params.assignmentId);
+    if (!a) fail(404, 'ASSIGNMENT_NOT_FOUND', 'Không tìm thấy bài tập.');
+    await requireStudentInClass(db, user, a.subject_class_id);
+    if (a.status !== 'PUBLISHED') {
+      fail(400, 'ASSIGNMENT_NOT_OPEN', 'Bài tập hiện không còn mở để nộp tệp.');
+    }
+    if (!['FILE', 'MIXED'].includes(a.submission_type)) {
+      fail(400, 'FILE_UPLOAD_NOT_ALLOWED', 'Bài tập này không hỗ trợ hình thức nộp bằng tệp.');
+    }
+
+    const rawName = text(body, 'file_name', { required: true, max: 180, label: 'tên tệp bài làm' });
+    const ext = path.extname(rawName).replace('.', '').toLowerCase();
+    if (!ext || !STUDENT_UPLOAD_MIME_MAP[ext]) {
+      fail(422, 'INVALID_FILE_TYPE', 'Chỉ hỗ trợ tệp PDF, Office (doc/docx/xls/xlsx/ppt/pptx), TXT, CSV, ZIP hoặc ảnh (PNG/JPG/WEBP).');
+    }
+
+    const b64 = String(body?.content_base64 || '').trim();
+    if (!b64) fail(400, 'EMPTY_FILE', 'Nội dung tệp tải lên đang trống.');
+    const stripped = b64.includes(',') ? b64.split(',').pop() || '' : b64;
+    const buffer = Buffer.from(stripped, 'base64');
+    if (buffer.length === 0) fail(400, 'EMPTY_FILE', 'Không đọc được nội dung tệp.');
+    if (buffer.length > 15 * 1024 * 1024) {
+      fail(413, 'FILE_TOO_LARGE', 'Kích thước tệp bài nộp tối đa là 15 MB.');
+    }
+
+    const magic = validateUploadMagicBytes(buffer, ext);
+    if (!magic.ok) {
+      fail(422, 'INVALID_FILE_MAGIC', magic.message || 'Nội dung tệp không khớp phần mở rộng.');
+    }
+
+    const safeFileName = `${user.id}_${crypto.randomBytes(4).toString('hex')}.${ext}`;
+    const storageKey = store.buildKey('assignments', a.id, safeFileName);
+    const mimeType = STUDENT_UPLOAD_MIME_MAP[ext];
+    const stored = await store.putBuffer(storageKey, buffer, mimeType);
+
+    return [
+      201,
+      {
+        title: rawName,
+        name: rawName,
+        file_name: rawName,
+        mime_type: mimeType,
+        size_bytes: stored.sizeBytes,
+        checksum_sha256: stored.checksumSha256,
+        storage_provider: stored.storageProvider,
+        storage_key: stored.storageKey,
+        url: `/api/v1/teaching/assignment-files/${encodeURIComponent(a.id)}/${encodeURIComponent(safeFileName)}`,
+      },
+    ];
+  });
+
+  route('GET', '/assignment-files/:assignmentId/:fileName', async ({ db, user, params, res, raw }) => {
+    if (!/^[A-Za-z0-9_-]{1,80}$/.test(params.assignmentId) || !/^[A-Za-z0-9._-]{1,140}$/.test(params.fileName)) {
+      fail(400, 'INVALID_FILE_KEY', 'Định danh tệp bài nộp không hợp lệ.');
+    }
+    const a = await db.prepare('SELECT * FROM class_assignments WHERE id = ?').get(params.assignmentId);
+    if (!a) fail(404, 'ASSIGNMENT_NOT_FOUND', 'Không tìm thấy bài tập.');
+    const course = a.course_id ? await db.prepare('SELECT department_id FROM courses WHERE id = ?').get(a.course_id) : null;
+
+    let allowed = canApproveDepartmentAcademic(user, course?.department_id || null);
+    if (!allowed) {
+      try {
+        await requireStaffViewClass(db, user, a.subject_class_id);
+        allowed = true;
+      } catch {
+        // Thử quyền học viên chính chủ tệp nộp trong lớp
+        if (params.fileName.startsWith(`${user.id}_`)) {
+          const enrolled = await db
+            .prepare("SELECT 1 FROM class_enrollments WHERE subject_class_id = ? AND student_id = ? AND status = 'ACTIVE'")
+            .get(a.subject_class_id, user.id);
+          allowed = Boolean(enrolled);
+        }
+      }
+    }
+    if (!allowed) fail(403, 'FILE_ACCESS_DENIED', 'Bạn không có quyền tải xuống tệp bài nộp này.');
+
+    const storageKey = store.buildKey('assignments', a.id, params.fileName);
+    const stat = await store.statObject(storageKey);
+    if (!stat.exists) fail(404, 'FILE_MISSING', 'Không tìm thấy tệp trên máy chủ lưu trữ.');
+
+    const ext = path.extname(params.fileName).replace('.', '').toLowerCase();
+    const mimeType = STUDENT_UPLOAD_MIME_MAP[ext] || 'application/octet-stream';
+    await store.streamObjectToResponse({
+      res,
+      raw,
+      status: 200,
+      headers: {
+        'Content-Type': mimeType,
+        'Content-Length': String(stat.size),
+        'Content-Disposition': `attachment; filename="submission"; filename*=UTF-8''${encodeURIComponent(params.fileName)}`,
+        'X-Content-Type-Options': 'nosniff',
+      },
+      storageKey,
+      size: stat.size,
+    });
+  });
+
+  // =========================================================================
+  // 7. PHÚC KHẢO ĐIỂM BÀI TẬP & BÀI KIỂM TRA (GRADE APPEALS + HOD/STAFF)
+  // =========================================================================
+
+  async function resolveAppealAccess(db, user, classId) {
+    const cls = await getClass(db, classId);
+    if (!cls) fail(404, 'CLASS_NOT_FOUND', 'Không tìm thấy lớp môn học.');
+    const course = cls.course_id ? await db.prepare('SELECT id, department_id FROM courses WHERE id = ?').get(cls.course_id) : null;
+    if (canApproveDepartmentAcademic(user, course?.department_id || null)) {
+      return { cls, course };
+    }
+    await requireStaffManageClass(db, user, cls.id);
+    return { cls, course };
+  }
+
+  route('POST', '/learn/appeals', async ({ db, user, body }) => {
+    const targetType = oneOf(body, 'target_type', ['ASSIGNMENT', 'EXAM'], { required: true, label: 'loại đầu điểm phúc khảo' });
+    const refId = text(body, 'submission_or_attempt_id', { required: true, max: 80, label: 'bài làm / lượt thi' });
+    const reason = text(body, 'reason', { required: true, min: 5, max: 2000, label: 'lý do phúc khảo' });
+
+    let classId;
+    let targetId;
+    let targetTitle;
+    let currentScore;
+    let maxScore;
+
+    if (targetType === 'ASSIGNMENT') {
+      const sub = await db.prepare('SELECT * FROM class_assignment_submissions WHERE id = ?').get(refId);
+      if (!sub) fail(404, 'SUBMISSION_NOT_FOUND', 'Không tìm thấy bài nộp.');
+      if (sub.student_id !== user.id) fail(403, 'APPEAL_FORBIDDEN', 'Bạn chỉ được phúc khảo bài nộp của chính mình.');
+      if (!['GRADED', 'RETURNED'].includes(sub.status)) {
+        fail(400, 'APPEAL_NOT_GRADED', 'Bài tập chưa được chấm điểm nên chưa thể gửi đơn phúc khảo.');
+      }
+      const assign = await db.prepare('SELECT * FROM class_assignments WHERE id = ?').get(sub.class_assignment_id);
+      if (!assign) fail(404, 'ASSIGNMENT_NOT_FOUND', 'Không tìm thấy bài tập.');
+      await requireStudentInClass(db, user, assign.subject_class_id);
+      classId = assign.subject_class_id;
+      targetId = assign.id;
+      targetTitle = assign.title;
+      currentScore = sub.score !== null && sub.score !== undefined ? Number(sub.score) : null;
+      maxScore = Number(assign.max_score || 10);
+    } else {
+      const att = await db.prepare('SELECT * FROM class_exam_attempts WHERE id = ?').get(refId);
+      if (!att) fail(404, 'ATTEMPT_NOT_FOUND', 'Không tìm thấy lượt làm bài kiểm tra.');
+      if (att.student_id !== user.id) fail(403, 'APPEAL_FORBIDDEN', 'Bạn chỉ được phúc khảo bài thi của chính mình.');
+      if (!att.submitted_at) {
+        fail(400, 'APPEAL_NOT_SUBMITTED', 'Lượt làm bài chưa được nộp.');
+      }
+      const exam = await db.prepare('SELECT * FROM class_exams WHERE id = ?').get(att.exam_id);
+      if (!exam) fail(404, 'EXAM_NOT_FOUND', 'Không tìm thấy bài kiểm tra.');
+      await requireStudentInClass(db, user, exam.subject_class_id);
+      classId = exam.subject_class_id;
+      targetId = exam.id;
+      targetTitle = exam.title;
+      currentScore = att.total_score !== null && att.total_score !== undefined ? Number(att.total_score) : null;
+      maxScore = Number(att.max_score || 10);
+    }
+
+    let requestedScore = null;
+    if (body?.requested_score !== undefined && body.requested_score !== null && body.requested_score !== '') {
+      requestedScore = Number(body.requested_score);
+      if (Number.isNaN(requestedScore) || requestedScore < 0 || requestedScore > maxScore) {
+        fail(422, 'INVALID_SCORE', `Điểm đề nghị xem xét lại phải trong khoảng 0 - ${maxScore}.`);
+      }
+      requestedScore = Math.round(requestedScore * 100) / 100;
+    }
+
+    const dup = await db
+      .prepare(
+        `SELECT id FROM grade_appeals
+         WHERE target_type = ? AND submission_or_attempt_id = ? AND student_id = ? AND status IN ('PENDING','UNDER_REVIEW')
+         LIMIT 1`
+      )
+      .get(targetType, refId, user.id);
+    if (dup) {
+      fail(409, 'APPEAL_ALREADY_PENDING', 'Bạn đã có đơn phúc khảo đang chờ xử lý cho mục điểm này.');
+    }
+
+    const id = `gap_${crypto.randomBytes(5).toString('hex')}`;
+    const now = nowIso();
+    await tx(db, async () => {
+      await db.prepare(
+        `INSERT INTO grade_appeals
+           (id, target_type, target_id, submission_or_attempt_id, subject_class_id, student_id,
+            reason, current_score, requested_score, status, resolution_note, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', '', ?, ?)`
+      ).run(id, targetType, targetId, refId, classId, user.id, reason, currentScore, requestedScore, now, now);
+
+      const staff = await db
+        .prepare("SELECT user_id FROM teaching_staff_assignments WHERE subject_class_id = ? AND is_active = 1 AND staff_role IN ('PRIMARY_INSTRUCTOR','CO_INSTRUCTOR')")
+        .all(classId);
+      const deptHead = await db
+        .prepare(
+          `SELECT d.head_user_id FROM subject_classes sc
+           JOIN courses c ON c.id = sc.course_id
+           JOIN departments d ON d.id = c.department_id
+           WHERE sc.id = ? AND d.head_user_id IS NOT NULL`
+        )
+        .get(classId);
+      const recipientIds = new Set(staff.map((s) => s.user_id));
+      if (deptHead?.head_user_id) recipientIds.add(deptHead.head_user_id);
+      for (const rid of recipientIds) {
+        await pushNotification(
+          db,
+          rid,
+          'GRADE_APPEAL_CREATED',
+          `Đơn phúc khảo mới: ${targetTitle}`,
+          `${user.full_name} đề nghị xem xét lại điểm (${currentScore ?? '—'} → ${requestedScore ?? 'đánh giá lại'}).`,
+          `/teaching/classes/${classId}`
+        );
+      }
+    });
+
+    const created = await db.prepare('SELECT * FROM grade_appeals WHERE id = ?').get(id);
+    return [201, { ...created, target_title: targetTitle }];
+  });
+
+  route('GET', '/learn/appeals', async ({ db, user, query }) => {
+    const classId = query.get('class_id');
+    const rows = await db
+      .prepare(
+        `SELECT g.*, sc.code AS class_code, sc.title AS class_title,
+                COALESCE(a.title, e.title, g.target_id) AS target_title
+         FROM grade_appeals g
+         JOIN subject_classes sc ON sc.id = g.subject_class_id
+         LEFT JOIN class_assignments a ON g.target_type = 'ASSIGNMENT' AND a.id = g.target_id
+         LEFT JOIN class_exams e ON g.target_type = 'EXAM' AND e.id = g.target_id
+         WHERE g.student_id = ? ${classId ? 'AND g.subject_class_id = ?' : ''}
+         ORDER BY g.created_at DESC`
+      )
+      .all(...(classId ? [user.id, classId] : [user.id]));
+    return { items: rows };
+  });
+
+  route('GET', '/classes/:id/appeals', async ({ db, user, params, query }) => {
+    const { cls } = await resolveAppealAccess(db, user, params.id);
+    const statusFilter = query.get('status') || '';
+    const rows = await db
+      .prepare(
+        `SELECT g.*, u.code AS student_code, u.full_name AS student_name,
+                COALESCE(a.title, e.title, g.target_id) AS target_title
+         FROM grade_appeals g
+         JOIN users u ON u.id = g.student_id
+         LEFT JOIN class_assignments a ON g.target_type = 'ASSIGNMENT' AND a.id = g.target_id
+         LEFT JOIN class_exams e ON g.target_type = 'EXAM' AND e.id = g.target_id
+         WHERE g.subject_class_id = ? ${statusFilter ? 'AND g.status = ?' : ''}
+         ORDER BY CASE WHEN g.status = 'PENDING' THEN 0 WHEN g.status = 'UNDER_REVIEW' THEN 1 ELSE 2 END, g.created_at DESC`
+      )
+      .all(...(statusFilter ? [cls.id, statusFilter] : [cls.id]));
+    return { items: rows };
+  });
+
+  route('POST', '/appeals/:appealId/review', async ({ db, user, body, params }) => {
+    const appeal = await db.prepare('SELECT * FROM grade_appeals WHERE id = ?').get(params.appealId);
+    if (!appeal) fail(404, 'APPEAL_NOT_FOUND', 'Không tìm thấy đơn phúc khảo.');
+    await resolveAppealAccess(db, user, appeal.subject_class_id);
+
+    const decision = oneOf(body, 'decision', ['UNDER_REVIEW', 'APPROVED', 'REJECTED'], {
+      required: true,
+      label: 'quyết định phúc khảo',
+    });
+    const note = text(body, 'resolution_note', { max: 2000, fallback: '', label: 'ghi chú xử lý' });
+    const now = nowIso();
+
+    let finalScore = appeal.final_score ?? null;
+    if (decision === 'APPROVED') {
+      const candidate = body?.final_score !== undefined && body.final_score !== null && body.final_score !== ''
+        ? Number(body.final_score)
+        : appeal.requested_score !== null && appeal.requested_score !== undefined
+          ? Number(appeal.requested_score)
+          : Number(appeal.current_score ?? 0);
+      if (Number.isNaN(candidate) || candidate < 0) {
+        fail(422, 'INVALID_SCORE', 'Điểm sau phúc khảo không hợp lệ.');
+      }
+      finalScore = Math.round(candidate * 100) / 100;
+    }
+
+    await tx(db, async () => {
+      if (decision === 'APPROVED' && finalScore !== null) {
+        if (appeal.target_type === 'ASSIGNMENT') {
+          const assign = await db.prepare('SELECT * FROM class_assignments WHERE id = ?').get(appeal.target_id);
+          const maxScore = Number(assign?.max_score || 10);
+          if (finalScore > maxScore) {
+            fail(422, 'INVALID_SCORE', `Điểm phúc khảo không được vượt quá thang điểm ${maxScore}.`);
+          }
+          await db.prepare(
+            `UPDATE class_assignment_submissions
+             SET score = ?, status = 'GRADED', graded_by = ?, graded_at = ?, updated_at = ?
+             WHERE id = ?`
+          ).run(finalScore, user.id, now, now, appeal.submission_or_attempt_id);
+          if (assign) {
+            await syncGradebookEntry(db, {
+              classId: appeal.subject_class_id,
+              studentId: appeal.student_id,
+              sourceType: 'ASSIGNMENT',
+              sourceId: assign.id,
+              title: assign.title,
+              score: finalScore,
+              maxScore,
+              gradedBy: user.id,
+            });
+          }
+        } else {
+          const att = await db.prepare('SELECT * FROM class_exam_attempts WHERE id = ?').get(appeal.submission_or_attempt_id);
+          const exam = await db.prepare('SELECT * FROM class_exams WHERE id = ?').get(appeal.target_id);
+          const maxScore = Number(att?.max_score || 10);
+          if (finalScore > maxScore) {
+            fail(422, 'INVALID_SCORE', `Điểm phúc khảo không được vượt quá thang điểm ${maxScore}.`);
+          }
+          if (att && exam) {
+            const newManual = Math.max(0, Math.round((finalScore - Number(att.auto_score || 0)) * 100) / 100);
+            await db.prepare(
+              `UPDATE class_exam_attempts
+               SET manual_score = ?, total_score = ?, grading_status = 'GRADED', graded_by = ?, graded_at = ?
+               WHERE id = ?`
+            ).run(newManual, finalScore, user.id, now, att.id);
+            await syncExamGradebookForStudent(db, exam, appeal.student_id, user.id);
+          }
+        }
+      }
+
+      await db.prepare(
+        `UPDATE grade_appeals
+         SET status = ?, final_score = ?, resolution_note = ?, reviewer_id = ?, reviewer_name = ?, reviewed_at = ?, updated_at = ?
+         WHERE id = ?`
+      ).run(decision, finalScore, note, user.id, user.full_name || '', now, now, appeal.id);
+
+      await pushNotification(
+        db,
+        appeal.student_id,
+        'GRADE_APPEAL_REVIEWED',
+        decision === 'APPROVED' ? 'Đơn phúc khảo đã được chấp thuận' : decision === 'REJECTED' ? 'Đơn phúc khảo bị từ chối' : 'Đơn phúc khảo đang được xem xét',
+        note || (decision === 'APPROVED' ? `Điểm cập nhật sau phúc khảo: ${finalScore}.` : 'Giảng viên / Bộ môn đã cập nhật trạng thái đơn phúc khảo.'),
+        appeal.target_type === 'ASSIGNMENT' ? '/learn/assignments' : '/learn/exams'
+      );
+    });
+
+    return await db
+      .prepare(
+        `SELECT g.*, COALESCE(a.title, e.title, g.target_id) AS target_title
+         FROM grade_appeals g
+         LEFT JOIN class_assignments a ON g.target_type = 'ASSIGNMENT' AND a.id = g.target_id
+         LEFT JOIN class_exams e ON g.target_type = 'EXAM' AND e.id = g.target_id
+         WHERE g.id = ?`
+      )
+      .get(appeal.id);
   });
 
   // Kiểm tra quyền Admin khi xóa dữ liệu nếu cần
   void isAdmin;
+  void isStaff;
+  void isHeadOfDepartment;
+  void sameDept;
 }

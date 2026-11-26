@@ -12,6 +12,12 @@
 
 import crypto from 'node:crypto';
 import { fail, nowIso } from './http.mjs';
+import {
+  isProductionRuntime,
+  resolveJwtSecret,
+  resolveCredentialKey,
+  constantTimeStringEqual,
+} from '../common/security.mjs';
 
 export const VIRTUAL_PROVIDERS = ['ZOOM', 'GOOGLE_MEET', 'EXTERNAL'];
 
@@ -20,10 +26,16 @@ export const EXTERNAL_NO_SYNC_NOTICE =
 
 // ------------------------------------------------------------------ Mã hóa AES-256-GCM bảo vệ thông tin nhạy cảm
 
-const DEFAULT_SECRET_MATERIAL = process.env.LMSPLUS_JWT_SECRET || 'lmsplus-production-grade-hmac-secret-2026';
+function deriveSecretMaterial(explicitSecret) {
+  return resolveCredentialKey(process.env, explicitSecret || resolveJwtSecret());
+}
 
-function deriveKey(secret = DEFAULT_SECRET_MATERIAL) {
-  return crypto.createHash('sha256').update(`lmsplus-vc-key:${secret}`).digest();
+function deriveSandboxWebhookSecret(secretMaterial, provider) {
+  return crypto.createHmac('sha256', deriveSecretMaterial(secretMaterial)).update(`sandbox-webhook:${provider}`).digest('hex');
+}
+
+function deriveKey(secret) {
+  return crypto.createHash('sha256').update(`lmsplus-vc-key:${deriveSecretMaterial(secret)}`).digest();
 }
 
 export function encryptSecret(plainText, secret) {
@@ -145,7 +157,7 @@ export class ZoomProviderAdapter {
   constructor({ db, jwtSecret, log } = {}) {
     this.provider = 'ZOOM';
     this.db = db;
-    this.jwtSecret = jwtSecret || DEFAULT_SECRET_MATERIAL;
+    this.jwtSecret = jwtSecret || resolveJwtSecret();
     this.log = log || (() => {});
   }
 
@@ -155,10 +167,8 @@ export class ZoomProviderAdapter {
     const accountId = row?.account_id || process.env.ZOOM_ACCOUNT_ID || '';
     const clientId = row?.client_id || process.env.ZOOM_CLIENT_ID || '';
     const clientSecret = creds.client_secret || process.env.ZOOM_CLIENT_SECRET || '';
-    const webhookSecret =
-      creds.webhook_secret_token ||
-      process.env.ZOOM_WEBHOOK_SECRET_TOKEN ||
-      'lmsplus-zoom-webhook-secret-2026';
+    const configuredWebhook = creds.webhook_secret_token || process.env.ZOOM_WEBHOOK_SECRET_TOKEN || '';
+    const webhookSecret = configuredWebhook || (!isProductionRuntime() ? deriveSandboxWebhookSecret(this.jwtSecret, 'ZOOM') : '');
     const hasLiveApiCreds = Boolean(accountId && clientId && clientSecret && process.env.ZOOM_LIVE_API === '1');
     return {
       row,
@@ -443,6 +453,9 @@ export class ZoomProviderAdapter {
    */
   async verifyWebhookSignature({ headers, rawBody }) {
     const cfg = await this.getConfig();
+    if (!cfg.webhookSecret) {
+      fail(401, 'WEBHOOK_SECRET_NOT_CONFIGURED', 'Chưa cấu hình ZOOM_WEBHOOK_SECRET_TOKEN cho môi trường Production.');
+    }
     const signature = String(headers['x-zm-signature'] || '').trim();
     const timestamp = String(headers['x-zm-request-timestamp'] || '').trim();
     if (!signature || !timestamp) {
@@ -494,7 +507,7 @@ export class GoogleMeetProviderAdapter {
   constructor({ db, jwtSecret, log } = {}) {
     this.provider = 'GOOGLE_MEET';
     this.db = db;
-    this.jwtSecret = jwtSecret || DEFAULT_SECRET_MATERIAL;
+    this.jwtSecret = jwtSecret || resolveJwtSecret();
     this.log = log || (() => {});
   }
 
@@ -504,10 +517,8 @@ export class GoogleMeetProviderAdapter {
     const clientId = row?.client_id || process.env.GOOGLE_MEET_CLIENT_ID || '';
     const clientSecret = creds.client_secret || process.env.GOOGLE_MEET_CLIENT_SECRET || '';
     const refreshToken = creds.refresh_token || process.env.GOOGLE_MEET_REFRESH_TOKEN || '';
-    const webhookSecret =
-      creds.webhook_secret_token ||
-      process.env.GOOGLE_MEET_WEBHOOK_SECRET ||
-      'lmsplus-gmeet-webhook-secret-2026';
+    const configuredWebhook = creds.webhook_secret_token || process.env.GOOGLE_MEET_WEBHOOK_SECRET || '';
+    const webhookSecret = configuredWebhook || (!isProductionRuntime() ? deriveSandboxWebhookSecret(this.jwtSecret, 'GOOGLE_MEET') : '');
     const hasLiveApiCreds = Boolean(clientId && clientSecret && refreshToken && process.env.GOOGLE_MEET_LIVE_API === '1');
     return {
       row,
@@ -516,6 +527,45 @@ export class GoogleMeetProviderAdapter {
       refreshToken,
       webhookSecret,
       hasLiveApiCreds,
+    };
+  }
+
+  /**
+   * Xác thực Google Meet / Workspace Events Webhook bằng HMAC-SHA256 (`x-lmsplus-webhook-signature` + timestamp <= 5m)
+   * hoặc Google Channel Token (`x-goog-channel-token`) so sánh constant-time.
+   */
+  async verifyWebhookSignature({ headers, rawBody }) {
+    const cfg = await this.getConfig();
+    if (!cfg.webhookSecret) {
+      fail(401, 'WEBHOOK_SECRET_NOT_CONFIGURED', 'Chưa cấu hình GOOGLE_MEET_WEBHOOK_SECRET cho môi trường Production.');
+    }
+    const hmacSig = String(headers['x-lmsplus-webhook-signature'] || '').trim();
+    const timestamp = String(headers['x-lmsplus-webhook-timestamp'] || '').trim();
+    if (hmacSig && timestamp) {
+      const tsSec = Number(timestamp);
+      if (!Number.isFinite(tsSec) || Math.abs(Math.floor(Date.now() / 1000) - tsSec) > 300) {
+        fail(401, 'WEBHOOK_TIMESTAMP_EXPIRED', 'Sự kiện Webhook Google Meet đã hết hạn (chống phát lại).');
+      }
+      const expected = `v0=${crypto.createHmac('sha256', cfg.webhookSecret).update(`v0:${timestamp}:${rawBody}`).digest('hex')}`;
+      if (!constantTimeStringEqual(hmacSig, expected)) {
+        fail(401, 'INVALID_WEBHOOK_SIGNATURE', 'Chữ ký HMAC Webhook Google Meet không hợp lệ.');
+      }
+      return true;
+    }
+    const channelToken = String(headers['x-goog-channel-token'] || '').trim();
+    if (channelToken && constantTimeStringEqual(channelToken, cfg.webhookSecret)) {
+      return true;
+    }
+    fail(401, 'MISSING_WEBHOOK_SIGNATURE', 'Thiếu chữ ký hoặc Channel Token xác thực Webhook Google Meet.');
+  }
+
+  async signWebhookPayload(rawBody, timestampSec = Math.floor(Date.now() / 1000)) {
+    const cfg = await this.getConfig();
+    const ts = String(timestampSec);
+    const sig = `v0=${crypto.createHmac('sha256', cfg.webhookSecret).update(`v0:${ts}:${rawBody}`).digest('hex')}`;
+    return {
+      'x-lmsplus-webhook-timestamp': ts,
+      'x-lmsplus-webhook-signature': sig,
     };
   }
 

@@ -18,6 +18,7 @@ import { InteractiveVideoPlayer } from './studio/InteractiveVideoPlayer';
 import { gradeQuestionInMemory } from './studio/videoAdapter';
 import { Btn, SmartImage, Tone } from './ui';
 import { WikiAnnotatedText, WikiReaderProvider } from './WikiText';
+import { IconClipboard, IconFile, IconLink, IconPuzzle } from './components/Icons';
 
 /**
  * Trình phát YouTube an toàn (dành cho khối youtube tĩnh không gắn mốc câu hỏi tương tác).
@@ -157,11 +158,11 @@ export interface RenderCtx {
   }) => Promise<unknown>;
   onSubmitVideoMarker?: (
     markerId: string,
-    payload: { idempotency_key: string; response: Record<string, any> }
+    payload: { idempotency_key: string; response: Record<string, unknown> }
   ) => Promise<MarkerSubmitResult>;
   onSubmitQuizBlock?: (
     blockId: string,
-    payload: { idempotency_key: string; responses: Record<string, Record<string, any>> }
+    payload: { idempotency_key: string; responses: Record<string, Record<string, unknown>> }
   ) => Promise<QuizSubmitResult>;
   wikiPages?: WikiPageItem[];
   onOpenWikiPage?: (page: WikiPageItem) => void;
@@ -181,7 +182,10 @@ const LegacyQuestion: React.FC<{ block: LessonBlock; ctx: RenderCtx }> = ({ bloc
         setBusy(false);
       }
     } else {
-      const o = (block.content.options || []).find((x: any) => x.id === optionId);
+      const opts: Array<{ id?: string; text?: string; is_correct?: boolean; feedback?: string }> = Array.isArray(block.content.options)
+        ? block.content.options
+        : [];
+      const o = opts.find((x) => x.id === optionId);
       setResult({
         optionId,
         correct: Boolean(o?.is_correct),
@@ -189,18 +193,21 @@ const LegacyQuestion: React.FC<{ block: LessonBlock; ctx: RenderCtx }> = ({ bloc
       });
     }
   };
+  const legacyOpts: Array<{ id?: string; text?: string; is_correct?: boolean; feedback?: string }> = Array.isArray(block.content.options)
+    ? block.content.options
+    : [];
   return (
     <div className="t-question">
       <strong>{block.content.question}</strong>
-      {(block.content.options || []).map((o: any) => (
+      {legacyOpts.map((o, idx) => (
         <button
-          key={o.id}
+          key={o.id || idx}
           type="button"
           className="t-option"
           disabled={busy}
           aria-pressed={result?.optionId === o.id}
           data-result={result && result.optionId === o.id ? (result.correct ? 'correct' : 'wrong') : undefined}
-          onClick={() => choose(o.id)}
+          onClick={() => o.id && choose(o.id)}
         >
           {o.text}
         </button>
@@ -227,7 +234,7 @@ const StandaloneQuizBlockView: React.FC<{ block: LessonBlock; ctx: RenderCtx }> 
   const questions: QuestionSpec[] = Array.isArray(c.questions) ? c.questions : [];
   const initialState = ctx.quizStates?.[block.id];
 
-  const [responses, setResponses] = useState<Record<string, Record<string, any>>>({});
+  const [responses, setResponses] = useState<Record<string, Record<string, unknown>>>({});
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [result, setResult] = useState<QuizSubmitResult | null>(null);
@@ -241,7 +248,7 @@ const StandaloneQuizBlockView: React.FC<{ block: LessonBlock; ctx: RenderCtx }> 
   const passed = result ? result.passed : Boolean(initialState?.passed);
   const quizLocked = Boolean((result && !result.can_retry) || (!result && hasPriorLock));
 
-  const setQuestionResp = (qKey: string, val: Record<string, any>) => {
+  const setQuestionResp = (qKey: string, val: Record<string, unknown>) => {
     setResponses((prev) => ({ ...prev, [qKey]: val }));
     if (result?.can_retry) setResult(null);
   };
@@ -327,8 +334,8 @@ const StandaloneQuizBlockView: React.FC<{ block: LessonBlock; ctx: RenderCtx }> 
       });
       setAttemptsUsed(res.attempt_number || nextAtt);
       setResult(res);
-    } catch (err: any) {
-      setErrorMsg(err?.message || 'Không nộp được bài kiểm tra. Vui lòng thử lại.');
+    } catch (err: unknown) {
+      setErrorMsg(err instanceof Error ? err.message : 'Không nộp được bài kiểm tra. Vui lòng thử lại.');
     } finally {
       setSubmitting(false);
     }
@@ -420,7 +427,7 @@ const StandaloneQuizBlockView: React.FC<{ block: LessonBlock; ctx: RenderCtx }> 
               <input
                 className="t-input"
                 disabled={submitting || locked}
-                value={r.text || ''}
+                value={typeof r.text === 'string' ? r.text : ''}
                 onChange={(e) => setQuestionResp(qKey, { text: e.target.value })}
                 placeholder="Nhập câu trả lời…"
                 aria-label={`Câu trả lời câu ${qi + 1}`}
@@ -432,7 +439,7 @@ const StandaloneQuizBlockView: React.FC<{ block: LessonBlock; ctx: RenderCtx }> 
                 className="t-input"
                 rows={3}
                 disabled={submitting || locked}
-                value={r.text || ''}
+                value={typeof r.text === 'string' ? r.text : ''}
                 onChange={(e) => setQuestionResp(qKey, { text: e.target.value })}
                 placeholder="Trình bày câu trả lời…"
                 aria-label={`Tự luận câu ${qi + 1}`}
@@ -516,7 +523,7 @@ const renderCoreBlock = (block: LessonBlock, ctx: RenderCtx): React.ReactNode =>
       }
       return (
         <YouTubeEmbed
-          videoId={c.video_id}
+          videoId={c.video_id || ''}
           title={c.title}
           description={c.description}
           startSeconds={c.start_seconds}
@@ -558,11 +565,13 @@ const renderCoreBlock = (block: LessonBlock, ctx: RenderCtx): React.ReactNode =>
         <div className="ls-pdf-viewer">
           <div className="ls-pdf-viewer__head">
             <div>
-              <strong>📕 {c.title || res?.title || 'Tài liệu PDF'}</strong>
+              <strong style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                <IconFile size={16} /> {c.title || res?.title || 'Tài liệu PDF'}
+              </strong>
               {c.description && <span className="t-sub" style={{ display: 'block' }}>{c.description}</span>}
             </div>
             {allowDownload && ctx.onDownload && c.resource_id && (
-              <Btn small onClick={() => ctx.onDownload!(c.resource_id)}>
+              <Btn small onClick={() => c.resource_id && ctx.onDownload!(c.resource_id)}>
                 Tải PDF xuống
               </Btn>
             )}
@@ -602,17 +611,19 @@ const renderCoreBlock = (block: LessonBlock, ctx: RenderCtx): React.ReactNode =>
         </figure>
       );
     case 'file': {
-      const r = ctx.resources?.[c.resource_id];
+      const r = c.resource_id ? ctx.resources?.[c.resource_id] : undefined;
       const available = r ? r.available !== false : true;
       return (
         <div className="t-file">
           <span>
-            📄 <strong>{c.title || r?.title || 'Tài liệu đính kèm'}</strong>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              <IconFile size={16} /> <strong>{c.title || r?.title || 'Tài liệu đính kèm'}</strong>
+            </span>
             {r?.file_name && <span className="t-sub" style={{ display: 'block' }}>{r.file_name}</span>}
             {c.description && <span className="t-sub" style={{ display: 'block' }}>{c.description}</span>}
           </span>
-          {ctx.onDownload && available ? (
-            <button type="button" className="t-btn t-btn--small" onClick={() => ctx.onDownload!(c.resource_id)}>
+          {ctx.onDownload && available && c.resource_id ? (
+            <button type="button" className="t-btn t-btn--small" onClick={() => c.resource_id && ctx.onDownload!(c.resource_id)}>
               Tải xuống
             </button>
           ) : (
@@ -671,7 +682,7 @@ const renderCoreBlock = (block: LessonBlock, ctx: RenderCtx): React.ReactNode =>
     case 'callout':
       return (
         <div className="t-callout">
-          <strong>{c.title || CALLOUT_TITLES[c.variant] || 'Lưu ý'}</strong>
+          <strong>{c.title || (c.variant ? CALLOUT_TITLES[c.variant] : undefined) || 'Lưu ý'}</strong>
           <span style={{ whiteSpace: 'pre-wrap' }}>
             <WikiAnnotatedText text={c.text} wikiPages={ctx.wikiPages} onOpenWiki={ctx.onOpenWikiPage} />
           </span>
@@ -680,8 +691,8 @@ const renderCoreBlock = (block: LessonBlock, ctx: RenderCtx): React.ReactNode =>
     case 'link':
       return (
         <div className="ls-link-card">
-          <div>
-            🔗{' '}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <IconLink size={15} />{' '}
             <a href={c.url} target="_blank" rel="noopener noreferrer nofollow">
               <strong>{c.label || c.url}</strong>
             </a>
@@ -711,7 +722,9 @@ const renderCoreBlock = (block: LessonBlock, ctx: RenderCtx): React.ReactNode =>
       return (
         <div className="ls-assignment-card">
           <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
-            <strong>📝 Bài tập: {c.title}</strong>
+            <strong style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              <IconClipboard size={16} /> Bài tập: {c.title}
+            </strong>
             <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
               {c.max_score && (
                 <Tone tone="info">
@@ -752,7 +765,9 @@ const renderCoreBlock = (block: LessonBlock, ctx: RenderCtx): React.ReactNode =>
       return (
         <figure className="ls-embed-box">
           <div className="ls-embed-box__head">
-            <strong>🧩 {c.title || 'Học liệu tương tác'}</strong>
+            <strong style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              <IconPuzzle size={16} /> {c.title || 'Học liệu tương tác'}
+            </strong>
             {c.provider && <Tone tone="info">{c.provider}</Tone>}
           </div>
           <iframe
@@ -773,7 +788,7 @@ const renderCoreBlock = (block: LessonBlock, ctx: RenderCtx): React.ReactNode =>
             <WikiAnnotatedText text={c.problem} wikiPages={ctx.wikiPages} onOpenWiki={ctx.onOpenWikiPage} />
           </strong>
           <ol style={{ margin: '8px 0 0', paddingLeft: 20 }}>
-            {(c.steps || []).map((s: any, i: number) => (
+            {(Array.isArray(c.steps) ? (c.steps as Array<{ title?: string; explanation?: string }>) : []).map((s, i) => (
               <li key={i}>
                 <strong>{s.title}:</strong>{' '}
                 <WikiAnnotatedText text={s.explanation} wikiPages={ctx.wikiPages} onOpenWiki={ctx.onOpenWikiPage} />

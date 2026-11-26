@@ -113,6 +113,51 @@ async function ensureSubjectClasses(db) {
 export async function ensureTeachingSchema(db) {
   if (db.isPg) return;
   await db.exec(`CREATE TABLE IF NOT EXISTS app_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`);
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS schema_migrations (
+      id TEXT PRIMARY KEY,
+      applied_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS departments (
+      id TEXT PRIMARY KEY,
+      code TEXT NOT NULL UNIQUE,
+      name TEXT NOT NULL,
+      parent_id TEXT NULL REFERENCES departments(id) ON DELETE SET NULL,
+      org_type TEXT NOT NULL DEFAULT 'DEPARTMENT'
+        CHECK (org_type IN ('ORGANIZATION', 'FACULTY', 'DEPARTMENT', 'CENTER')),
+      head_user_id TEXT NULL REFERENCES users(id) ON DELETE SET NULL,
+      description TEXT NOT NULL DEFAULT '',
+      is_active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_departments_parent ON departments(parent_id, is_active);
+
+    CREATE TABLE IF NOT EXISTS auth_refresh_tokens (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      token_hash TEXT NOT NULL UNIQUE,
+      expires_at TEXT NOT NULL,
+      revoked_at TEXT NULL,
+      created_at TEXT NOT NULL,
+      user_agent TEXT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user ON auth_refresh_tokens(user_id, revoked_at);
+  `);
+
+  await addColumn(db, 'users', 'token_version', 'INTEGER NOT NULL DEFAULT 1');
+  await addColumn(db, 'users', 'is_active', 'INTEGER NOT NULL DEFAULT 1');
+  await addColumn(db, 'users', 'failed_login_count', 'INTEGER NOT NULL DEFAULT 0');
+  await addColumn(db, 'users', 'locked_until', 'TEXT');
+
+  await db.exec(`
+    INSERT INTO departments (id, code, name, parent_id, org_type, description, is_active, created_at, updated_at)
+    VALUES
+      ('org_root', 'LMSPLUS', 'Hệ thống Đào tạo LMSPLUS', NULL, 'ORGANIZATION', 'Đơn vị chủ quản toàn hệ thống', 1, '2026-09-01T00:00:00Z', '2026-09-01T00:00:00Z'),
+      ('khoi_5', 'KHOI5', 'Tổ Toán – Khối 5', 'org_root', 'DEPARTMENT', 'Tổ chuyên môn khối 5', 1, '2026-09-01T00:00:00Z', '2026-09-01T00:00:00Z'),
+      ('dept_se', 'DEPT-SE', 'Khoa Công nghệ Phần mềm', 'org_root', 'FACULTY', 'Khoa Kỹ thuật & Công nghệ Phần mềm', 1, '2026-09-01T00:00:00Z', '2026-09-01T00:00:00Z')
+    ON CONFLICT DO NOTHING;
+  `);
 
   // ---- Khóa học (mở rộng bảng courses hiện có) ----
   await addColumn(db, 'courses', 'description', 'TEXT');
@@ -275,7 +320,7 @@ export async function ensureTeachingSchema(db) {
       description TEXT,
       visibility TEXT NOT NULL DEFAULT 'ENROLLED',
       resource_type TEXT NOT NULL CHECK (resource_type IN ('LINK','FILE','VIDEO','PDF')),
-      storage_provider TEXT NOT NULL CHECK (storage_provider IN ('EXTERNAL_URL','LOCAL_DISK')),
+      storage_provider TEXT NOT NULL CHECK (storage_provider IN ('EXTERNAL_URL','LOCAL_DISK','S3','R2','VERCEL_BLOB')),
       storage_key TEXT NOT NULL,
       file_name TEXT,
       mime_type TEXT,
@@ -771,6 +816,14 @@ export async function seedTeachingData(db, { seed, hashPassword }) {
   const passHash = hashPassword('123456');
 
   await db.tx(async () => {
+    await db.exec(`
+      INSERT INTO departments (id, code, name, parent_id, org_type, description, is_active, created_at, updated_at)
+      VALUES
+        ('org_root', 'LMSPLUS', 'Hệ thống Đào tạo LMSPLUS', NULL, 'ORGANIZATION', 'Đơn vị chủ quản toàn hệ thống', 1, '2026-09-01T00:00:00Z', '2026-09-01T00:00:00Z'),
+        ('khoi_5', 'KHOI5', 'Tổ Toán – Khối 5', 'org_root', 'DEPARTMENT', 'Tổ chuyên môn khối 5', 1, '2026-09-01T00:00:00Z', '2026-09-01T00:00:00Z'),
+        ('dept_se', 'DEPT-SE', 'Khoa Công nghệ Phần mềm', 'org_root', 'FACULTY', 'Khoa Kỹ thuật & Công nghệ Phần mềm', 1, '2026-09-01T00:00:00Z', '2026-09-01T00:00:00Z')
+      ON CONFLICT (id) DO NOTHING
+    `);
     // 1. Lớp học từ seed gốc (nếu chưa tồn tại).
     const insClass = db.prepare(
       `INSERT INTO subject_classes (id, course_id, code, title, subject, description, instructor_name,

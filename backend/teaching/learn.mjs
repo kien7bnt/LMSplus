@@ -4,6 +4,7 @@
  */
 
 import crypto from 'node:crypto';
+import { resolveJwtSecret } from '../common/security.mjs';
 import { fail, nowIso, nowVn, text, mapAsync, filterAsync } from './http.mjs';
 import { outline } from './courses.mjs';
 import { getAttendancePolicy, rateFromCounts } from './attendance.mjs';
@@ -106,7 +107,7 @@ async function mergedPublishedBlocksForClass(db, lessonId, cls) {
   return [...baseBlocks, ...publishedCustom.blocks];
 }
 
-export function registerLearnRoutes(route, { jwtSecret = 'lmsplus-production-grade-hmac-secret-2026' } = {}) {
+export function registerLearnRoutes(route, { jwtSecret = resolveJwtSecret() } = {}) {
   route('GET', '/learn/classes', async ({ db, user }) => {
     const rows = await db
       .prepare(

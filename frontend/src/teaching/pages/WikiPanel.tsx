@@ -8,6 +8,7 @@ import {
   Badge,
   Btn,
   Card,
+  ConfirmDialog,
   EmptyState,
   ErrorState,
   Field,
@@ -30,6 +31,7 @@ export const CourseWikiPanel: React.FC<{ courseId: string; lessonIdFilter?: stri
   const [activeId, setActiveId] = useState<string | null>(null);
   const [editing, setEditing] = useState<WikiPageItem | null>(null);
   const [creating, setCreating] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<WikiPageDetail | null>(null);
 
   const activeDetail = useAsync(() => (activeId ? masterApi.getWikiPage(activeId) : Promise.resolve(null)), [activeId]);
 
@@ -103,16 +105,32 @@ export const CourseWikiPanel: React.FC<{ courseId: string; lessonIdFilter?: stri
                 detail={activeDetail.data}
                 allPages={data.items}
                 onSelectPage={(p) => setActiveId(p.id)}
-                onDelete={async () => {
-                  await masterApi.deleteWikiPage(activeDetail.data!.id);
-                  setActiveId(null);
-                  push('Đã xóa trang Wiki', '', 'info');
-                  res.reload();
-                }}
+                onDelete={() => setDeleteTarget(activeDetail.data!)}
               />
             ) : null}
           </div>
         </div>
+      )}
+
+      {deleteTarget && (
+        <ConfirmDialog
+          title={`Xóa trang Wiki "${deleteTarget.title}"?`}
+          message="Trang Wiki và lịch sử biên tập liên quan sẽ bị gỡ khỏi môn học."
+          confirmLabel="Xóa trang Wiki"
+          danger
+          onCancel={() => setDeleteTarget(null)}
+          onConfirm={async () => {
+            try {
+              await masterApi.deleteWikiPage(deleteTarget.id);
+              setDeleteTarget(null);
+              setActiveId(null);
+              push('Đã xóa trang Wiki', '', 'info');
+              res.reload();
+            } catch (ex) {
+              push('Không xóa được trang Wiki', errMsg(ex), 'error');
+            }
+          }}
+        />
       )}
 
       {(creating || editing) && (
@@ -195,7 +213,7 @@ const WikiDetailCard: React.FC<{
   detail: WikiPageDetail;
   allPages?: WikiPageItem[];
   onSelectPage?: (p: WikiPageItem) => void;
-  onDelete: () => Promise<void>;
+  onDelete: () => void | Promise<void>;
 }> = ({ detail, allPages = [], onSelectPage, onDelete }) => (
   <div className="ls-block-surface">
     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, marginBottom: 12 }}>

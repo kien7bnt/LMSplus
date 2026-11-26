@@ -24,6 +24,7 @@ import {
   PageHeader,
   errMsg,
   fmtDateTime,
+  safeHref,
   useAsync,
   useToast,
 } from '../ui';
@@ -31,7 +32,7 @@ import {
 export const StaffLeaveRequestsPage: React.FC = () => (
   <div className="t-page">
     <PageHeader
-      title="Xét duyệt đơn xin nghỉ phép"
+      title="Duyệt đơn xin nghỉ phép"
       subtitle="Đơn được duyệt sẽ tự động cập nhật trạng thái Vắng có phép cho buổi học nếu học viên chưa có điểm danh Có mặt hoặc Đi muộn."
     />
     <ClassLeaveRequestsPanel />
@@ -135,8 +136,8 @@ export const ClassLeaveRequestsPanel: React.FC<{ classId?: string }> = ({ classI
                       <Badge kind="leaveReason" value={item.reason_category} />
                       <div style={{ marginTop: 4 }}>{item.reason}</div>
                       {item.makeup_class_requested && <div className="t-small t-muted">Đề xuất học bù: {item.makeup_class_requested}</div>}
-                      {item.evidence_url && (
-                        <a href={item.evidence_url} target="_blank" rel="noopener noreferrer" className="t-small t-row-link">
+                      {safeHref(item.evidence_url) && (
+                        <a href={safeHref(item.evidence_url)} target="_blank" rel="noopener noreferrer" className="t-small t-row-link">
                           Xem minh chứng
                         </a>
                       )}
@@ -201,8 +202,8 @@ export const ClassLeaveRequestsPanel: React.FC<{ classId?: string }> = ({ classI
                   <Badge kind="leaveReason" value={item.reason_category} />
                   <div style={{ marginTop: 4 }}>{item.reason}</div>
                   {item.makeup_class_requested && <div className="t-small t-muted">Đề xuất học bù: {item.makeup_class_requested}</div>}
-                  {item.evidence_url && (
-                    <a href={item.evidence_url} target="_blank" rel="noopener noreferrer" className="t-small t-row-link">
+                  {safeHref(item.evidence_url) && (
+                    <a href={safeHref(item.evidence_url)} target="_blank" rel="noopener noreferrer" className="t-small t-row-link">
                       Xem minh chứng
                     </a>
                   )}
@@ -357,7 +358,7 @@ export const StudentLeaveRequestsPage: React.FC<{ fixedClassId?: string }> = ({ 
   return (
     <div className="t-page">
       <PageHeader
-        title="Xin nghỉ phép & Theo dõi đơn"
+        title="Đơn xin nghỉ phép"
         subtitle="Gửi đơn xin nghỉ phép theo lớp môn học và theo dõi kết quả phản hồi của giảng viên."
       />
       {content}
@@ -373,7 +374,7 @@ const StudentCreateLeaveModal: React.FC<{
 }> = ({ classes, initialClassId, onClose, onCreated }) => {
   const [classId, setClassId] = useState(initialClassId || classes[0]?.id || '');
   const [sessionId, setSessionId] = useState('');
-  const [reasonCategory, setReasonCategory] = useState<LeaveReasonCategory>('ILLNESS');
+  const [reasonCategory, setReasonCategory] = useState<LeaveReasonCategory>('SICK');
   const [reason, setReason] = useState('');
   const [makeupNote, setMakeupNote] = useState('');
   const [evidenceUrl, setEvidenceUrl] = useState('');
@@ -445,9 +446,9 @@ const StudentCreateLeaveModal: React.FC<{
         </Field>
         <Field label="Nhóm lý do">
           <select className="t-input" value={reasonCategory} onChange={(e) => setReasonCategory(e.target.value as LeaveReasonCategory)}>
-            <option value="ILLNESS">Ốm đau / Y tế</option>
+            <option value="SICK">Ốm đau / Y tế</option>
             <option value="FAMILY">Việc gia đình</option>
-            <option value="WORK">Công tác / Làm việc</option>
+            <option value="OFFICIAL_DUTY">Công tác / Làm việc</option>
             <option value="ACADEMIC_CONFLICT">Trùng lịch học / thi</option>
             <option value="OTHER">Lý do khác</option>
           </select>

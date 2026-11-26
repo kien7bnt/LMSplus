@@ -4,9 +4,21 @@
   "installCommand": "npm --prefix frontend install --include=dev",
   "buildCommand": "npm --prefix frontend run build",
   "outputDirectory": "frontend/dist",
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        { "key": "X-Content-Type-Options", "value": "nosniff" },
+        { "key": "X-Frame-Options", "value": "SAMEORIGIN" },
+        { "key": "Referrer-Policy", "value": "strict-origin-when-cross-origin" },
+        { "key": "Permissions-Policy", "value": "camera=(), microphone=(), geolocation=()" },
+        { "key": "X-XSS-Protection", "value": "1; mode=block" }
+      ]
+    }
+  ],
   "functions": {
     "api/index.mjs": {
-      "includeFiles": "{backend/**,shared/**,database/lmsplus_elearning_seed.json,database/migrations/010_postgres18_live_schema.sql}"
+      "includeFiles": "{backend/**,shared/**,database/lmsplus_elearning_seed.json,database/migrations/010_postgres18_live_schema.sql,database/migrations/011_security_departments_and_lms_v2_up.sql,database/migrations/012_rubrics_appeals_storage_up.sql,database/migrations/013_performance_indexes_up.sql}"
     }
   },
   "rewrites": [

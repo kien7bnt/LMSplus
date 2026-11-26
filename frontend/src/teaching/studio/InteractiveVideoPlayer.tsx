@@ -92,7 +92,7 @@ export interface InteractiveVideoPlayerProps {
   }) => Promise<unknown>;
   onSubmitMarker?: (
     markerId: string,
-    payload: { idempotency_key: string; response: Record<string, any> }
+    payload: { idempotency_key: string; response: Record<string, unknown> }
   ) => Promise<MarkerSubmitResult>;
   onAdapterReady?: (adapter: VideoPlayerAdapter | null) => void;
   onTimeUpdate?: (currentTime: number, duration: number) => void;
@@ -812,7 +812,7 @@ export const InteractiveVideoPlayer: React.FC<InteractiveVideoPlayerProps> = ({
     if (!activeMarker || !activeMarker.question) return;
 
     const q = activeMarker.question;
-    let responsePayload: Record<string, any> = {};
+    let responsePayload: Record<string, unknown> = {};
 
     if (q.question_type === 'SINGLE_CHOICE' || q.question_type === 'TRUE_FALSE') {
       if (!singleChoiceId) {
@@ -893,8 +893,8 @@ export const InteractiveVideoPlayer: React.FC<InteractiveVideoPlayerProps> = ({
           explanation: res.explanation,
         },
       }));
-    } catch (err: any) {
-      setSubmitError(err?.message || 'Không gửi được câu trả lời. Vui lòng thử lại.');
+    } catch (err: unknown) {
+      setSubmitError(err instanceof Error ? err.message : 'Không gửi được câu trả lời. Vui lòng thử lại.');
     } finally {
       setSubmitting(false);
     }

@@ -29,7 +29,7 @@ export const CourseListPage: React.FC = () => {
   return (
     <div className="t-page">
       <PageHeader
-        title="Môn học"
+        title="Môn học & Giáo trình"
         subtitle="Đơn vị nội dung dùng chung cho nhiều Khung chương trình: chuẩn đầu ra, tiên quyết, thời lượng, đánh giá & đề cương."
         actions={
           me.data?.can_create_course && (

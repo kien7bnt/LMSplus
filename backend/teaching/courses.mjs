@@ -9,6 +9,8 @@ import { parseYouTubeUrl } from '../../shared/youtube.mjs';
 import { COURSE_STATUSES } from './schema.mjs';
 import { ensureCourseTopicsBackfill } from './masterSchema.mjs';
 import { validateBlocks, normalizeSnapshot, BLOCK_SCHEMA_VERSION } from './blocks.mjs';
+import { validateUploadMagicBytes } from '../common/security.mjs';
+import { createStorageAdapter } from '../storage/adapter.mjs';
 import {
   canCreateCourse, canManageCourse, canEditCourseDraft, canViewCourse, courseScopeSql,
   isAdmin, isStaff, isInstructor, safeJson,
@@ -148,18 +150,19 @@ async function outline(db, courseId, { publishedOnly = false } = {}) {
        ORDER BY sort_order, code`
     )
     .all(courseId);
-  const lessonStmt = db.prepare(
-    `SELECT * FROM lessons WHERE chapter_id = ? ${publishedOnly ? "AND publish_status = 'PUBLISHED'" : ''}
-     ORDER BY sort_order, code`
-  );
-  return await mapAsync(chapters, async (ch) => ({
-    id: ch.id,
-    topic_id: ch.topic_id || null,
-    title: ch.title,
-    description: ch.description || '',
-    status: ch.status,
-    sort_order: ch.sort_order,
-    lessons: (await lessonStmt.all(ch.id)).map((l) => ({
+  if (chapters.length === 0) return [];
+  const chIds = chapters.map((c) => c.id);
+  const inClause = chIds.map(() => '?').join(',');
+  const allLessons = await db
+    .prepare(
+      `SELECT * FROM lessons WHERE chapter_id IN (${inClause}) ${publishedOnly ? "AND publish_status = 'PUBLISHED'" : ''}
+       ORDER BY sort_order, code`
+    )
+    .all(...chIds);
+  const byChapter = new Map();
+  for (const l of allLessons) {
+    const arr = byChapter.get(l.chapter_id) || [];
+    arr.push({
       id: l.id,
       title: l.title,
       description: l.description || '',
@@ -171,7 +174,17 @@ async function outline(db, courseId, { publishedOnly = false } = {}) {
         (Number(l.published_version) === 0 || (l.updated_at && l.published_at && l.updated_at > l.published_at)),
       completion_rule: l.completion_rule || 'MANUAL',
       sort_order: l.sort_order,
-    })),
+    });
+    byChapter.set(l.chapter_id, arr);
+  }
+  return chapters.map((ch) => ({
+    id: ch.id,
+    topic_id: ch.topic_id || null,
+    title: ch.title,
+    description: ch.description || '',
+    status: ch.status,
+    sort_order: ch.sort_order,
+    lessons: byChapter.get(ch.id) || [],
   }));
 }
 
@@ -239,7 +252,8 @@ async function checkYouTubeEmbeddable(watchUrl) {
 
 // ------------------------------------------------------------------ routes
 
-export function registerCourseRoutes(route, { uploadsDir }) {
+export function registerCourseRoutes(route, { uploadsDir, storage } = {}) {
+  const store = storage || createStorageAdapter({ baseDir: uploadsDir });
   // ---------- Danh sách khóa học
   route('GET', '/courses', async ({ db, user, url }) => {
     const { page, size, offset } = pageParams(url, 12, 100);
@@ -266,7 +280,7 @@ export function registerCourseRoutes(route, { uploadsDir }) {
     const sortMap = {
       updated_desc: 'c.updated_at DESC',
       updated_asc: 'c.updated_at ASC',
-      title_asc: 'c.title COLLATE NOCASE ASC',
+      title_asc: 'LOWER(c.title) ASC, c.title ASC',
     };
     const order = sortMap[url.searchParams.get('sort')] || sortMap.updated_desc;
     const whereSql = where.join(' AND ');
@@ -882,17 +896,17 @@ export function registerCourseRoutes(route, { uploadsDir }) {
       const buf = Buffer.from(body.data_base64, 'base64');
       if (buf.length === 0) fail(422, 'VALIDATION_ERROR', 'Tệp rỗng.');
       if (buf.length > MAX_UPLOAD_BYTES) fail(413, 'FILE_TOO_LARGE', 'Tệp vượt quá 10 MB.');
-      const dir = path.join(uploadsDir, course.id);
-      fs.mkdirSync(dir, { recursive: true });
-      const storageKey = path.join(course.id, `${id}.${ext}`).replace(/\\/g, '/');
-      fs.writeFileSync(path.join(uploadsDir, storageKey), buf);
+      const magic = validateUploadMagicBytes(buf, ext);
+      if (!magic.ok) fail(422, 'INVALID_FILE_CONTENT', magic.message);
+      const storageKey = store.buildKey('documents', course.id, `${id}.${ext}`);
+      const stored = await store.putBuffer(storageKey, buf, ALLOWED_EXT[ext]);
       const safeName = fileName.replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_');
       await db.prepare(
         `INSERT INTO learning_resources (id, course_id, title, resource_type, storage_provider, storage_key, file_name,
            mime_type, file_size_bytes, checksum_sha256, status, created_by, created_at, updated_at)
-         VALUES (?, ?, ?, 'FILE', 'LOCAL_DISK', ?, ?, ?, ?, ?, 'READY', ?, ?, ?)`
-      ).run(id, course.id, title, storageKey, safeName, ALLOWED_EXT[ext], buf.length,
-        crypto.createHash('sha256').update(buf).digest('hex'), user.id, now, now);
+         VALUES (?, ?, ?, 'FILE', ?, ?, ?, ?, ?, ?, 'READY', ?, ?, ?)`
+      ).run(id, course.id, title, stored.storageProvider, stored.storageKey, safeName, ALLOWED_EXT[ext], stored.sizeBytes,
+        stored.checksumSha256, user.id, now, now);
     }
     log('INFO', `[teaching] resource ${id} (${type}) added to ${course.code} by ${user.id}`);
     return [201, { id, title, resource_type: type }];
@@ -938,33 +952,24 @@ export function registerCourseRoutes(route, { uploadsDir }) {
     }
     if (!allowed) fail(403, 'RESOURCE_ACCESS_DENIED', 'Bạn không có quyền truy cập tài liệu này.');
     if (r.resource_type === 'LINK') return { url: r.storage_key, title: r.title };
-    const full = path.resolve(uploadsDir, r.storage_key);
-    if (!full.startsWith(path.resolve(uploadsDir)) || !fs.existsSync(full)) fail(404, 'FILE_MISSING', 'Không tìm thấy tệp trên máy chủ.');
-    const stat = fs.statSync(full);
+    const provider = r.storage_provider || 'LOCAL_DISK';
+    const stat = await store.statObject(r.storage_key, provider);
+    if (!stat.exists) fail(404, 'FILE_MISSING', 'Không tìm thấy tệp trên máy chủ.');
     const dlHeaders = {
       'Content-Type': r.mime_type || 'application/octet-stream',
       'Content-Length': String(stat.size),
       'Content-Disposition': `attachment; filename="file"; filename*=UTF-8''${encodeURIComponent(r.file_name || 'tai-lieu')}`,
       'X-Content-Type-Options': 'nosniff',
     };
-    if (stat.size > 16 * 1024 * 1024 && res && typeof res.write === 'function') {
-      res.writeHead(200, {
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Expose-Headers': 'Content-Range, Accept-Ranges, Content-Length, Content-Disposition',
-        ...dlHeaders,
-      });
-      return new Promise((resolve, reject) => {
-        const stream = fs.createReadStream(full);
-        stream.on('error', reject);
-        res.on('close', () => {
-          stream.destroy();
-          resolve();
-        });
-        stream.on('end', resolve);
-        stream.pipe(res);
-      });
-    }
-    raw(200, dlHeaders, fs.readFileSync(full));
+    await store.streamObjectToResponse({
+      res,
+      raw,
+      status: 200,
+      headers: dlHeaders,
+      storageKey: r.storage_key,
+      storageProvider: provider,
+      size: stat.size,
+    });
   });
 }
 

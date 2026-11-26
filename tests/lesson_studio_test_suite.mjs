@@ -100,6 +100,13 @@ await t('STUDIO MODE A', 'Chặn giảng viên ngoài phạm vi, kiểm soát qu
   // GV2 không được mở Lesson Studio của lớp 5A1 (thuộc GV1)
   expectStatus(await api('GET', '/studio/classes/sc_toan5_5a1', GV2), 403, 'CLASS_ACCESS_DENIED');
   // Một giảng viên hoàn toàn ngoài phạm vi (chưa được phân công lớp nào của crs_toan5) bị chặn 403 COURSE_ACCESS_DENIED
+  await db
+    .prepare(
+      `INSERT INTO users (id, code, email, full_name, password_hash, roles_json, department_id, assigned_course_ids_json, enrolled_subject_class_ids_json, token_version, is_active)
+       VALUES (?, ?, ?, ?, '', ?, ?, '[]', '[]', 1, 1)
+       ON CONFLICT (id) DO NOTHING`,
+    )
+    .run('gv_outsider_999', 'GV9999', 'outsider.gv@lmsplus.edu.vn', 'Giảng viên Khối Khác', JSON.stringify(['INSTRUCTOR']), 'khoi_9');
   const outsiderToken = createJwtToken({
     id: 'gv_outsider_999',
     code: 'GV9999',
@@ -107,6 +114,7 @@ await t('STUDIO MODE A', 'Chặn giảng viên ngoài phạm vi, kiểm soát qu
     full_name: 'Giảng viên Khối Khác',
     roles: ['INSTRUCTOR'],
     department_id: 'khoi_9',
+    token_version: 1,
   });
   expectStatus(await api('GET', '/studio/courses/crs_toan5', outsiderToken), 403, 'COURSE_ACCESS_DENIED');
   // Học viên bị chặn hoàn toàn khỏi Lesson Studio

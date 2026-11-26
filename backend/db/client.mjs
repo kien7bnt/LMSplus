@@ -183,21 +183,23 @@ function buildPgPoolConfig() {
   let ssl = undefined;
   if (sslMode === 'disable') {
     ssl = false;
-  } else if (sslMode === 'require' || sslMode === 'no-verify' || sslMode === 'verify-ca') {
-    ssl = { rejectUnauthorized: false };
-  } else if (sslMode === 'verify-full') {
+  } else if (sslMode === 'verify-full' || sslMode === 'verify-ca') {
     ssl = { rejectUnauthorized: true };
+  } else if (sslMode === 'no-verify' || sslMode === 'require') {
+    ssl = { rejectUnauthorized: false };
   } else if (connStr) {
     const isLocal =
       /\/\/[^/]*@(localhost|127\.0\.0\.1|postgres|lmsplus-postgres)(:|\/|$)/i.test(connStr) ||
       /sslmode=disable/i.test(connStr);
-    if (!isLocal || /sslmode=(require|no-verify|verify-full)/i.test(connStr)) {
+    if (/sslmode=verify-full/i.test(connStr)) {
+      ssl = { rejectUnauthorized: true };
+    } else if (!isLocal && /sslmode=(require|prefer|no-verify)/i.test(connStr)) {
       ssl = { rejectUnauthorized: false };
     }
   }
 
   const base = {
-    max: IS_SERVERLESS ? 3 : 15,
+    max: Math.max(2, Number(process.env.DB_POOL_MAX) || (IS_SERVERLESS ? 3 : 25)),
     idleTimeoutMillis: 15000,
     connectionTimeoutMillis: 8000,
   };

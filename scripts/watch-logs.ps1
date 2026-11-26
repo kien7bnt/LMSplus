@@ -30,12 +30,80 @@ function Test-Url([string]$url) {
     } catch { return $false }
 }
 
+function Read-DotEnvMap {
+    $map = @{}
+    $envPath = Join-Path (Join-Path $PSScriptRoot '..') '.env'
+    if (-not (Test-Path $envPath)) { return $map }
+    foreach ($line in (Get-Content -Path $envPath -Encoding UTF8)) {
+        $t = $line.Trim()
+        if ([string]::IsNullOrWhiteSpace($t) -or $t.StartsWith('#')) { continue }
+        $eq = $t.IndexOf('=')
+        if ($eq -le 0) { continue }
+        $k = $t.Substring(0, $eq).Trim()
+        $v = $t.Substring($eq + 1).Trim().Trim('"').Trim("'")
+        $map[$k] = $v
+    }
+    return $map
+}
+
+function Get-PgHealthTarget {
+    $envMap = Read-DotEnvMap
+    $clientMode = if ($env:LMSPLUS_DB_CLIENT) { $env:LMSPLUS_DB_CLIENT } elseif ($envMap.ContainsKey('LMSPLUS_DB_CLIENT')) { $envMap['LMSPLUS_DB_CLIENT'] } else { 'auto' }
+    if ($clientMode.ToLowerInvariant() -eq 'sqlite') { return $null }
+    $dbUrl = if ($env:DATABASE_URL) { $env:DATABASE_URL } elseif ($envMap.ContainsKey('DATABASE_URL')) { $envMap['DATABASE_URL'] } else { '' }
+    $pgHost = if ($env:PGHOST) { $env:PGHOST } elseif ($envMap.ContainsKey('PGHOST')) { $envMap['PGHOST'] } else { '' }
+    $pgPort = 5432
+    $portRaw = if ($env:PGPORT) { $env:PGPORT } elseif ($envMap.ContainsKey('PGPORT')) { $envMap['PGPORT'] } else { '5432' }
+    [void][int]::TryParse($portRaw, [ref]$pgPort)
+    if ($dbUrl) {
+        try {
+            $u = [Uri]$dbUrl
+            if ($u.Host) { $pgHost = $u.Host }
+            if ($u.Port -gt 0) { $pgPort = $u.Port }
+        } catch {}
+    }
+    if ([string]::IsNullOrWhiteSpace($pgHost)) { return $null }
+    return @{ Host = $pgHost; Port = $pgPort }
+}
+
+function Test-TcpPort([string]$HostName, [int]$Port, [int]$TimeoutMs = 400) {
+    $c = $null
+    try {
+        $c = New-Object System.Net.Sockets.TcpClient
+        $ar = $c.BeginConnect($HostName, $Port, $null, $null)
+        if (-not $ar.AsyncWaitHandle.WaitOne($TimeoutMs, $false)) { return $false }
+        $c.EndConnect($ar) | Out-Null
+        return $true
+    } catch { return $false } finally {
+        if ($c) { try { $c.Dispose() } catch {} }
+    }
+}
+
+$script:LastPgOfflineHint = $false
+
 function Show-Health {
     $be = if (Test-Url 'http://127.0.0.1:8000/health') { 'ONLINE ' } else { 'OFFLINE' }
     $fe = if (Test-Url 'http://127.0.0.1:5173/')       { 'ONLINE ' } else { 'OFFLINE' }
+    $pgTarget = Get-PgHealthTarget
+    $pgSuffix = ''
+    $pgOk = $true
+    if ($pgTarget) {
+        $pgUp = Test-TcpPort $pgTarget.Host $pgTarget.Port
+        $pgOk = $pgUp
+        $pgState = if ($pgUp) { 'ONLINE ' } else { 'OFFLINE' }
+        $pgSuffix = " | Postgres :$($pgTarget.Port) = $pgState"
+    }
     $time = Get-Date -Format 'HH:mm:ss'
-    $color = if ($be -eq 'ONLINE ' -and $fe -eq 'ONLINE ') { 'Green' } else { 'Yellow' }
-    Write-Host "[$time] [HEALTH ] Backend :8000 = $be | Frontend :5173 = $fe" -ForegroundColor $color
+    $color = if ($be -eq 'ONLINE ' -and $fe -eq 'ONLINE ' -and $pgOk) { 'Green' } elseif (-not $pgOk) { 'Red' } else { 'Yellow' }
+    Write-Host "[$time] [HEALTH ] Backend :8000 = $be | Frontend :5173 = $fe$pgSuffix" -ForegroundColor $color
+    if ($pgTarget -and -not $pgOk) {
+        if (-not $script:LastPgOfflineHint) {
+            Write-Host "[$time] [HINT   ] PostgreSQL ($($pgTarget.Host):$($pgTarget.Port)) dang tat. Hay mo Docker Desktop roi bam [R] trong LMSPLUS Launcher." -ForegroundColor Yellow
+            $script:LastPgOfflineHint = $true
+        }
+    } else {
+        $script:LastPgOfflineHint = $false
+    }
 }
 
 Write-Host '====================================================='

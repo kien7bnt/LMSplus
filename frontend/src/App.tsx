@@ -1,30 +1,37 @@
-import React, { useEffect, useRef, useState } from 'react';
-import { Link, Navigate, NavLink, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
+import React, { Suspense, lazy, useEffect, useState } from 'react';
+import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import { AuthenticatedUser, apiLogout, getSavedAuthUser } from './api/elearningClient';
-import { BrandLogo } from './components/BrandLogo';
-import { AuthPage, ROLE_DISPLAY_LABELS } from './components/elearning/AuthPage';
-import { ThemeSwitcher } from './components/ui/Primitives';
+import { AuthPage } from './components/elearning/AuthPage';
+import { AppLayout } from './layout/AppLayout';
 import { masterApi, NotificationItem, teachingApi } from './teaching/api';
-import { AdminAccountsPage } from './teaching/pages/AdminAccountsPage';
-import { AttendancePage } from './teaching/pages/AttendancePage';
-import { BanksPage } from './teaching/pages/BanksPage';
-import { ClassDetailPage } from './teaching/pages/ClassDetailPage';
-import { ClassListPage } from './teaching/pages/ClassListPage';
-import { CohortDetailPage, CohortListPage } from './teaching/pages/CohortPages';
-import { CourseDetailPage } from './teaching/pages/CourseDetailPage';
-import { CourseListPage } from './teaching/pages/CourseListPage';
-import { CurriculumDetailPage, CurriculumListPage } from './teaching/pages/CurriculumPages';
-import { StaffLeaveRequestsPage, StudentLeaveRequestsPage } from './teaching/pages/LeaveRequestsPage';
-import { SchedulePage } from './teaching/pages/SchedulePage';
-import { TeachingHoursPage } from './teaching/pages/TeachingHoursPage';
-import { TimetablePage } from './teaching/pages/TimetablePage';
-import { StudentAssignmentsPage, StudentExamsPage } from './teaching/pages/StudentAssessmentPages';
-import { StudentClassPage, StudentHomePage, StudentLessonPage } from './teaching/pages/StudentPages';
-import { TeachingDashboard } from './teaching/pages/TeachingDashboard';
-import { VirtualSessionPage } from './teaching/pages/VirtualSessionPage';
-import { LessonStudioPage } from './teaching/studio/LessonStudioPage';
-import { Btn, fmtDateTime, useToast } from './teaching/ui';
+import { Loading, useToast } from './teaching/ui';
 import { ThemeMode, UserRole } from './types/elearning';
+
+const AdminAccountsPage = lazy(() => import('./teaching/pages/AdminAccountsPage').then((m) => ({ default: m.AdminAccountsPage })));
+const DepartmentsPage = lazy(() => import('./teaching/pages/DepartmentsPage').then((m) => ({ default: m.DepartmentsPage })));
+const AttendancePage = lazy(() => import('./teaching/pages/AttendancePage').then((m) => ({ default: m.AttendancePage })));
+const BanksPage = lazy(() => import('./teaching/pages/BanksPage').then((m) => ({ default: m.BanksPage })));
+const ClassDetailPage = lazy(() => import('./teaching/pages/ClassDetailPage').then((m) => ({ default: m.ClassDetailPage })));
+const ClassListPage = lazy(() => import('./teaching/pages/ClassListPage').then((m) => ({ default: m.ClassListPage })));
+const CohortDetailPage = lazy(() => import('./teaching/pages/CohortPages').then((m) => ({ default: m.CohortDetailPage })));
+const CohortListPage = lazy(() => import('./teaching/pages/CohortPages').then((m) => ({ default: m.CohortListPage })));
+const CourseDetailPage = lazy(() => import('./teaching/pages/CourseDetailPage').then((m) => ({ default: m.CourseDetailPage })));
+const CourseListPage = lazy(() => import('./teaching/pages/CourseListPage').then((m) => ({ default: m.CourseListPage })));
+const CurriculumDetailPage = lazy(() => import('./teaching/pages/CurriculumPages').then((m) => ({ default: m.CurriculumDetailPage })));
+const CurriculumListPage = lazy(() => import('./teaching/pages/CurriculumPages').then((m) => ({ default: m.CurriculumListPage })));
+const StaffLeaveRequestsPage = lazy(() => import('./teaching/pages/LeaveRequestsPage').then((m) => ({ default: m.StaffLeaveRequestsPage })));
+const StudentLeaveRequestsPage = lazy(() => import('./teaching/pages/LeaveRequestsPage').then((m) => ({ default: m.StudentLeaveRequestsPage })));
+const SchedulePage = lazy(() => import('./teaching/pages/SchedulePage').then((m) => ({ default: m.SchedulePage })));
+const TeachingHoursPage = lazy(() => import('./teaching/pages/TeachingHoursPage').then((m) => ({ default: m.TeachingHoursPage })));
+const TimetablePage = lazy(() => import('./teaching/pages/TimetablePage').then((m) => ({ default: m.TimetablePage })));
+const StudentAssignmentsPage = lazy(() => import('./teaching/pages/StudentAssessmentPages').then((m) => ({ default: m.StudentAssignmentsPage })));
+const StudentExamsPage = lazy(() => import('./teaching/pages/StudentAssessmentPages').then((m) => ({ default: m.StudentExamsPage })));
+const StudentClassPage = lazy(() => import('./teaching/pages/StudentPages').then((m) => ({ default: m.StudentClassPage })));
+const StudentHomePage = lazy(() => import('./teaching/pages/StudentPages').then((m) => ({ default: m.StudentHomePage })));
+const StudentLessonPage = lazy(() => import('./teaching/pages/StudentPages').then((m) => ({ default: m.StudentLessonPage })));
+const TeachingDashboard = lazy(() => import('./teaching/pages/TeachingDashboard').then((m) => ({ default: m.TeachingDashboard })));
+const VirtualSessionPage = lazy(() => import('./teaching/pages/VirtualSessionPage').then((m) => ({ default: m.VirtualSessionPage })));
+const LessonStudioPage = lazy(() => import('./teaching/studio/LessonStudioPage').then((m) => ({ default: m.LessonStudioPage })));
 
 const THEME_STORAGE_KEY = 'lmsplus_theme_v1';
 
@@ -45,32 +52,8 @@ export const App: React.FC = () => {
 
   const [theme, setTheme] = useState<ThemeMode>(readInitialTheme);
   const [currentUser, setCurrentUser] = useState<AuthenticatedUser | null>(getSavedAuthUser);
-  const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
-  const [isNotifOpen, setIsNotifOpen] = useState(false);
-  const [isCurriculumMenuOpen, setIsCurriculumMenuOpen] = useState(false);
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
-  const notifRef = useRef<HTMLDivElement>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
-  const curriculumRef = useRef<HTMLDivElement>(null);
-  const headerRef = useRef<HTMLElement>(null);
-
-  useEffect(() => {
-    const el = headerRef.current;
-    if (!el) return undefined;
-    const syncHeaderHeight = () => {
-      const h = Math.max(56, Math.round(el.getBoundingClientRect().height));
-      document.documentElement.style.setProperty('--app-header-h', `${h}px`);
-    };
-    syncHeaderHeight();
-    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(syncHeaderHeight) : null;
-    ro?.observe(el);
-    window.addEventListener('resize', syncHeaderHeight);
-    return () => {
-      ro?.disconnect();
-      window.removeEventListener('resize', syncHeaderHeight);
-    };
-  }, [currentUser?.id]);
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
@@ -84,7 +67,6 @@ export const App: React.FC = () => {
   useEffect(() => {
     const onExpired = () => {
       setCurrentUser(null);
-      setIsUserMenuOpen(false);
       toast({ tone: 'info', title: 'Phiên đăng nhập đã hết hạn', detail: 'Vui lòng đăng nhập lại để tiếp tục.' });
     };
     window.addEventListener('lmsplus:session-expired', onExpired);
@@ -119,6 +101,19 @@ export const App: React.FC = () => {
     };
   }, [currentUser?.id]);
 
+  const refreshNotifications = () => {
+    if (!currentUser) return;
+    masterApi
+      .listNotifications()
+      .then((res) => {
+        setNotifications(res.items || []);
+        setUnreadCount(Number(res.unread_count || 0));
+      })
+      .catch(() => {
+        // non-blocking
+      });
+  };
+
   useEffect(() => {
     if (!currentUser) return;
     let cancelled = false;
@@ -137,38 +132,6 @@ export const App: React.FC = () => {
     };
   }, [currentUser?.id, location.pathname]);
 
-  useEffect(() => {
-    setIsCurriculumMenuOpen(false);
-  }, [location.pathname]);
-
-  useEffect(() => {
-    if (!isUserMenuOpen && !isNotifOpen && !isCurriculumMenuOpen) return undefined;
-    const onClickOutside = (e: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
-        setIsUserMenuOpen(false);
-      }
-      if (notifRef.current && !notifRef.current.contains(e.target as Node)) {
-        setIsNotifOpen(false);
-      }
-      if (curriculumRef.current && !curriculumRef.current.contains(e.target as Node)) {
-        setIsCurriculumMenuOpen(false);
-      }
-    };
-    const onEscape = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        setIsUserMenuOpen(false);
-        setIsNotifOpen(false);
-        setIsCurriculumMenuOpen(false);
-      }
-    };
-    window.addEventListener('mousedown', onClickOutside);
-    window.addEventListener('keydown', onEscape);
-    return () => {
-      window.removeEventListener('mousedown', onClickOutside);
-      window.removeEventListener('keydown', onEscape);
-    };
-  }, [isUserMenuOpen, isNotifOpen, isCurriculumMenuOpen]);
-
   if (!currentUser) {
     return (
       <AuthPage
@@ -184,67 +147,26 @@ export const App: React.FC = () => {
 
   const roles = currentUser.roles || [];
   const isStudentOnly = roles.includes('STUDENT') && roles.every((r) => r === 'STUDENT');
-  const isAdmin = roles.includes('ADMIN');
+  const isAdmin = roles.includes('ADMIN') || roles.includes('SUPER_ADMIN');
+  const isStaff = roles.includes('ACADEMIC_STAFF');
+  const isHod = roles.includes('HEAD_OF_DEPARTMENT');
+  const isInstructor = roles.includes('INSTRUCTOR');
+  const canViewGovernance = isAdmin || isStaff || isHod;
+  const canCoordinateTraining = isAdmin || isStaff || isHod;
+  const canReviewLeaves = isAdmin || isStaff || isHod || isInstructor;
   const homePath = isStudentOnly ? '/learn' : '/teaching';
 
-  const isCurriculumGroupActive = ['/teaching/curricula', '/teaching/cohorts', '/teaching/courses', '/teaching/classes', '/teaching/timetable'].some((p) =>
-    location.pathname.startsWith(p)
-  );
-
-  const curriculumMenuItems = [
-    { to: '/teaching/courses', label: 'Môn học', desc: 'Chuẩn đầu ra, tiên quyết, đầu điểm & đề cương' },
-    { to: '/teaching/curricula', label: 'Khung chương trình', desc: 'Giai đoạn, học phí dịch vụ, chia buổi & ban hành' },
-    { to: '/teaching/cohorts', label: 'Khóa học', desc: 'Khởi tạo từ khung ban hành & quản lý học viên' },
-    { to: '/teaching/classes', label: 'Lớp môn học', desc: 'Lớp giảng dạy, điểm danh, kiểm tra & bảng điểm' },
-    { to: '/teaching/timetable', label: 'Xếp Thời khóa biểu', desc: 'Kéo thả buổi học, mẫu lặp, xếp tự động & công bố' },
-  ];
-
-  const navItems: Array<{ to: string; label: string; end?: boolean }> = isStudentOnly
-    ? [
-        { to: '/learn', label: 'Tổng quan', end: true },
-        { to: '/learn/exams', label: 'Kiểm tra' },
-        { to: '/learn/assignments', label: 'Bài tập' },
-        { to: '/learn/schedule', label: 'Lịch học' },
-        { to: '/learn/leave-requests', label: 'Xin nghỉ' },
-      ]
-    : [
-        { to: '/teaching', label: 'Tổng quan', end: true },
-        { to: '/teaching/banks', label: 'Học liệu' },
-        { to: '/teaching/schedule', label: 'Lịch dạy' },
-        { to: '/teaching/hours', label: 'Giờ dạy' },
-        { to: '/teaching/leave-requests', label: 'Đơn nghỉ' },
-        ...(isAdmin ? [{ to: '/admin/accounts', label: 'Tài khoản' }] : []),
-      ];
-
-  const handleOpenNotifications = async () => {
-    const next = !isNotifOpen;
-    setIsNotifOpen(next);
-    if (next) {
-      try {
-        const res = await masterApi.listNotifications();
-        setNotifications(res.items || []);
-        setUnreadCount(Number(res.unread_count || 0));
-      } catch {
-        // non-blocking
-      }
+  const handleMarkNotificationRead = async (id: string) => {
+    try {
+      await masterApi.markNotificationRead(id);
+      setNotifications((prev) => prev.map((x) => (x.id === id ? { ...x, is_read: true } : x)));
+      setUnreadCount((c) => Math.max(0, c - 1));
+    } catch {
+      // non-blocking
     }
   };
 
-  const handleNotificationClick = async (item: NotificationItem) => {
-    if (!item.is_read) {
-      try {
-        await masterApi.markNotificationRead(item.id);
-        setNotifications((prev) => prev.map((x) => (x.id === item.id ? { ...x, is_read: true } : x)));
-        setUnreadCount((c) => Math.max(0, c - 1));
-      } catch {
-        // non-blocking
-      }
-    }
-    setIsNotifOpen(false);
-    if (item.link_path) navigate(item.link_path);
-  };
-
-  const handleMarkAllRead = async () => {
+  const handleMarkAllNotificationsRead = async () => {
     try {
       await masterApi.markAllNotificationsRead();
       setNotifications((prev) => prev.map((x) => ({ ...x, is_read: true })));
@@ -256,227 +178,35 @@ export const App: React.FC = () => {
 
   const handleLogout = () => {
     apiLogout();
-    setIsUserMenuOpen(false);
     setCurrentUser(null);
     toast({ tone: 'info', title: 'Bạn đã đăng xuất khỏi hệ thống' });
     navigate('/', { replace: true });
   };
 
-  const avatarChar = currentUser.full_name.trim().split(/\s+/).pop()?.slice(0, 1).toUpperCase() || 'U';
-  const roleLabel = roles.map((r) => ROLE_DISPLAY_LABELS[r] || r).join(' · ');
-
-  const isFlushWorkspace =
-    location.pathname.endsWith('/studio') || location.pathname.startsWith('/teaching/lessons/');
-
   return (
-    <div style={{ minHeight: '100dvh', display: 'flex', flexDirection: 'column', backgroundColor: 'var(--bg-canvas)', color: 'var(--text-primary)' }}>
-      <header ref={headerRef} className="app-header">
-        <div className="app-header__inner">
-          <Link
-            to={homePath}
-            aria-label="Về trang chủ lms"
-            className="app-header__brand"
-            style={{ textDecoration: 'none', minHeight: '44px' }}
-          >
-            <BrandLogo size={40} wordmarkSize={22} />
-          </Link>
-
-          <nav
-            aria-label="Điều hướng chính"
-            className="app-header__nav"
-            style={{ justifySelf: 'center', maxWidth: '100%' }}
-          >
-            {navItems.slice(0, 1).map((item) => (
-              <NavLink
-                key={item.to}
-                to={item.to}
-                end={item.end}
-                className="app-nav-link"
-              >
-                {item.label}
-              </NavLink>
-            ))}
-
-            {!isStudentOnly && (
-              <div
-                ref={curriculumRef}
-                className={`app-nav-dropdown ${isCurriculumMenuOpen ? 'is-open' : ''}`}
-              >
-                <button
-                  type="button"
-                  className={`app-nav-link ${isCurriculumGroupActive ? 'is-active' : ''}`}
-                  aria-haspopup="menu"
-                  aria-expanded={isCurriculumMenuOpen}
-                  onClick={() => setIsCurriculumMenuOpen((v) => !v)}
-                >
-                  <span>Đào tạo</span>
-                  <span className="app-nav-dropdown__caret" aria-hidden="true">▾</span>
-                </button>
-                <div className="app-nav-dropdown__menu" role="menu" aria-label="Menu Khung chương trình">
-                  {curriculumMenuItems.map((sub) => (
-                    <NavLink
-                      key={sub.to}
-                      to={sub.to}
-                      role="menuitem"
-                      className="app-nav-dropdown__item"
-                      onClick={() => setIsCurriculumMenuOpen(false)}
-                    >
-                      <strong>{sub.label}</strong>
-                      <span>{sub.desc}</span>
-                    </NavLink>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {navItems.slice(1).map((item) => (
-              <NavLink
-                key={item.to}
-                to={item.to}
-                end={item.end}
-                className="app-nav-link"
-              >
-                {item.label}
-              </NavLink>
-            ))}
-          </nav>
-
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <div ref={notifRef} className="m-notif-wrap">
-              <button
-                type="button"
-                className="m-notif-btn"
-                aria-label="Thông báo hệ thống"
-                aria-expanded={isNotifOpen}
-                onClick={handleOpenNotifications}
-              >
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                  <path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9" />
-                  <path d="M10.3 21a1.94 1.94 0 0 0 3.4 0" />
-                </svg>
-                {unreadCount > 0 && <span className="m-notif-dot tabular-nums">{unreadCount > 99 ? '99+' : unreadCount}</span>}
-              </button>
-
-              {isNotifOpen && (
-                <div className="m-notif-popover" role="dialog" aria-label="Danh sách thông báo">
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
-                    <strong style={{ fontSize: 15 }}>Thông báo ({notifications.length})</strong>
-                    {unreadCount > 0 && (
-                      <Btn small variant="ghost" onClick={handleMarkAllRead}>
-                        Đánh dấu đã đọc
-                      </Btn>
-                    )}
-                  </div>
-                  {notifications.length === 0 ? (
-                    <p style={{ fontSize: 13, color: 'var(--text-secondary)', margin: '16px 0 4px' }}>
-                      Bạn chưa có thông báo nào.
-                    </p>
-                  ) : (
-                    <div className="m-notif-list">
-                      {notifications.slice(0, 15).map((n) => (
-                        <button
-                          key={n.id}
-                          type="button"
-                          className={`m-notif-item ${!n.is_read ? 'is-unread' : ''}`}
-                          onClick={() => handleNotificationClick(n)}
-                        >
-                          <strong style={{ fontSize: 13 }}>{n.title}</strong>
-                          {n.body && <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{n.body}</span>}
-                          <span className="tabular-nums" style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
-                            {fmtDateTime(n.created_at)}
-                          </span>
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-
-            <div ref={menuRef} className="app-header__actions">
-              <button
-                type="button"
-                className="user-menu-trigger"
-                aria-haspopup="menu"
-                aria-expanded={isUserMenuOpen}
-                onClick={() => setIsUserMenuOpen((v) => !v)}
-              >
-                <span
-                  style={{
-                    width: '36px',
-                    height: '36px',
-                    borderRadius: 'var(--radius-pill)',
-                    backgroundColor: 'var(--accent-learning)',
-                    color: 'var(--text-on-brand)',
-                    flexShrink: 0,
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    fontWeight: 700,
-                    fontSize: '14px',
-                  }}
-                >
-                  {avatarChar}
-                </span>
-                <span
-                  className="user-menu-trigger__meta"
-                  style={{
-                    fontSize: '14px',
-                    fontWeight: 600,
-                    maxWidth: '180px',
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                    whiteSpace: 'nowrap',
-                  }}
-                >
-                  {currentUser.full_name}
-                </span>
-                <span aria-hidden="true" style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
-                  ▾
-                </span>
-              </button>
-
-              {isUserMenuOpen && (
-                <div role="menu" className="app-user-dropdown">
-                  <div style={{ borderBottom: '1px solid var(--border-subtle)', paddingBottom: '12px' }}>
-                    <strong style={{ display: 'block', fontSize: '15px', overflowWrap: 'anywhere' }}>{currentUser.full_name}</strong>
-                    <span style={{ display: 'block', fontSize: '13px', color: 'var(--text-secondary)', marginTop: 4, overflowWrap: 'anywhere' }}>
-                      {currentUser.email}
-                    </span>
-                    <span className="tabular-nums" style={{ display: 'block', fontSize: '12px', color: 'var(--text-secondary)', marginTop: 4 }}>
-                      {roleLabel}{currentUser.code ? ` · Mã số ${currentUser.code}` : ''}
-                    </span>
-                  </div>
-
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                    <span style={{ fontSize: '12px', fontWeight: 700, color: 'var(--text-secondary)' }}>
-                      Giao diện hiển thị
-                    </span>
-                    <ThemeSwitcher theme={theme} onChange={setTheme} />
-                  </div>
-
-                  <Btn variant="danger" onClick={handleLogout} style={{ width: '100%' }}>
-                    Đăng xuất
-                  </Btn>
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-      </header>
-
-      <main className={isFlushWorkspace ? 'app-main app-main--flush' : 'app-main'}>
+    <AppLayout
+      user={currentUser}
+      theme={theme}
+      onChangeTheme={setTheme}
+      onLogout={handleLogout}
+      notifications={notifications}
+      unreadCount={unreadCount}
+      onRefreshNotifications={refreshNotifications}
+      onMarkNotificationRead={handleMarkNotificationRead}
+      onMarkAllNotificationsRead={handleMarkAllNotificationsRead}
+    >
+      <Suspense fallback={<div style={{ padding: 24 }}><Loading rows={5} /></div>}>
         <Routes>
           <Route path="/" element={<Navigate to={homePath} replace />} />
 
-          {/* Cổng Giảng dạy & Lesson Studio */}
+          {/* Cổng Giảng dạy & Đào tạo */}
           <Route path="/teaching" element={isStudentOnly ? <Navigate to="/learn" replace /> : <TeachingDashboard />} />
-          <Route path="/teaching/curricula" element={isStudentOnly ? <Navigate to="/learn" replace /> : <CurriculumListPage />} />
+          <Route path="/teaching/curricula" element={canCoordinateTraining ? <CurriculumListPage /> : <Navigate to={homePath} replace />} />
           <Route path="/teaching/curricula/:curriculumId" element={isStudentOnly ? <Navigate to="/learn" replace /> : <CurriculumDetailPage />} />
-          <Route path="/teaching/cohorts" element={isStudentOnly ? <Navigate to="/learn" replace /> : <CohortListPage />} />
+          <Route path="/teaching/cohorts" element={canCoordinateTraining ? <CohortListPage /> : <Navigate to={homePath} replace />} />
           <Route path="/teaching/cohorts/:cohortId" element={isStudentOnly ? <Navigate to="/learn" replace /> : <CohortDetailPage />} />
           <Route path="/teaching/banks" element={isStudentOnly ? <Navigate to="/learn" replace /> : <BanksPage />} />
-          <Route path="/teaching/leave-requests" element={isStudentOnly ? <Navigate to="/learn" replace /> : <StaffLeaveRequestsPage />} />
+          <Route path="/teaching/leave-requests" element={canReviewLeaves ? <StaffLeaveRequestsPage /> : <Navigate to={homePath} replace />} />
           <Route path="/teaching/courses" element={isStudentOnly ? <Navigate to="/learn" replace /> : <CourseListPage />} />
           <Route path="/teaching/courses/:courseId" element={isStudentOnly ? <Navigate to="/learn" replace /> : <CourseDetailPage />} />
           <Route path="/teaching/courses/:courseId/studio" element={isStudentOnly ? <Navigate to="/learn" replace /> : <LessonStudioPage mode="COURSE" />} />
@@ -486,7 +216,7 @@ export const App: React.FC = () => {
           <Route path="/teaching/classes/:classId/studio" element={isStudentOnly ? <Navigate to="/learn" replace /> : <LessonStudioPage mode="CLASS" />} />
           <Route path="/teaching/classes/:classId/attendance" element={isStudentOnly ? <Navigate to="/learn" replace /> : <AttendancePage />} />
           <Route path="/teaching/classes/:classId/sessions/:sessionId/live" element={isStudentOnly ? <Navigate to="/learn" replace /> : <VirtualSessionPage />} />
-          <Route path="/teaching/timetable" element={isStudentOnly ? <Navigate to="/learn" replace /> : <TimetablePage />} />
+          <Route path="/teaching/timetable" element={canCoordinateTraining ? <TimetablePage /> : <Navigate to={homePath} replace />} />
           <Route path="/teaching/schedule" element={isStudentOnly ? <Navigate to="/learn" replace /> : <SchedulePage />} />
           <Route path="/teaching/hours" element={isStudentOnly ? <Navigate to="/learn" replace /> : <TeachingHoursPage />} />
           <Route path="/teaching-hours" element={<Navigate to="/teaching/hours" replace />} />
@@ -500,12 +230,13 @@ export const App: React.FC = () => {
           <Route path="/learn/classes/:classId/lessons/:lessonId" element={<StudentLessonPage />} />
           <Route path="/learn/schedule" element={<SchedulePage studentMode />} />
 
-          {/* Quản trị tài khoản */}
-          <Route path="/admin/accounts" element={isAdmin ? <AdminAccountsPage /> : <Navigate to={homePath} replace />} />
+          {/* Quản trị hệ thống */}
+          <Route path="/admin/departments" element={canViewGovernance ? <DepartmentsPage /> : <Navigate to={homePath} replace />} />
+          <Route path="/admin/accounts" element={canViewGovernance ? <AdminAccountsPage /> : <Navigate to={homePath} replace />} />
 
           <Route path="*" element={<Navigate to={homePath} replace />} />
         </Routes>
-      </main>
-    </div>
+      </Suspense>
+    </AppLayout>
   );
 };

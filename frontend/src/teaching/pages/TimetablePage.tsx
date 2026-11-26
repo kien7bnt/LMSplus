@@ -1,6 +1,13 @@
 import React, { useMemo, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import {
+  AcademicHolidayItem,
+  CampusItem,
+  ClassroomItem,
+  FacilitiesOverview,
+  InstructorAvailabilityItem,
   RoomType,
+  ShiftPresetItem,
   TimetableAuditReport,
   TimetableSessionItem,
   TimetableSlotHint,
@@ -12,6 +19,7 @@ import {
   Badge,
   Btn,
   Card,
+  ConfirmDialog,
   EmptyState,
   ErrorState,
   Field,
@@ -27,6 +35,7 @@ import {
   useAsync,
   useToast,
 } from '../ui';
+import { IconCheck, IconSparkles, IconX } from '../components/Icons';
 
 const addDays = (date: string, n: number) => {
   const d = new Date(`${date}T12:00:00+07:00`);
@@ -57,16 +66,23 @@ const WEEKDAYS = [
 ];
 
 export const TimetablePage: React.FC = () => {
+  const [sp, setSp] = useSearchParams();
   const toast = useToast();
   const today = todayVn();
-  const [tab, setTab] = useState<'board' | 'facilities'>('board');
+  const tab: 'board' | 'facilities' = sp.get('tab') === 'facilities' ? 'facilities' : 'board';
+  const setTab = (nextTab: 'board' | 'facilities') => {
+    const next = new URLSearchParams(sp);
+    if (nextTab === 'board') next.delete('tab');
+    else next.set('tab', nextTab);
+    setSp(next, { replace: true });
+  };
   const [weekStart, setWeekStart] = useState(mondayOf(today));
   const weekEnd = addDays(weekStart, 6);
   const days = useMemo(() => Array.from({ length: 7 }, (_, i) => addDays(weekStart, i)), [weekStart]);
 
   const [cohortId, setCohortId] = useState('');
   const [classId, setClassId] = useState('');
-  const [campusId, setCampusId] = useState('cp_cs1');
+  const [campusId, setCampusId] = useState('');
   const [classroomId, setClassroomId] = useState('');
 
   const facilitiesReq = useAsync(() => masterApi.getFacilitiesOverview(), []);
@@ -115,7 +131,7 @@ export const TimetablePage: React.FC = () => {
       const r = await masterApi.getTimetableSlotHints({
         session_id: sessionId,
         dates: days,
-        campus_id: campusId || 'cp_cs1',
+        campus_id: campusId || facilitiesReq.data?.campuses?.[0]?.id || undefined,
         classroom_id: classroomId || roomsInCampus[0]?.id || null,
       });
       const map: Record<string, TimetableSlotHint> = {};
@@ -154,7 +170,7 @@ export const TimetablePage: React.FC = () => {
         shift_code: shiftCode,
         start_time: startTime,
         end_time: endTime,
-        campus_id: campusId || 'cp_cs1',
+        campus_id: campusId || facilitiesReq.data?.campuses?.[0]?.id || undefined,
         classroom_id: classroomId || roomsInCampus[0]?.id || null,
       });
       toast({ tone: 'success', title: `Đã xếp buổi học vào ${dayShort(date)} (${startTime}–${endTime})` });
@@ -222,16 +238,16 @@ export const TimetablePage: React.FC = () => {
   return (
     <div className="t-page">
       <PageHeader
-        title="Điều phối Thời khóa biểu"
+        title="Điều phối thời khóa biểu"
         subtitle="Kéo thả buổi học (tô xanh ô hợp lệ, tô đỏ ô xung đột), Tạo mẫu lặp né lễ, Xếp tự động bản nháp, Kiểm tra đủ giờ & Công bố."
         actions={
           tab === 'board' && (
             <div className="t-actions">
-              <Btn onClick={() => setRecurrenceOpen(true)}>↻ Tạo mẫu lặp</Btn>
-              <Btn onClick={() => setAutoSchedOpen(true)}>✨ Xếp tự động (Nháp)</Btn>
-              <Btn onClick={() => setCopyOpen(true)}>⎘ Sao chép lịch</Btn>
-              <Btn loading={busy} onClick={runAudit}>✓ Kiểm tra đủ giờ & xung đột</Btn>
-              <Btn variant="primary" loading={busy} onClick={runPublish}>📢 Công bố TKB</Btn>
+              <Btn onClick={() => setRecurrenceOpen(true)}>Tạo mẫu lặp</Btn>
+              <Btn onClick={() => setAutoSchedOpen(true)}><IconSparkles size={15} /> Xếp tự động (Nháp)</Btn>
+              <Btn onClick={() => setCopyOpen(true)}>Sao chép lịch</Btn>
+              <Btn loading={busy} onClick={runAudit}><IconCheck size={15} /> Kiểm tra đủ giờ & xung đột</Btn>
+              <Btn variant="primary" loading={busy} onClick={runPublish}>Công bố TKB</Btn>
             </div>
           )
         }
@@ -241,7 +257,7 @@ export const TimetablePage: React.FC = () => {
         active={tab}
         onChange={(v) => setTab(v as 'board' | 'facilities')}
         tabs={[
-          { id: 'board', label: 'Bảng Xếp Thời khóa biểu', badge: gridReq.data?.unscheduled_items.length || undefined },
+          { id: 'board', label: 'Bảng xếp thời khóa biểu', badge: gridReq.data?.unscheduled_items.length || undefined },
           { id: 'facilities', label: 'Cơ sở, Phòng học, Ngày nghỉ & Lịch bận GV' },
         ]}
       />
@@ -420,13 +436,13 @@ export const TimetablePage: React.FC = () => {
                                 }}
                               >
                                 {hint && !hint.valid && (
-                                  <div style={{ fontSize: 11, color: 'var(--status-danger)', fontWeight: 600, marginBottom: 6 }}>
-                                    ✕ {hint.conflicts[0]?.message}
+                                  <div style={{ fontSize: 11, color: 'var(--status-danger)', fontWeight: 600, marginBottom: 6, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                                    <IconX size={12} /> {hint.conflicts[0]?.message}
                                   </div>
                                 )}
                                 {hint && hint.valid && items.length === 0 && (
-                                  <div style={{ fontSize: 11, color: 'var(--accent-learning)', fontWeight: 600 }}>
-                                    ✓ Ô hợp lệ — Thả vào đây
+                                  <div style={{ fontSize: 11, color: 'var(--accent-learning)', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                                    <IconCheck size={12} /> Ô hợp lệ — Thả vào đây
                                   </div>
                                 )}
                                 <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -541,7 +557,7 @@ export const TimetablePage: React.FC = () => {
 
 const RecurrenceScheduleModal: React.FC<{
   classes: Array<{ id: string; code: string; title: string }>;
-  facilities?: any;
+  facilities?: FacilitiesOverview | null;
   onClose: () => void;
   onDone: () => void;
 }> = ({ classes, facilities, onClose, onDone }) => {
@@ -550,8 +566,11 @@ const RecurrenceScheduleModal: React.FC<{
   const [startDate, setStartDate] = useState(todayVn(1));
   const [weekdays, setWeekdays] = useState<number[]>([1, 3, 5]);
   const [shiftCode, setShiftCode] = useState('CA4');
-  const [campusId, setCampusId] = useState('cp_cs1');
-  const [classroomId, setClassroomId] = useState('rm_5a1');
+  const [campusId, setCampusId] = useState(facilities?.campuses?.[0]?.id || '');
+  const [classroomId, setClassroomId] = useState('');
+  const effectiveCampus = campusId || facilities?.campuses?.[0]?.id || '';
+  const filteredRooms = (facilities?.classrooms || []).filter((r: ClassroomItem) => !effectiveCampus || r.campus_id === effectiveCampus);
+  const effectiveRoom = classroomId || filteredRooms[0]?.id || '';
   const [busy, setBusy] = useState(false);
 
   const submit = async (e: React.FormEvent) => {
@@ -563,8 +582,8 @@ const RecurrenceScheduleModal: React.FC<{
         start_date: startDate,
         weekdays,
         shift_code: shiftCode,
-        campus_id: campusId,
-        classroom_id: classroomId || undefined,
+        campus_id: effectiveCampus || undefined,
+        classroom_id: effectiveRoom || undefined,
       });
       toast({
         tone: 'success',
@@ -602,7 +621,7 @@ const RecurrenceScheduleModal: React.FC<{
         </Field>
         <Field label="Ca học">
           <select className="t-input" value={shiftCode} onChange={(e) => setShiftCode(e.target.value)}>
-            {(facilities?.shifts || []).map((sh: any) => (
+            {(facilities?.shifts || []).map((sh: ShiftPresetItem) => (
               <option key={sh.code} value={sh.code}>{sh.title}</option>
             ))}
           </select>
@@ -623,7 +642,7 @@ const RecurrenceScheduleModal: React.FC<{
         </Field>
         <Field label="Cơ sở">
           <select className="t-input" value={campusId} onChange={(e) => setCampusId(e.target.value)}>
-            {(facilities?.campuses || []).map((cp: any) => (
+            {(facilities?.campuses || []).map((cp: CampusItem) => (
               <option key={cp.id} value={cp.id}>{cp.code} — {cp.name}</option>
             ))}
           </select>
@@ -631,8 +650,8 @@ const RecurrenceScheduleModal: React.FC<{
         <Field label="Phòng học">
           <select className="t-input" value={classroomId} onChange={(e) => setClassroomId(e.target.value)}>
             {(facilities?.classrooms || [])
-              .filter((r: any) => r.campus_id === campusId)
-              .map((r: any) => (
+              .filter((r: ClassroomItem) => r.campus_id === campusId)
+              .map((r: ClassroomItem) => (
                 <option key={r.id} value={r.id}>{r.code} ({label('roomType', r.room_type)} · {r.capacity} chỗ)</option>
               ))}
           </select>
@@ -653,7 +672,8 @@ const AutoScheduleModal: React.FC<{
   const [cohortId, setCohortId] = useState(cohorts[0]?.id || '');
   const [startDate, setStartDate] = useState(defaultWeekStart);
   const [endDate, setEndDate] = useState(addDays(defaultWeekStart, 28));
-  const [campusId, setCampusId] = useState(campuses[0]?.id || 'cp_cs1');
+  const [campusId, setCampusId] = useState(campuses[0]?.id || '');
+  const effectiveCampus = campusId || campuses[0]?.id || '';
   const [busy, setBusy] = useState(false);
 
   const submit = async (e: React.FormEvent) => {
@@ -664,7 +684,7 @@ const AutoScheduleModal: React.FC<{
         cohort_id: cohortId,
         start_date: startDate,
         end_date: endDate,
-        campus_id: campusId,
+        campus_id: effectiveCampus || undefined,
       });
       toast({
         tone: 'success',
@@ -810,7 +830,7 @@ const CopyTimetableModal: React.FC<{
 
 const AdjustSessionModal: React.FC<{
   session: TimetableSessionItem;
-  facilities?: any;
+  facilities?: FacilitiesOverview | null;
   onClose: () => void;
   onDone: () => void;
 }> = ({ session, facilities, onClose, onDone }) => {
@@ -862,7 +882,7 @@ const AdjustSessionModal: React.FC<{
     >
       <form id="adj-ses-form" className="t-form-grid" onSubmit={submit}>
         <Field label="Nghiệp vụ điều chỉnh" wide>
-          <select className="t-input" value={action} onChange={(e) => setAction(e.target.value as any)}>
+          <select className="t-input" value={action} onChange={(e) => setAction(e.target.value as 'RESCHEDULE' | 'CANCEL_AND_MAKEUP' | 'CHANGE_STAFF_OR_ROOM')}>
             <option value="RESCHEDULE">Dời buổi học sang ngày/giờ khác</option>
             <option value="CANCEL_AND_MAKEUP">Báo nghỉ buổi này & Lên lịch buổi Dạy bù</option>
             <option value="CHANGE_STAFF_OR_ROOM">Đổi Giảng viên dạy thay / Đổi phòng học</option>
@@ -892,7 +912,7 @@ const AdjustSessionModal: React.FC<{
         <Field label="Phòng học">
           <select className="t-input" value={classroomId} onChange={(e) => setClassroomId(e.target.value)}>
             <option value="">-- Giữ phòng hiện tại --</option>
-            {(facilities?.classrooms || []).map((r: any) => (
+            {(facilities?.classrooms || []).map((r: ClassroomItem) => (
               <option key={r.id} value={r.id}>{r.code} — {r.name} ({r.capacity} chỗ)</option>
             ))}
           </select>
@@ -901,7 +921,7 @@ const AdjustSessionModal: React.FC<{
         <Field label="Giảng viên thực dạy / Dạy thay">
           <select className="t-input" value={subInstructorId} onChange={(e) => setSubInstructorId(e.target.value)}>
             <option value="">-- Giữ giảng viên hiện tại --</option>
-            {(facilities?.instructors || []).map((ins: any) => (
+            {(facilities?.instructors || []).map((ins) => (
               <option key={ins.id} value={ins.id}>{ins.full_name} ({ins.code})</option>
             ))}
           </select>
@@ -919,12 +939,19 @@ const AdjustSessionModal: React.FC<{
 // TAB 2: QUẢN LÝ CƠ SỞ, PHÒNG HỌC, LỊCH NGHỈ LỄ & LỊCH BẬN GIẢNG VIÊN
 // ============================================================================
 
-const FacilitiesAndAvailabilityPanel: React.FC<{ data: any; onChanged: () => void }> = ({ data, onChanged }) => {
+const FacilitiesAndAvailabilityPanel: React.FC<{ data: FacilitiesOverview; onChanged: () => void }> = ({ data, onChanged }) => {
   const toast = useToast();
   const canManage = data.capabilities?.can_manage_facilities;
+  const [confirmRemove, setConfirmRemove] = useState<{ title: string; onConfirm: () => Promise<void> } | null>(null);
+
+  // Thêm cơ sở mới
+  const [cpCode, setCpCode] = useState('');
+  const [cpName, setCpName] = useState('');
+  const [cpAddr, setCpAddr] = useState('');
 
   // Thêm phòng học
-  const [rmCampus, setRmCampus] = useState(data.campuses[0]?.id || 'cp_cs1');
+  const [rmCampus, setRmCampus] = useState(data.campuses[0]?.id || '');
+  const effectiveRmCampus = rmCampus || data.campuses[0]?.id || '';
   const [rmCode, setRmCode] = useState('');
   const [rmName, setRmName] = useState('');
   const [rmType, setRmType] = useState<RoomType>('THEORY_ROOM');
@@ -942,10 +969,28 @@ const FacilitiesAndAvailabilityPanel: React.FC<{ data: any; onChanged: () => voi
   const [avEnd, setAvEnd] = useState('21:00');
   const [avNote, setAvNote] = useState('');
 
-  const addRoom = async (e: React.FormEvent) => {
+  const addCampus = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      await masterApi.createClassroom({ campus_id: rmCampus, code: rmCode, name: rmName, room_type: rmType, capacity: rmCap });
+      await masterApi.createCampus({ code: cpCode.trim(), name: cpName.trim(), address: cpAddr.trim() || undefined });
+      setCpCode('');
+      setCpName('');
+      setCpAddr('');
+      toast({ tone: 'success', title: 'Đã thêm cơ sở đào tạo mới' });
+      onChanged();
+    } catch (ex) {
+      toast({ tone: 'error', title: 'Không thêm được cơ sở', detail: errMsg(ex) });
+    }
+  };
+
+  const addRoom = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!effectiveRmCampus) {
+      toast({ tone: 'error', title: 'Vui lòng tạo ít nhất 1 cơ sở trước khi thêm phòng' });
+      return;
+    }
+    try {
+      await masterApi.createClassroom({ campus_id: effectiveRmCampus, code: rmCode, name: rmName, room_type: rmType, capacity: rmCap });
       setRmCode('');
       setRmName('');
       toast({ tone: 'success', title: 'Đã thêm phòng học mới' });
@@ -1003,7 +1048,7 @@ const FacilitiesAndAvailabilityPanel: React.FC<{ data: any; onChanged: () => voi
               </tr>
             </thead>
             <tbody>
-              {data.classrooms.map((r: any) => (
+              {data.classrooms.map((r: ClassroomItem) => (
                 <tr key={r.id}>
                   <td>{r.campus_code} — {r.campus_name}</td>
                   <td><code>{r.code}</code></td>
@@ -1018,32 +1063,49 @@ const FacilitiesAndAvailabilityPanel: React.FC<{ data: any; onChanged: () => voi
         </div>
 
         {canManage && (
-          <form onSubmit={addRoom} className="t-form-grid">
-            <Field label="Cơ sở">
-              <select className="t-input" value={rmCampus} onChange={(e) => setRmCampus(e.target.value)}>
-                {data.campuses.map((c: any) => (
-                  <option key={c.id} value={c.id}>{c.code} — {c.name}</option>
-                ))}
-              </select>
-            </Field>
-            <Field label="Mã phòng" required>
-              <input className="t-input" value={rmCode} onChange={(e) => setRmCode(e.target.value)} placeholder="VD: LAB-302" required />
-            </Field>
-            <Field label="Tên phòng" required>
-              <input className="t-input" value={rmName} onChange={(e) => setRmName(e.target.value)} placeholder="VD: Phòng thực hành AI" required />
-            </Field>
-            <Field label="Loại phòng & Sức chứa">
-              <div style={{ display: 'flex', gap: 8 }}>
-                <select className="t-input" aria-label="Loại phòng mới" value={rmType} onChange={(e) => setRmType(e.target.value as RoomType)}>
-                  <option value="THEORY_ROOM">Phòng lý thuyết</option>
-                  <option value="COMPUTER_LAB">Phòng máy</option>
-                  <option value="ONLINE">Trực tuyến</option>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+            <form onSubmit={addRoom} className="t-form-grid">
+              <Field label="Cơ sở">
+                <select className="t-input" value={effectiveRmCampus} onChange={(e) => setRmCampus(e.target.value)}>
+                  {data.campuses.map((c: CampusItem) => (
+                    <option key={c.id} value={c.id}>{c.code} — {c.name}</option>
+                  ))}
                 </select>
-                <input className="t-input tabular-nums" type="number" min={5} style={{ width: 95 }} aria-label="Sức chứa phòng" value={rmCap} onChange={(e) => setRmCap(Number(e.target.value))} />
-                <Btn type="submit" variant="primary">+ Thêm</Btn>
-              </div>
-            </Field>
-          </form>
+              </Field>
+              <Field label="Mã phòng" required>
+                <input className="t-input" value={rmCode} onChange={(e) => setRmCode(e.target.value)} placeholder="VD: LAB-302" required />
+              </Field>
+              <Field label="Tên phòng" required>
+                <input className="t-input" value={rmName} onChange={(e) => setRmName(e.target.value)} placeholder="VD: Phòng thực hành AI" required />
+              </Field>
+              <Field label="Loại phòng & Sức chứa">
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <select className="t-input" aria-label="Loại phòng mới" value={rmType} onChange={(e) => setRmType(e.target.value as RoomType)}>
+                    <option value="THEORY_ROOM">Phòng lý thuyết</option>
+                    <option value="COMPUTER_LAB">Phòng máy</option>
+                    <option value="ONLINE">Trực tuyến</option>
+                  </select>
+                  <input className="t-input tabular-nums" type="number" min={5} style={{ width: 95 }} aria-label="Sức chứa phòng" value={rmCap} onChange={(e) => setRmCap(Number(e.target.value))} />
+                  <Btn type="submit" variant="primary">+ Thêm phòng</Btn>
+                </div>
+              </Field>
+            </form>
+
+            <form onSubmit={addCampus} className="t-form-grid" style={{ paddingTop: 12, borderTop: '1px solid var(--border-subtle)' }}>
+              <Field label="Mã cơ sở mới" required>
+                <input className="t-input" value={cpCode} onChange={(e) => setCpCode(e.target.value)} placeholder="VD: CS3-TX" required />
+              </Field>
+              <Field label="Tên cơ sở mới" required>
+                <input className="t-input" value={cpName} onChange={(e) => setCpName(e.target.value)} placeholder="VD: Cơ sở 3 — Thanh Xuân" required />
+              </Field>
+              <Field label="Địa chỉ cơ sở" wide>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <input className="t-input" style={{ flex: 1 }} value={cpAddr} onChange={(e) => setCpAddr(e.target.value)} placeholder="Số nhà, quận/huyện…" />
+                  <Btn type="submit">+ Thêm cơ sở</Btn>
+                </div>
+              </Field>
+            </form>
+          </div>
         )}
       </Card>
 
@@ -1059,14 +1121,34 @@ const FacilitiesAndAvailabilityPanel: React.FC<{ data: any; onChanged: () => voi
               </tr>
             </thead>
             <tbody>
-              {data.holidays.map((h: any) => (
+              {data.holidays.map((h: AcademicHolidayItem) => (
                 <tr key={h.id}>
                   <td><strong>{h.title}</strong></td>
                   <td className="tabular-nums">{fmtDate(h.start_date)}</td>
                   <td className="tabular-nums">{fmtDate(h.end_date)}</td>
                   {canManage && (
                     <td className="actions">
-                      <Btn small variant="ghost" onClick={async () => { await masterApi.deleteHoliday(h.id); onChanged(); }}>Xóa</Btn>
+                      <Btn
+                        small
+                        variant="ghost"
+                        onClick={() =>
+                          setConfirmRemove({
+                            title: `Xóa kỳ nghỉ "${h.title}"?`,
+                            onConfirm: async () => {
+                              try {
+                                await masterApi.deleteHoliday(h.id);
+                                setConfirmRemove(null);
+                                toast({ tone: 'success', title: 'Đã xóa lịch nghỉ lễ' });
+                                onChanged();
+                              } catch (ex) {
+                                toast({ tone: 'error', title: 'Không xóa được lịch nghỉ', detail: errMsg(ex) });
+                              }
+                            },
+                          })
+                        }
+                      >
+                        Xóa
+                      </Btn>
                     </td>
                   )}
                 </tr>
@@ -1106,14 +1188,34 @@ const FacilitiesAndAvailabilityPanel: React.FC<{ data: any; onChanged: () => voi
               </tr>
             </thead>
             <tbody>
-              {data.availabilities.map((av: any) => (
+              {data.availabilities.map((av: InstructorAvailabilityItem) => (
                 <tr key={av.id}>
                   <td><strong>{av.instructor_name}</strong> ({av.instructor_code})</td>
                   <td>{av.rule_type === 'WEEKLY' ? WEEKDAYS.find((w) => w.v === av.weekday)?.l : fmtDate(av.specific_date)}</td>
                   <td className="tabular-nums">{av.start_time} – {av.end_time}</td>
                   <td>{av.note || '—'}</td>
                   <td className="actions">
-                    <Btn small variant="ghost" onClick={async () => { await masterApi.deleteInstructorAvailability(av.id); onChanged(); }}>Xóa</Btn>
+                    <Btn
+                      small
+                      variant="ghost"
+                      onClick={() =>
+                        setConfirmRemove({
+                          title: 'Xóa lịch bận giảng viên?',
+                          onConfirm: async () => {
+                            try {
+                              await masterApi.deleteInstructorAvailability(av.id);
+                              setConfirmRemove(null);
+                              toast({ tone: 'success', title: 'Đã xóa khung giờ bận' });
+                              onChanged();
+                            } catch (ex) {
+                              toast({ tone: 'error', title: 'Không xóa được khung giờ bận', detail: errMsg(ex) });
+                            }
+                          },
+                        })
+                      }
+                    >
+                      Xóa
+                    </Btn>
                   </td>
                 </tr>
               ))}
@@ -1125,7 +1227,7 @@ const FacilitiesAndAvailabilityPanel: React.FC<{ data: any; onChanged: () => voi
           {canManage && (
             <Field label="Giảng viên">
               <select className="t-input" value={avInstructor} onChange={(e) => setAvInstructor(e.target.value)}>
-                {data.instructors.map((ins: any) => (
+                {data.instructors.map((ins) => (
                   <option key={ins.id} value={ins.id}>{ins.full_name}</option>
                 ))}
               </select>
@@ -1152,6 +1254,17 @@ const FacilitiesAndAvailabilityPanel: React.FC<{ data: any; onChanged: () => voi
           </Field>
         </form>
       </Card>
+
+      {confirmRemove && (
+        <ConfirmDialog
+          title={confirmRemove.title}
+          message="Thao tác này sẽ xóa cấu hình khỏi cơ sở dữ liệu xếp lịch."
+          confirmLabel="Xóa"
+          danger
+          onCancel={() => setConfirmRemove(null)}
+          onConfirm={confirmRemove.onConfirm}
+        />
+      )}
     </div>
   );
 };

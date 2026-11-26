@@ -14,6 +14,8 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fail, pageParams, nowIso, text, intField, oneOf, tx , mapAsync} from './http.mjs';
+import { validateUploadMagicBytes } from '../common/security.mjs';
+import { createStorageAdapter } from '../storage/adapter.mjs';
 
 const MAX_BANK_UPLOAD_BYTES = 15 * 1024 * 1024;
 const BANK_ALLOWED_EXT = {
@@ -115,7 +117,8 @@ function buildBankScopeWhere(alias, url, allowedCourseIds) {
   return { where, params };
 }
 
-export function registerBankRoutes(route, { uploadsDir } = {}) {
+export function registerBankRoutes(route, { uploadsDir, storage } = {}) {
+  const store = storage || createStorageAdapter({ baseDir: uploadsDir });
   // ---------- 1. Cây thư mục dùng chung cho cả 3 ngân hàng (100% động từ Cây nội dung)
   route('GET', '/banks/tree', async ({ db, user, url }) => {
     const { allowedCourses } = await resolveCourseFilterScope(db, user, url);
@@ -588,25 +591,25 @@ export function registerBankRoutes(route, { uploadsDir } = {}) {
       const buf = Buffer.from(cleanBase64, 'base64');
       if (buf.length === 0) fail(422, 'VALIDATION_ERROR', 'Tệp tải lên rỗng.');
       if (buf.length > MAX_BANK_UPLOAD_BYTES) fail(413, 'FILE_TOO_LARGE', 'Tệp vượt quá giới hạn 15 MB.');
+      const magic = validateUploadMagicBytes(buf, ext);
+      if (!magic.ok) fail(422, 'INVALID_FILE_CONTENT', magic.message);
 
       const fallbackType = ext === 'pdf' ? 'PDF' : ['mp4', 'webm'].includes(ext) ? 'VIDEO' : 'FILE';
       const resourceType = oneOf(body, 'resource_type', ['PDF', 'VIDEO', 'FILE'], { fallback: fallbackType, label: 'loại tài nguyên' });
-      const dir = path.join(uploadsDir, course.id);
-      fs.mkdirSync(dir, { recursive: true });
-      const storageKey = path.join(course.id, `${id}.${ext}`).replace(/\\/g, '/');
-      fs.writeFileSync(path.join(uploadsDir, storageKey), buf);
+      const category = resourceType === 'VIDEO' ? 'videos' : resourceType === 'PDF' ? 'pdfs' : 'documents';
+      const storageKey = store.buildKey(category, course.id, `${id}.${ext}`);
+      const stored = await store.putBuffer(storageKey, buf, BANK_ALLOWED_EXT[ext]);
       const safeName = fileName.replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_');
-      const sha256 = crypto.createHash('sha256').update(buf).digest('hex');
 
       await db.prepare(
         `INSERT INTO learning_resources (
            id, course_id, topic_id, chapter_id, lesson_id, title, description, visibility, usage_type, tags_json,
            resource_type, storage_provider, storage_key, file_name, mime_type, file_size_bytes,
            checksum_sha256, status, processing_status, created_by, created_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'LOCAL_DISK', ?, ?, ?, ?, ?, 'READY', 'READY', ?, ?, ?)`
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'READY', 'READY', ?, ?, ?)`
       ).run(
         id, course.id, topic?.id || null, chapter.id, lesson.id, title, description, visibility, usageType, JSON.stringify(tags),
-        resourceType, storageKey, safeName, BANK_ALLOWED_EXT[ext], buf.length, sha256, user.id, now, now
+        resourceType, stored.storageProvider, stored.storageKey, safeName, BANK_ALLOWED_EXT[ext], stored.sizeBytes, stored.checksumSha256, user.id, now, now
       );
       return [201, {
         id,
@@ -618,9 +621,9 @@ export function registerBankRoutes(route, { uploadsDir } = {}) {
         resource_type: resourceType,
         usage_type: usageType,
         tags,
-        storage_provider: 'LOCAL_DISK',
+        storage_provider: stored.storageProvider,
         file_name: safeName,
-        file_size_bytes: buf.length,
+        file_size_bytes: stored.sizeBytes,
         url: null,
       }];
     }

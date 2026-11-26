@@ -1,5 +1,7 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import {
+  TeachingHoursAnalytics,
   TeachingTimesheetItem,
   TeachingTimesheetLineItem,
   masterApi,
@@ -26,12 +28,22 @@ import {
   useAsync,
   useToast,
 } from '../ui';
+import { IconBolt, IconCheck, IconDownload, IconLock } from '../components/Icons';
 
 export const TeachingHoursPage: React.FC = () => {
+  const [sp, setSp] = useSearchParams();
   const toast = useToast();
   const currentMonth = todayVn().slice(0, 7);
   const [periodMonth, setPeriodMonth] = useState(currentMonth);
-  const [tab, setTab] = useState<'analytics' | 'timesheets' | 'quotas'>('analytics');
+  const rawTab = sp.get('tab');
+  const tab: 'analytics' | 'timesheets' | 'quotas' =
+    rawTab === 'timesheets' || rawTab === 'quotas' ? rawTab : 'analytics';
+  const setTab = (nextTab: 'analytics' | 'timesheets' | 'quotas') => {
+    const next = new URLSearchParams(sp);
+    if (nextTab === 'analytics') next.delete('tab');
+    else next.set('tab', nextTab);
+    setSp(next, { replace: true });
+  };
 
   const [instructorId, setInstructorId] = useState('');
   const [courseId, setCourseId] = useState('');
@@ -67,7 +79,7 @@ export const TeachingHoursPage: React.FC = () => {
   );
 
   // Modals
-  const [recordTarget, setRecordTarget] = useState<any | null>(null);
+  const [recordTarget, setRecordTarget] = useState<TeachingHoursAnalytics['sessions'][number] | null>(null);
   const [reviewSheet, setReviewSheet] = useState<{ sheet: TeachingTimesheetItem; mode: 'CONFIRM' | 'DISPUTE' } | null>(null);
   const [reviewNote, setReviewNote] = useState('');
   const [detailSheet, setDetailSheet] = useState<(TeachingTimesheetItem & { items: TeachingTimesheetLineItem[] }) | null>(null);
@@ -167,8 +179,8 @@ export const TeachingHoursPage: React.FC = () => {
   return (
     <div className="t-page">
       <PageHeader
-        title="Thống kê Giờ dạy & Chốt công chuyển Tài chính"
-        subtitle="Ghi nhận buổi dạy thực tế & dạy thay, đối chiếu định mức giờ giảng và chốt bảng giờ giảng cuối tháng 4 bước."
+        title="Giờ dạy & Định mức"
+        subtitle="Ghi nhận buổi dạy thực tế & dạy thay, đối chiếu định mức giờ giảng và chốt bảng giờ giảng cuối tháng chuyển Tài chính."
         actions={
           <div className="t-actions">
             <input
@@ -181,10 +193,10 @@ export const TeachingHoursPage: React.FC = () => {
             {isStaffOrAdmin && (
               <>
                 <Btn loading={busy} onClick={handleGenerateTimesheets}>
-                  ⚡ Tổng hợp bảng công tháng
+                  <IconBolt size={15} /> Tổng hợp bảng công tháng
                 </Btn>
                 <Btn variant="primary" onClick={handleExportFinanceCsv}>
-                  📥 Xuất CSV Tài chính
+                  <IconDownload size={15} /> Xuất CSV Tài chính
                 </Btn>
               </>
             )}
@@ -399,7 +411,11 @@ export const TeachingHoursPage: React.FC = () => {
                             <td className="num tabular-nums">{s.periods} tiết ({s.hours}h)</td>
                             <td>
                               {s.timesheet_locked_id ? (
-                                <Tone tone="success">🔒 Đã khóa sổ</Tone>
+                                <Tone tone="success">
+                                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                                    <IconLock size={13} /> Đã khóa sổ
+                                  </span>
+                                </Tone>
                               ) : (
                                 <Badge kind="log" value={s.confirmation_status} />
                               )}
@@ -492,7 +508,7 @@ export const TeachingHoursPage: React.FC = () => {
                             )}
                             {isStaffOrAdmin && ts.status === 'APPROVED' && (
                               <Btn small variant="primary" loading={busy} onClick={() => handleLock(ts.id)}>
-                                🔒 Khóa & Chuyển TC
+                                <IconLock size={14} /> Khóa & Chuyển TC
                               </Btn>
                             )}
                           </div>
@@ -533,7 +549,7 @@ export const TeachingHoursPage: React.FC = () => {
             <>
               <Btn onClick={() => setReviewSheet(null)}>Hủy</Btn>
               <Btn variant={reviewSheet.mode === 'CONFIRM' ? 'primary' : 'danger'} loading={busy} onClick={submitTeacherReview}>
-                {reviewSheet.mode === 'CONFIRM' ? '✓ Đồng ý xác nhận' : 'Gửi phản hồi sai sót'}
+                {reviewSheet.mode === 'CONFIRM' ? <><IconCheck size={14} /> Đồng ý xác nhận</> : 'Gửi phản hồi sai sót'}
               </Btn>
             </>
           }
@@ -585,7 +601,7 @@ export const TeachingHoursPage: React.FC = () => {
 };
 
 const RecordSessionModal: React.FC<{
-  session: any;
+  session: TeachingHoursAnalytics['sessions'][number];
   instructors: Array<{ id: string; code: string; full_name: string }>;
   canAssignSubstitute: boolean;
   onClose: () => void;
@@ -632,7 +648,7 @@ const RecordSessionModal: React.FC<{
           <input className="t-input tabular-nums" type="number" step="0.5" min={0.5} max={12} value={actualPeriods} onChange={(e) => setActualPeriods(Number(e.target.value))} />
         </Field>
         <Field label="Loại giờ giảng">
-          <select className="t-input" value={hourCategory} onChange={(e) => setHourCategory(e.target.value as any)}>
+          <select className="t-input" value={hourCategory} onChange={(e) => setHourCategory(e.target.value as 'THEORY' | 'PRACTICE' | 'ONLINE')}>
             <option value="THEORY">Lý thuyết</option>
             <option value="PRACTICE">Thực hành / Phòng máy</option>
             <option value="ONLINE">Trực tuyến</option>
@@ -664,9 +680,32 @@ const InstructorQuotasPanel: React.FC<{
 }> = ({ periodKey, items, onSaved }) => {
   const toast = useToast();
   const [rows, setRows] = useState(items);
+  const [minsPerPeriod, setMinsPerPeriod] = useState(45);
+
+  useEffect(() => {
+    setRows(items);
+  }, [items, periodKey]);
 
   return (
-    <Card title={`Định mức giờ giảng chuẩn kỳ ${periodKey}`} padded={false}>
+    <Card
+      title={`Định mức giờ giảng chuẩn kỳ ${periodKey}`}
+      actions={
+        <label className="t-small" style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+          <span className="t-muted">Quy đổi (phút/tiết):</span>
+          <input
+            type="number"
+            min={15}
+            max={180}
+            className="t-input tabular-nums"
+            style={{ width: 84 }}
+            aria-label="Số phút mỗi tiết quy đổi định mức"
+            value={minsPerPeriod}
+            onChange={(e) => setMinsPerPeriod(Math.max(15, Math.min(180, Number(e.target.value) || 45)))}
+          />
+        </label>
+      }
+      padded={false}
+    >
       <div className="t-table-wrap">
         <table className="t-table">
           <thead>
@@ -691,7 +730,7 @@ const InstructorQuotasPanel: React.FC<{
                     onChange={(e) => {
                       const p = Number(e.target.value);
                       const next = [...rows];
-                      next[idx] = { ...r, standard_periods: p, standard_hours: Math.round(((p * 45) / 60) * 10) / 10 };
+                      next[idx] = { ...r, standard_periods: p, standard_hours: Math.round(((p * minsPerPeriod) / 60) * 10) / 10 };
                       setRows(next);
                     }}
                   />

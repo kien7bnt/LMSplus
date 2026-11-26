@@ -13,7 +13,9 @@
     "audit:ui": "node .agents/skills/ui-ux-standard/scripts/impeccable_audit.mjs .",
     "db:schema": "node scripts/migrate-sqlite-to-pg.mjs --schema-only",
     "db:migrate": "node scripts/migrate-sqlite-to-pg.mjs",
-    "test": "node tests/postgres_adapter_test.mjs && node tests/elearning_full_test_suite.mjs && node tests/teaching_test_suite.mjs && node tests/lesson_studio_test_suite.mjs && node tests/master_lms_test_suite.mjs && node tests/training_lifecycle_test_suite.mjs && node tests/virtual_classroom_test_suite.mjs"
+    "db:backup": "node scripts/backup-restore-pg.mjs backup",
+    "test:security": "node tests/security_audit_test_suite.mjs",
+    "test": "node tests/postgres_adapter_test.mjs && node tests/security_audit_test_suite.mjs && node tests/phase2_architecture_test_suite.mjs && node tests/phase4_business_test_suite.mjs && node tests/phase5_performance_test_suite.mjs && node tests/elearning_full_test_suite.mjs && node tests/teaching_test_suite.mjs && node tests/lesson_studio_test_suite.mjs && node tests/master_lms_test_suite.mjs && node tests/training_lifecycle_test_suite.mjs && node tests/virtual_classroom_test_suite.mjs"
   },
   "dependencies": {
     "pg": "^8.23.1"

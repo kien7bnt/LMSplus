@@ -411,6 +411,7 @@ export async function ensureMasterLmsSchema(db) {
       max_attempts INTEGER NOT NULL DEFAULT 3,
       allow_resubmit INTEGER NOT NULL DEFAULT 1,
       due_at TEXT,
+      rubric_json TEXT NOT NULL DEFAULT '[]',
       attachments_json TEXT NOT NULL DEFAULT '[]',
       status TEXT NOT NULL DEFAULT 'PUBLISHED' CHECK (status IN ('DRAFT','PUBLISHED','CLOSED')),
       created_by TEXT,
@@ -429,6 +430,7 @@ export async function ensureMasterLmsSchema(db) {
       submission_text TEXT,
       submission_link TEXT,
       attachments_json TEXT NOT NULL DEFAULT '[]',
+      rubric_scores_json TEXT NOT NULL DEFAULT '[]',
       status TEXT NOT NULL DEFAULT 'DRAFT' CHECK (status IN ('DRAFT','SUBMITTED','GRADED','RETURNED')),
       score REAL,
       max_score REAL NOT NULL DEFAULT 10,
@@ -439,6 +441,28 @@ export async function ensureMasterLmsSchema(db) {
       updated_at TEXT NOT NULL,
       CONSTRAINT uq_class_assign_sub UNIQUE (class_assignment_id, student_id, attempt_number)
     );
+
+    CREATE TABLE IF NOT EXISTS grade_appeals (
+      id TEXT PRIMARY KEY,
+      target_type TEXT NOT NULL CHECK (target_type IN ('ASSIGNMENT','EXAM')),
+      target_id TEXT NOT NULL,
+      submission_or_attempt_id TEXT NOT NULL,
+      subject_class_id TEXT NOT NULL REFERENCES subject_classes(id) ON DELETE CASCADE,
+      student_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      reason TEXT NOT NULL,
+      current_score REAL,
+      requested_score REAL,
+      status TEXT NOT NULL DEFAULT 'PENDING' CHECK (status IN ('PENDING','UNDER_REVIEW','APPROVED','REJECTED')),
+      reviewer_id TEXT NULL REFERENCES users(id) ON DELETE SET NULL,
+      reviewer_name TEXT NULL,
+      final_score REAL NULL,
+      resolution_note TEXT NOT NULL DEFAULT '',
+      reviewed_at TEXT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_grade_appeals_class ON grade_appeals(subject_class_id, status, created_at);
+    CREATE INDEX IF NOT EXISTS idx_grade_appeals_student ON grade_appeals(student_id, created_at);
 
     CREATE TABLE IF NOT EXISTS class_gradebook_entries (
       id TEXT PRIMARY KEY,
@@ -574,6 +598,8 @@ export async function ensureMasterLmsSchema(db) {
   await addColumn(db, 'learning_resources', 'topic_id', 'TEXT NULL');
   await addColumn(db, 'learning_resources', 'chapter_id', 'TEXT NULL');
   await addColumn(db, 'learning_resources', 'lesson_id', 'TEXT NULL');
+  await addColumn(db, 'class_assignments', 'rubric_json', "TEXT NOT NULL DEFAULT '[]'");
+  await addColumn(db, 'class_assignment_submissions', 'rubric_scores_json', "TEXT NOT NULL DEFAULT '[]'");
   await addColumn(db, 'lesson_quiz_submissions', 'content_version_key', "TEXT NOT NULL DEFAULT 'v0'");
 
   await addColumn(db, 'leave_requests', 'class_session_id', 'TEXT NULL');
@@ -587,6 +613,16 @@ export async function ensureMasterLmsSchema(db) {
   await addColumn(db, 'leave_requests', 'review_note', 'TEXT NULL');
   await addColumn(db, 'leave_requests', 'created_at', 'TEXT NULL');
   await addColumn(db, 'leave_requests', 'updated_at', 'TEXT NULL');
+
+  await db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_lessons_chapter_sort ON lessons(chapter_id, publish_status, sort_order);
+    CREATE INDEX IF NOT EXISTS idx_sessions_class_sched_status ON sessions(subject_class_id, session_status, scheduled_start_at);
+    CREATE INDEX IF NOT EXISTS idx_class_enrollments_student_status ON class_enrollments(student_id, status, subject_class_id);
+    CREATE INDEX IF NOT EXISTS idx_attendance_records_session_status ON attendance_records(class_session_id, attendance_status);
+    CREATE INDEX IF NOT EXISTS idx_lesson_progress_class_student ON lesson_progress(subject_class_id, student_id, status);
+    CREATE INDEX IF NOT EXISTS idx_class_exam_attempts_student ON class_exam_attempts(exam_id, student_id, attempt_number);
+    CREATE INDEX IF NOT EXISTS idx_class_assign_subs_student ON class_assignment_submissions(class_assignment_id, student_id, status, attempt_number);
+  `);
 
   await recreateLeaveRequestsIfNeeded(db);
   await recreateVideoWatchProgressIfNeeded(db);
@@ -658,6 +694,7 @@ export async function clearMasterLmsData(db) {
     DELETE FROM teaching_forum_threads;
     DELETE FROM teaching_forums;
     DELETE FROM leave_request_logs;
+    DELETE FROM grade_appeals;
     DELETE FROM class_gradebook_entries;
     DELETE FROM class_assignment_submissions;
     DELETE FROM class_assignments;

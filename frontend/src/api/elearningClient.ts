@@ -60,27 +60,31 @@ export interface BootstrapPayload {
 const AUTH_STORAGE_KEY = 'lmsplus_auth_session_v2';
 
 let currentJwtToken: string | null = null;
+let currentRefreshToken: string | null = null;
 let currentAuthUser: AuthenticatedUser | null = null;
+let inflightRefreshPromise: Promise<boolean> | null = null;
 
 try {
   const raw = localStorage.getItem(AUTH_STORAGE_KEY);
   if (raw) {
     const parsed = JSON.parse(raw);
     currentJwtToken = parsed.access_token || null;
+    currentRefreshToken = parsed.refresh_token || null;
     currentAuthUser = parsed.user || null;
   }
 } catch {
   // ignore storage errors
 }
 
-function saveAuthSession(accessToken: string | null, user: AuthenticatedUser | null) {
+function saveAuthSession(accessToken: string | null, user: AuthenticatedUser | null, refreshToken: string | null = currentRefreshToken) {
   currentJwtToken = accessToken;
+  currentRefreshToken = accessToken ? refreshToken : null;
   currentAuthUser = user;
   try {
     if (accessToken && user) {
       localStorage.setItem(
         AUTH_STORAGE_KEY,
-        JSON.stringify({ access_token: accessToken, user })
+        JSON.stringify({ access_token: accessToken, refresh_token: currentRefreshToken, user })
       );
     } else {
       localStorage.removeItem(AUTH_STORAGE_KEY);
@@ -95,7 +99,57 @@ export function getSavedAuthUser(): AuthenticatedUser | null {
 }
 
 export function apiLogout(): void {
-  saveAuthSession(null, null);
+  const tokenToRevoke = currentJwtToken;
+  const refreshToRevoke = currentRefreshToken;
+  saveAuthSession(null, null, null);
+  if (tokenToRevoke || refreshToRevoke) {
+    const bases = IS_LOCAL_DEV_HOST
+      ? ['/api/v1/elearning/auth/logout', 'http://localhost:8000/api/v1/elearning/auth/logout']
+      : ['/api/v1/elearning/auth/logout'];
+    void fetch(bases[0], {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(tokenToRevoke ? { Authorization: `Bearer ${tokenToRevoke}` } : {}),
+      },
+      body: JSON.stringify({ refresh_token: refreshToRevoke }),
+    }).catch(() => {});
+  }
+}
+
+async function tryRefreshAccessToken(): Promise<boolean> {
+  if (!currentRefreshToken) return false;
+  if (inflightRefreshPromise) return inflightRefreshPromise;
+  inflightRefreshPromise = (async () => {
+    const bases = IS_LOCAL_DEV_HOST
+      ? ['/api/v1/elearning/auth/refresh', 'http://localhost:8000/api/v1/elearning/auth/refresh']
+      : ['/api/v1/elearning/auth/refresh'];
+    for (const url of bases) {
+      try {
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ refresh_token: currentRefreshToken }),
+        });
+        const ct = res.headers.get('content-type') || '';
+        if (!ct.includes('application/json')) continue;
+        if (!res.ok) return false;
+        const payload = await res.json().catch(() => ({}));
+        const d = payload?.data || payload;
+        if (d?.access_token && d?.user) {
+          saveAuthSession(d.access_token, d.user, d.refresh_token || currentRefreshToken);
+          return true;
+        }
+        return false;
+      } catch {
+        // try fallback base
+      }
+    }
+    return false;
+  })().finally(() => {
+    inflightRefreshPromise = null;
+  });
+  return inflightRefreshPromise;
 }
 
 export class ApiHttpError extends Error {
@@ -149,6 +203,17 @@ async function requestJson<T>(
       if (!response.ok) {
         const detail = payload?.detail || payload || {};
         if (response.status === 401 && !path.startsWith('/auth/')) {
+          const refreshed = await tryRefreshAccessToken();
+          if (refreshed && currentJwtToken) {
+            const retryRes = await fetch(`${base}${path}`, {
+              ...options,
+              headers: { ...headers, Authorization: `Bearer ${currentJwtToken}` },
+            });
+            if (retryRes.ok) {
+              const retryPayload = await retryRes.json().catch(() => ({}));
+              return (retryPayload.data !== undefined ? retryPayload.data : retryPayload) as T;
+            }
+          }
           notifySessionExpired();
         }
         throw new ApiHttpError(
@@ -200,7 +265,20 @@ export async function apiRequest<T>(absPath: string, options: RequestInit = {}):
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) {
         const detail = payload?.detail || {};
-        if (response.status === 401) notifySessionExpired();
+        if (response.status === 401) {
+          const refreshed = await tryRefreshAccessToken();
+          if (refreshed && currentJwtToken) {
+            const retryRes = await fetch(`${origin}${absPath}`, {
+              ...options,
+              headers: { ...headers, Authorization: `Bearer ${currentJwtToken}` },
+            });
+            if (retryRes.ok) {
+              const retryPayload = await retryRes.json().catch(() => ({}));
+              return (retryPayload.data !== undefined ? retryPayload.data : retryPayload) as T;
+            }
+          }
+          notifySessionExpired();
+        }
         throw new ApiHttpError(
           response.status,
           detail.code || `HTTP_${response.status}`,
@@ -236,7 +314,13 @@ export async function apiDownload(absPath: string): Promise<{ blob: Blob; filena
         const payload = await response.json().catch(() => ({}));
         if (!response.ok) {
           const detail = payload?.detail || {};
-          if (response.status === 401) notifySessionExpired();
+          if (response.status === 401) {
+            const refreshed = await tryRefreshAccessToken();
+            if (refreshed && currentJwtToken) {
+              return apiDownload(absPath);
+            }
+            notifySessionExpired();
+          }
           throw new ApiHttpError(response.status, detail.code || `HTTP_${response.status}`, detail.message || 'Không tải được tệp.', detail);
         }
         if (payload?.data?.url) return { url: payload.data.url as string };
@@ -260,15 +344,15 @@ export async function apiDownload(absPath: string): Promise<{ blob: Blob; filena
 export async function apiLogin(
   identifier: string,
   password: string
-): Promise<{ access_token: string; user: AuthenticatedUser }> {
-  const data = await requestJson<{ access_token: string; user: AuthenticatedUser }>(
+): Promise<{ access_token: string; refresh_token?: string; user: AuthenticatedUser }> {
+  const data = await requestJson<{ access_token: string; refresh_token?: string; user: AuthenticatedUser }>(
     '/auth/login',
     {
       method: 'POST',
       body: JSON.stringify({ identifier, password }),
     }
   );
-  saveAuthSession(data.access_token, data.user);
+  saveAuthSession(data.access_token, data.user, data.refresh_token || null);
   return data;
 }
 
@@ -278,15 +362,30 @@ export async function apiRegister(payload: {
   email: string;
   code?: string;
   password: string;
-}): Promise<{ access_token: string; user: AuthenticatedUser }> {
-  const data = await requestJson<{ access_token: string; user: AuthenticatedUser }>(
+}): Promise<{ access_token: string; refresh_token?: string; user: AuthenticatedUser }> {
+  const data = await requestJson<{ access_token: string; refresh_token?: string; user: AuthenticatedUser }>(
     '/auth/register',
     {
       method: 'POST',
       body: JSON.stringify({ ...payload, role: 'STUDENT' }),
     }
   );
-  saveAuthSession(data.access_token, data.user);
+  saveAuthSession(data.access_token, data.user, data.refresh_token || null);
+  return data;
+}
+
+export async function apiChangePassword(
+  currentPassword: string,
+  newPassword: string
+): Promise<{ access_token: string; refresh_token?: string; user: AuthenticatedUser }> {
+  const data = await requestJson<{ access_token: string; refresh_token?: string; user: AuthenticatedUser }>(
+    '/auth/change-password',
+    {
+      method: 'POST',
+      body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+    }
+  );
+  saveAuthSession(data.access_token, data.user, data.refresh_token || null);
   return data;
 }
 

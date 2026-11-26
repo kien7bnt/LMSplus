@@ -4,6 +4,7 @@
  */
 import React, { useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
+import { useBreadcrumbTrail } from '../../layout/BreadcrumbContext';
 import {
   CohortDetail,
   CohortStudentProgressRow,
@@ -36,6 +37,7 @@ import {
   useToast,
 } from '../ui';
 import { CohortInitializeWizardModal } from './CurriculumBlueprintPanels';
+import { IconRocket } from '../components/Icons';
 
 export const CohortListPage: React.FC = () => {
   const nav = useNavigate();
@@ -53,13 +55,13 @@ export const CohortListPage: React.FC = () => {
   return (
     <div className="t-page">
       <PageHeader
-        title="Khóa học (Lớp khóa học)"
+        title="Lớp khóa học"
         subtitle="Mở lớp từ Khung chương trình Đã ban hành: tự tạo Lớp môn học, sao chép học liệu/bài tập, gợi ý buổi & lên Thời khóa biểu."
         actions={
           <div className="t-actions">
             <Btn onClick={() => setCreating(true)}>+ Tạo cơ bản</Btn>
             <Btn variant="primary" onClick={() => setWizardOpen(true)}>
-              🚀 Khởi tạo Khóa học (5 bước)
+              <IconRocket size={15} /> Khởi tạo lớp khóa học (5 bước)
             </Btn>
           </div>
         }
@@ -280,6 +282,7 @@ export const CohortDetailPage: React.FC = () => {
   const toast = useToast();
   const push = (title: string, detail = '', tone: 'success' | 'error' | 'info' = 'info') => toast({ title, detail: detail || undefined, tone });
   const detail = useAsync(() => masterApi.getCohort(cohortId), [cohortId]);
+  useBreadcrumbTrail(detail.data ? [{ label: detail.data.code }] : []);
   const allCohorts = useAsync(() => masterApi.listCohorts({ page_size: 100 }), []);
   const [tab, setTab] = useState('students');
   const [busyAction, setBusyAction] = useState(false);
@@ -290,6 +293,10 @@ export const CohortDetailPage: React.FC = () => {
   const [transferTarget, setTransferTarget] = useState<CohortStudentProgressRow | null>(null);
   const [targetCohortId, setTargetCohortId] = useState('');
   const [transferReason, setTransferReason] = useState('');
+  const [editingCohort, setEditingCohort] = useState(false);
+  const [editTitle, setEditTitle] = useState('');
+  const [editStatus, setEditStatus] = useState<'PLANNING' | 'ACTIVE' | 'COMPLETED' | 'ARCHIVED'>('ACTIVE');
+  const [editMaxStudents, setEditMaxStudents] = useState(35);
 
   if (detail.loading) return <div className="t-page"><Loading rows={6} /></div>;
   if (detail.error) return <div className="t-page"><ErrorState error={detail.error} onRetry={detail.reload} /></div>;
@@ -363,11 +370,6 @@ export const CohortDetailPage: React.FC = () => {
   return (
     <div className="t-page">
       <PageHeader
-        breadcrumb={
-          <>
-            <Link to="/teaching/cohorts">Khóa học</Link> / <span>{c.code}</span>
-          </>
-        }
         title={
           <span className="t-title-inline">
             {c.title} <Badge kind="cohort" value={c.status} />
@@ -377,6 +379,16 @@ export const CohortDetailPage: React.FC = () => {
         actions={
           c.capabilities.can_manage ? (
             <>
+              <Btn
+                onClick={() => {
+                  setEditTitle(c.title);
+                  setEditStatus(c.status);
+                  setEditMaxStudents(c.max_students || 35);
+                  setEditingCohort(true);
+                }}
+              >
+                Cập nhật khóa
+              </Btn>
               <Btn onClick={handleSyncRoster} loading={busyAction}>
                 Đồng bộ quân số xuống Môn học
               </Btn>
@@ -789,6 +801,59 @@ export const CohortDetailPage: React.FC = () => {
               </Field>
             </div>
           )}
+        </Modal>
+      )}
+
+      {editingCohort && (
+        <Modal
+          title={`Cập nhật khóa học: ${c.code}`}
+          onClose={() => setEditingCohort(false)}
+          width={560}
+          footer={
+            <>
+              <Btn variant="ghost" onClick={() => setEditingCohort(false)} disabled={busyAction}>Hủy</Btn>
+              <Btn
+                variant="primary"
+                loading={busyAction}
+                onClick={async () => {
+                  setBusyAction(true);
+                  try {
+                    await masterApi.updateCohort(c.id, {
+                      title: editTitle.trim(),
+                      status: editStatus,
+                      max_students: editMaxStudents,
+                    });
+                    push('Đã cập nhật thông tin khóa học', '', 'success');
+                    setEditingCohort(false);
+                    detail.reload();
+                  } catch (ex) {
+                    push('Không cập nhật được khóa học', errMsg(ex), 'error');
+                  } finally {
+                    setBusyAction(false);
+                  }
+                }}
+              >
+                Lưu thay đổi
+              </Btn>
+            </>
+          }
+        >
+          <div className="t-form-grid">
+            <Field label="Tên khóa học" required wide>
+              <input className="t-input" value={editTitle} onChange={(e) => setEditTitle(e.target.value)} required />
+            </Field>
+            <Field label="Trạng thái">
+              <select className="t-input" value={editStatus} onChange={(e) => setEditStatus(e.target.value as 'PLANNING' | 'ACTIVE' | 'COMPLETED' | 'ARCHIVED')}>
+                <option value="PLANNING">Đang lập kế hoạch</option>
+                <option value="ACTIVE">Đang đào tạo</option>
+                <option value="COMPLETED">Đã hoàn thành</option>
+                <option value="ARCHIVED">Đã lưu trữ</option>
+              </select>
+            </Field>
+            <Field label="Sĩ số tối đa">
+              <input type="number" min={1} max={1000} className="t-input tabular-nums" value={editMaxStudents} onChange={(e) => setEditMaxStudents(Number(e.target.value) || 35)} />
+            </Field>
+          </div>
         </Modal>
       )}
     </div>

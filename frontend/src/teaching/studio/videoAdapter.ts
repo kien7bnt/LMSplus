@@ -209,21 +209,59 @@ export class Html5VideoAdapter implements VideoPlayerAdapter {
 
 // ------------------------------------------------------------------ 2. YouTube IFrame Player Adapter
 
+interface YTPlayerInstance {
+  destroy?: () => void;
+  getIframe?: () => HTMLIFrameElement | null;
+  playVideo?: () => void;
+  pauseVideo?: () => void;
+  seekTo?: (seconds: number, allowSeekAhead?: boolean) => void;
+  getCurrentTime?: () => number;
+  getDuration?: () => number;
+  getPlayerState?: () => number;
+  getPlaybackRate?: () => number;
+  setPlaybackRate?: (rate: number) => void;
+  getVolume?: () => number;
+  setVolume?: (volume: number) => void;
+  isMuted?: () => boolean;
+  mute?: () => void;
+  unMute?: () => void;
+}
+
+interface YTNamespace {
+  Player: new (
+    el: HTMLElement,
+    opts: {
+      host?: string;
+      width?: string | number;
+      height?: string | number;
+      videoId: string;
+      playerVars?: Record<string, string | number>;
+      events?: {
+        onReady?: () => void;
+        onStateChange?: (ev: { data?: number }) => void;
+        onPlaybackRateChange?: (ev: { data?: number }) => void;
+        onError?: (ev: { data?: number }) => void;
+      };
+    }
+  ) => YTPlayerInstance;
+  PlayerState: { PLAYING: number; ENDED: number };
+}
+
 declare global {
   interface Window {
-    YT?: any;
+    YT?: YTNamespace;
     onYouTubeIframeAPIReady?: () => void;
   }
 }
 
-let ytApiPromise: Promise<any> | null = null;
+let ytApiPromise: Promise<YTNamespace> | null = null;
 
-function loadYouTubeIframeApi(): Promise<any> {
+function loadYouTubeIframeApi(): Promise<YTNamespace> {
   if (typeof window === 'undefined') return Promise.reject(new Error('No window'));
   if (window.YT && window.YT.Player) return Promise.resolve(window.YT);
   if (ytApiPromise) return ytApiPromise;
 
-  ytApiPromise = new Promise((resolve, reject) => {
+  ytApiPromise = new Promise<YTNamespace>((resolve, reject) => {
     const timeout = window.setTimeout(() => {
       reject(new Error('Không tải được trình phát YouTube (hết thời gian chờ).'));
     }, 10000);
@@ -232,7 +270,8 @@ function loadYouTubeIframeApi(): Promise<any> {
     window.onYouTubeIframeAPIReady = () => {
       window.clearTimeout(timeout);
       prevReady?.();
-      resolve(window.YT);
+      if (window.YT) resolve(window.YT);
+      else reject(new Error('YouTube API chưa sẵn sàng.'));
     };
 
     const existing = document.querySelector('script[src="https://www.youtube.com/iframe_api"]');
@@ -253,7 +292,7 @@ function loadYouTubeIframeApi(): Promise<any> {
 }
 
 export class YouTubeIframeAdapter implements VideoPlayerAdapter {
-  private player: any = null;
+  private player: YTPlayerInstance | null = null;
   private ready = false;
   private playing = false;
   private ended = false;
@@ -284,7 +323,7 @@ export class YouTubeIframeAdapter implements VideoPlayerAdapter {
       iframe.style.display = 'block';
     };
 
-    const mountPlayer = (YT: any, attempt: 0 | 1) => {
+    const mountPlayer = (YT: YTNamespace, attempt: 0 | 1) => {
       if (this.destroyed) return;
       try {
         this.player?.destroy?.();
@@ -299,7 +338,7 @@ export class YouTubeIframeAdapter implements VideoPlayerAdapter {
       containerEl.appendChild(hostDiv);
 
       const start = Math.max(0, Math.floor(startSeconds || 0));
-      const playerVars: Record<string, any> = {
+      const playerVars: Record<string, string | number> = {
         playsinline: 1,
         rel: 0,
         controls: 1,
@@ -333,7 +372,7 @@ export class YouTubeIframeAdapter implements VideoPlayerAdapter {
               }
             }
           },
-          onStateChange: (ev: any) => {
+          onStateChange: (ev: { data?: number }) => {
             if (this.destroyed) return;
             const st = Number(ev?.data);
             this.playing = st === YT.PlayerState.PLAYING;
@@ -343,12 +382,12 @@ export class YouTubeIframeAdapter implements VideoPlayerAdapter {
             this.lastNotifiedDuration = this.getDuration();
             this.notify();
           },
-          onPlaybackRateChange: (ev: any) => {
+          onPlaybackRateChange: (ev: { data?: number }) => {
             if (this.destroyed) return;
             this.rate = Number(ev?.data) || 1;
             this.notify();
           },
-          onError: (ev: any) => {
+          onError: (ev: { data?: number }) => {
             if (this.destroyed) return;
             const code = Number(ev?.data);
             // Thử lại tự động không kèm origin nếu trình duyệt/môi trường cục bộ bị YouTube chặn ở lượt đầu
@@ -620,7 +659,7 @@ const normalizeCompare = (s: string, caseSensitive = false) => {
 
 export function gradeQuestionInMemory(
   question: QuestionSpec,
-  response: Record<string, any>,
+  response: Record<string, unknown>,
   opts: {
     attemptNumber: number;
     maxAttempts: number;
@@ -649,7 +688,8 @@ export function gradeQuestionInMemory(
         ? question.correct_feedback || 'Chính xác! Bạn đã chọn đúng đáp án.'
         : question.wrong_feedback || 'Chưa chính xác. Hãy xem lại nội dung vừa học nhé.');
   } else if (qType === 'MULTIPLE_CHOICE') {
-    const sel = Array.from(new Set((response.selected_option_ids || []).map(String))).sort();
+    const rawIds = Array.isArray(response.selected_option_ids) ? response.selected_option_ids : [];
+    const sel = Array.from(new Set(rawIds.map(String))).sort();
     const cor = Array.from(
       new Set((key.correct_option_ids || (question.options || []).filter((o) => o.is_correct).map((o) => o.id)).map(String))
     ).sort();
@@ -658,7 +698,8 @@ export function gradeQuestionInMemory(
       ? question.correct_feedback || 'Chính xác! Bạn đã chọn đầy đủ các phương án đúng.'
       : question.wrong_feedback || 'Chưa đầy đủ hoặc có phương án chưa đúng.';
   } else if (qType === 'FILL_BLANK') {
-    const candidate = normalizeCompare(response.text || '', Boolean(key.case_sensitive));
+    const rawText = typeof response.text === 'string' ? response.text : String(response.text || '');
+    const candidate = normalizeCompare(rawText, Boolean(key.case_sensitive));
     const accepted = (key.accepted_texts || []).map((t) => normalizeCompare(t, Boolean(key.case_sensitive)));
     isCorrect = Boolean(candidate) && accepted.includes(candidate);
     feedback = isCorrect

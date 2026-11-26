@@ -28,6 +28,7 @@ import {
   useAsync,
   useToast,
 } from '../ui';
+import { IconBolt, IconCheck, IconRocket } from '../components/Icons';
 
 const WEEKDAY_LABELS = [
   { v: 1, l: 'T2' },
@@ -281,10 +282,10 @@ export const CurriculumBlueprintWorkspace: React.FC<{
         {/* 1.2.1 Thông tin chung */}
         <Card title="Thông tin chung & Đối tượng đầu vào">
           <div className="t-form-grid">
-            <Field label="Loại khung chương trình (EL-Q4)">
+            <Field label="Loại khung chương trình">
               <select className="t-input" value={programType} onChange={(e) => setProgramType(e.target.value as 'INSTRUCTOR_LED' | 'SELF_PACED')} disabled={!canManage}>
                 <option value="INSTRUCTOR_LED">Có lớp & Có giảng viên hướng dẫn</option>
-                <option value="SELF_PACED">Tự học trực tuyến (Self-paced EL-Q4)</option>
+                <option value="SELF_PACED">Tự học trực tuyến (Self-paced)</option>
               </select>
             </Field>
             <Field label="Hình thức tổ chức">
@@ -749,7 +750,7 @@ export const CurriculumBlueprintWorkspace: React.FC<{
         actions={
           canManage && selectedCourseId && (
             <div className="t-actions">
-              <Btn small loading={busy} onClick={autoSplitCourseInCurriculum}>⚡ Chia sẵn 1 buổi = 1 bài</Btn>
+              <Btn small loading={busy} onClick={autoSplitCourseInCurriculum}><IconBolt size={14} /> Chia sẵn 1 buổi = 1 bài</Btn>
               <Btn small variant="primary" loading={busy} onClick={saveCoursePlansInCurriculum}>Lưu chia buổi</Btn>
             </div>
           )
@@ -894,7 +895,7 @@ export const CurriculumBlueprintWorkspace: React.FC<{
               )}
               {(lc === 'PENDING_APPROVAL' || lc === 'DRAFT') && (
                 <Btn variant="primary" loading={busy} onClick={() => runLifecycle('APPROVE_PUBLISH')}>
-                  ✓ Ban hành chính thức ({data.curriculum.version})
+                  <IconCheck size={15} /> Ban hành chính thức ({data.curriculum.version})
                 </Btn>
               )}
               {lc === 'PENDING_APPROVAL' && (
@@ -996,7 +997,8 @@ export const CohortInitializeWizardModal: React.FC<{
   const [startDate, setStartDate] = useState(todayVn(7));
   const [endDate, setEndDate] = useState(todayVn(180));
   const [maxStudents, setMaxStudents] = useState(30);
-  const [campusId, setCampusId] = useState('cp_cs1');
+  const [campusId, setCampusId] = useState('');
+  const effectiveCampusId = campusId || facilitiesReq.data?.campuses?.[0]?.id || '';
   const [recurrenceMode, setRecurrenceMode] = useState<'WEEKLY' | 'MONTHLY' | 'UNSCHEDULED'>('WEEKLY');
   const [weekdays, setWeekdays] = useState<number[]>([1, 3, 5]);
   const [monthDaysText, setMonthDaysText] = useState('5, 15, 25');
@@ -1045,7 +1047,7 @@ export const CohortInitializeWizardModal: React.FC<{
         start_date: startDate,
         end_date: endDate || undefined,
         max_students: maxStudents,
-        campus_id: campusId,
+        campus_id: effectiveCampusId,
         publish_schedule: publishNow,
         quick_schedule: quickSchedule,
         class_configs: classConfigs,
@@ -1071,14 +1073,14 @@ export const CohortInitializeWizardModal: React.FC<{
 
   return (
     <Modal
-      title="Khởi tạo Khóa học 5 bước từ Khung chương trình Đã ban hành"
+      title="Khởi tạo lớp khóa học 5 bước từ Khung chương trình Đã ban hành"
       onClose={onClose}
       width={820}
       footer={
         <>
           <Btn variant="ghost" onClick={onClose} disabled={busy}>Hủy</Btn>
           <Btn variant="primary" type="submit" form="cohort-wiz-form" loading={busy}>
-            🚀 Mở Khóa học & Sinh Lớp môn
+            <IconRocket size={15} /> Mở lớp khóa học & Sinh lớp môn
           </Btn>
         </>
       }
@@ -1116,7 +1118,7 @@ export const CohortInitializeWizardModal: React.FC<{
               <input className="t-input" type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} />
             </Field>
             <Field label="Cơ sở đào tạo mặc định" wide>
-              <select className="t-input" value={campusId} onChange={(e) => setCampusId(e.target.value)}>
+              <select className="t-input" value={effectiveCampusId} onChange={(e) => setCampusId(e.target.value)}>
                 {(facilitiesReq.data?.campuses || []).map((cp) => (
                   <option key={cp.id} value={cp.id}>{cp.code} — {cp.name}</option>
                 ))}

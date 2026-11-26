@@ -197,6 +197,7 @@ export const ClassListPage: React.FC = () => {
   const dq = useDebounced(q);
   const status = sp.get('status') || '';
   const courseId = sp.get('course_id') || '';
+  const focusAssessment = sp.get('focus') === 'assessment';
   const page = Math.max(1, Number(sp.get('page')) || 1);
   const [creating, setCreating] = useState(sp.get('new') === '1');
   const [editing, setEditing] = useState<ClassSummary | null>(null);
@@ -219,12 +220,17 @@ export const ClassListPage: React.FC = () => {
   return (
     <div className="t-page">
       <PageHeader
-        title="Lớp học"
-        subtitle="Quản lý danh sách lớp học, học viên, lịch buổi học, điểm danh và nhật ký giảng dạy."
+        title={focusAssessment ? 'Kiểm tra, Bài tập & Bảng điểm' : 'Lớp môn học'}
+        subtitle={
+          focusAssessment
+            ? 'Truy cập nhanh ngân hàng bài kiểm tra, bài tập Rubric, bảng điểm và xét duyệt phúc khảo theo từng lớp môn học.'
+            : 'Quản lý danh sách lớp môn học, học viên, lịch buổi học, điểm danh và nhật ký giảng dạy.'
+        }
         actions={
+          !focusAssessment &&
           meReq.data?.can_create_class && (
             <Btn variant="primary" onClick={() => setCreating(true)}>
-              + Tạo lớp học
+              + Tạo lớp môn học
             </Btn>
           )
         }
@@ -364,18 +370,34 @@ export const ClassListPage: React.FC = () => {
                             </td>
                             <td className="actions">
                               <div className="t-actions">
-                                <Link className="t-btn t-btn--small" to={`/teaching/classes/${cls.id}`}>
-                                  Mở lớp
-                                </Link>
-                                {canAttend && (
-                                  <Link className="t-btn t-btn--small t-btn--primary" to={`/teaching/classes/${cls.id}/attendance`}>
-                                    Điểm danh
-                                  </Link>
-                                )}
-                                {canManage && (
-                                  <Btn small variant="quiet" onClick={() => setEditing(cls)}>
-                                    Sửa
-                                  </Btn>
+                                {focusAssessment ? (
+                                  <>
+                                    <Link className="t-btn t-btn--small t-btn--primary" to={`/teaching/classes/${cls.id}?tab=exams`}>
+                                      Kiểm tra
+                                    </Link>
+                                    <Link className="t-btn t-btn--small" to={`/teaching/classes/${cls.id}?tab=assignments`}>
+                                      Bài tập
+                                    </Link>
+                                    <Link className="t-btn t-btn--small" to={`/teaching/classes/${cls.id}?tab=gradebook`}>
+                                      Bảng điểm
+                                    </Link>
+                                  </>
+                                ) : (
+                                  <>
+                                    <Link className="t-btn t-btn--small" to={`/teaching/classes/${cls.id}`}>
+                                      Mở lớp
+                                    </Link>
+                                    {canAttend && (
+                                      <Link className="t-btn t-btn--small t-btn--primary" to={`/teaching/classes/${cls.id}/attendance`}>
+                                        Điểm danh
+                                      </Link>
+                                    )}
+                                    {canManage && (
+                                      <Btn small variant="quiet" onClick={() => setEditing(cls)}>
+                                        Sửa
+                                      </Btn>
+                                    )}
+                                  </>
                                 )}
                               </div>
                             </td>
@@ -439,18 +461,34 @@ export const ClassListPage: React.FC = () => {
                         )}
 
                         <div className="t-actions">
-                          <Link className="t-btn t-btn--small" to={`/teaching/classes/${cls.id}`}>
-                            Mở lớp
-                          </Link>
-                          {canAttend && (
-                            <Link className="t-btn t-btn--small t-btn--primary" to={`/teaching/classes/${cls.id}/attendance`}>
-                              Điểm danh
-                            </Link>
-                          )}
-                          {canManage && (
-                            <Btn small variant="quiet" onClick={() => setEditing(cls)}>
-                              Sửa
-                            </Btn>
+                          {focusAssessment ? (
+                            <>
+                              <Link className="t-btn t-btn--small t-btn--primary" to={`/teaching/classes/${cls.id}?tab=exams`}>
+                                Kiểm tra
+                              </Link>
+                              <Link className="t-btn t-btn--small" to={`/teaching/classes/${cls.id}?tab=assignments`}>
+                                Bài tập
+                              </Link>
+                              <Link className="t-btn t-btn--small" to={`/teaching/classes/${cls.id}?tab=gradebook`}>
+                                Bảng điểm
+                              </Link>
+                            </>
+                          ) : (
+                            <>
+                              <Link className="t-btn t-btn--small" to={`/teaching/classes/${cls.id}`}>
+                                Mở lớp
+                              </Link>
+                              {canAttend && (
+                                <Link className="t-btn t-btn--small t-btn--primary" to={`/teaching/classes/${cls.id}/attendance`}>
+                                  Điểm danh
+                                </Link>
+                              )}
+                              {canManage && (
+                                <Btn small variant="quiet" onClick={() => setEditing(cls)}>
+                                  Sửa
+                                </Btn>
+                              )}
+                            </>
                           )}
                         </div>
                       </div>

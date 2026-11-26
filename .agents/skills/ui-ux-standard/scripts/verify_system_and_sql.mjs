@@ -119,10 +119,11 @@ const expectedCodeFiles = [
   'backend/app/api/v1/elearning_router.py',
   'frontend/package.json',
   'frontend/src/types/elearning.ts',
-  'frontend/src/components/ui/Primitives.tsx',
-  'frontend/src/components/elearning/LessonPlayerView.tsx',
-  'frontend/src/components/elearning/BlockEditorView.tsx',
-  'frontend/src/components/elearning/TeachingLogAndAttendanceView.tsx',
+  'frontend/src/teaching/ui.tsx',
+  'frontend/src/teaching/api.ts',
+  'frontend/src/teaching/studio/LessonStudioPage.tsx',
+  'frontend/src/teaching/studio/InteractiveVideoPlayer.tsx',
+  'frontend/src/teaching/pages/ClassDetailPage.tsx',
   'frontend/src/App.tsx',
 ];
 

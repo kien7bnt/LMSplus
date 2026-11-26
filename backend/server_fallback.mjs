@@ -29,17 +29,24 @@ import {
   seedTeachingData,
 } from './teaching/schema.mjs';
 import { seedMasterLmsStarterData } from './teaching/masterSchema.mjs';
-import { createTeachingRouter, TEACHING_PREFIX } from './teaching/routes.mjs';
+import {
+  createTeachingRouter,
+  TEACHING_PREFIX,
+} from './teaching/routes.mjs';
 import { mapAsync } from './teaching/http.mjs';
-import { verifyMediaStreamToken } from './teaching/studio.mjs';
+import { createStorageAdapter } from './storage/adapter.mjs';
+import { verifyMediaStreamTokenSafe, isProductionRuntime, resolveJwtSecret, hashPasswordScrypt, verifyPassword, validatePasswordStrength, createJwtToken as signJwtWithSecret, verifyJwtToken as verifyJwtWithSecret, generateRefreshTokenPair, hashOpaqueToken, buildSecurityAndCorsHeaders, checkRateLimit, extractClientIp } from './common/security.mjs';
+import { canManageCourse, assertDepartmentScope, isAdmin, isStaff, isHeadOfDepartment, isInstructor } from './teaching/scope.mjs';
 
 const currentFilePath = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(currentFilePath);
 const ROOT_DIR = path.resolve(__dirname, '..');
 const IS_SERVERLESS = Boolean(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME);
+const IS_PRODUCTION = isProductionRuntime();
 const LOG_DIR = path.join(ROOT_DIR, 'logs');
 const DB_DIR = path.join(ROOT_DIR, 'database');
-const PG_SCHEMA_PATH = path.join(DB_DIR, 'migrations', '010_postgres18_live_schema.sql');
+const MIGRATIONS_DIR = path.join(DB_DIR, 'migrations');
+const PG_SCHEMA_PATH = path.join(MIGRATIONS_DIR, '010_postgres18_live_schema.sql');
 
 const LOG_FILE = process.env.LMSPLUS_LOG_FILE
   ? path.resolve(process.env.LMSPLUS_LOG_FILE)
@@ -51,19 +58,21 @@ if (LOG_FILE && !fs.existsSync(path.dirname(LOG_FILE))) {
   fs.mkdirSync(path.dirname(LOG_FILE), { recursive: true });
 }
 const PORT = Number(process.env.BACKEND_PORT || 8000);
-const JWT_SECRET = process.env.LMSPLUS_JWT_SECRET || 'lmsplus-production-grade-hmac-secret-2026';
+const JWT_SECRET = resolveJwtSecret();
+const VALID_USER_ROLES = ['STUDENT', 'INSTRUCTOR', 'TEACHING_ASSISTANT', 'HEAD_OF_DEPARTMENT', 'ACADEMIC_STAFF', 'ADMIN', 'SUPER_ADMIN'];
 
 export const db = createDbClient();
 
 function hashPassword(plainPassword) {
-  return crypto
-    .createHmac('sha256', JWT_SECRET)
-    .update(String(plainPassword))
-    .digest('hex');
+  return hashPasswordScrypt(plainPassword);
+}
+
+function redactSensitiveLogText(message) {
+  return String(message || '').replace(/([?&](?:st|token|access_token|refresh_token)=)[^&\s]+/gi, '$1[REDACTED]');
 }
 
 function writeLog(level, message) {
-  const line = `[${level}] ${new Date().toISOString()} | ${message}\n`;
+  const line = `[${level}] ${new Date().toISOString()} | ${redactSensitiveLogText(message)}\n`;
   if (LOG_FILE) {
     try {
       fs.appendFileSync(LOG_FILE, line, 'utf8');
@@ -74,41 +83,12 @@ function writeLog(level, message) {
   process.stdout.write(line);
 }
 
-export function createJwtToken(user, expiresInSec = 86400) {
-  const header = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url');
-  const payload = Buffer.from(
-    JSON.stringify({
-      sub: user.id || user.sub,
-      code: user.code || 'USR001',
-      email: user.email || 'user@lmsplus.edu.vn',
-      full_name: user.full_name,
-      roles: user.roles || (user.role ? [user.role] : ['STUDENT']),
-      department_id: user.department_id || null,
-      exp: Math.floor(Date.now() / 1000) + expiresInSec,
-    })
-  ).toString('base64url');
-  const sig = crypto
-    .createHmac('sha256', JWT_SECRET)
-    .update(`${header}.${payload}`)
-    .digest('base64url');
-  return `${header}.${payload}.${sig}`;
+export function createJwtToken(user, expiresInSec = 3600) {
+  return signJwtWithSecret(user, JWT_SECRET, expiresInSec);
 }
 
 export function verifyJwtToken(token) {
-  try {
-    const parts = token.split('.');
-    if (parts.length !== 3) return null;
-    const expectedSig = crypto
-      .createHmac('sha256', JWT_SECRET)
-      .update(`${parts[0]}.${parts[1]}`)
-      .digest('base64url');
-    if (parts[2] !== expectedSig) return null;
-    const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
-    if (payload.exp < Math.floor(Date.now() / 1000)) return null;
-    return payload;
-  } catch {
-    return null;
-  }
+  return verifyJwtWithSecret(token, JWT_SECRET);
 }
 
 function sanitizeUserRecord(row) {
@@ -120,6 +100,7 @@ function sanitizeUserRecord(row) {
     full_name: row.full_name,
     roles: JSON.parse(row.roles_json || '["STUDENT"]'),
     department_id: row.department_id,
+    is_active: row.is_active === undefined ? true : Boolean(row.is_active),
   };
 }
 
@@ -161,6 +142,16 @@ export async function initSchemaAndSeed(forceReset = false) {
     if (forceReset || !hasUsers?.tbl) {
       const schemaSql = fs.readFileSync(PG_SCHEMA_PATH, 'utf8');
       await db.exec(schemaSql);
+    }
+    if (fs.existsSync(MIGRATIONS_DIR)) {
+      const upFiles = fs
+        .readdirSync(MIGRATIONS_DIR)
+        .filter((f) => /^(0[1-9][1-9]|[1-9]\d{2,})_.*_up\.sql$/i.test(f))
+        .sort();
+      for (const upFile of upFiles) {
+        const upSql = fs.readFileSync(path.join(MIGRATIONS_DIR, upFile), 'utf8');
+        await db.exec(upSql);
+      }
     }
   } else {
     await db.exec(`
@@ -324,8 +315,31 @@ export async function initSchemaAndSeed(forceReset = false) {
   const wikiCount = (await db.prepare('SELECT COUNT(*) AS cnt FROM wiki_terms').get()).cnt;
 
   if (!forceReset && userCount > 0 && wikiCount > 0) {
-    await seedTeachingData(db, { seed: JSON.parse(fs.readFileSync(SEED_PATH, 'utf8')), hashPassword });
-    await seedMasterLmsStarterData(db);
+    if (!IS_PRODUCTION) {
+      await seedTeachingData(db, { seed: JSON.parse(fs.readFileSync(SEED_PATH, 'utf8')), hashPassword });
+      await seedMasterLmsStarterData(db);
+    }
+    _initPromise = Promise.resolve();
+    return;
+  }
+
+  // Bảo vệ Production: tuyệt đối không khởi tạo tài khoản mẫu kèm mật khẩu mặc định '123456'
+  if (IS_PRODUCTION) {
+    const bootstrapPw = String(process.env.LMSPLUS_ADMIN_BOOTSTRAP_PASSWORD || '').trim();
+    if (userCount === 0 && bootstrapPw.length >= 12) {
+      const checkPw = validatePasswordStrength(bootstrapPw, { strictProduction: true });
+      if (!checkPw.ok) {
+        throw new Error(`[FATAL SECURITY] LMSPLUS_ADMIN_BOOTSTRAP_PASSWORD không đủ mạnh: ${checkPw.message}`);
+      }
+      await db.prepare(
+        `INSERT INTO users (id, code, email, full_name, password_hash, roles_json, department_id, assigned_course_ids_json, enrolled_subject_class_ids_json, token_version, is_active)
+         VALUES ('admin_bootstrap', 'AD00001', 'admin@lmsplus.edu.vn', 'Quản trị Hệ thống', ?, '["SUPER_ADMIN","ADMIN"]', NULL, '[]', '[]', 1, 1)
+         ON CONFLICT DO NOTHING`
+      ).run(hashPassword(bootstrapPw));
+      writeLog('PASS ', 'Initialized single bootstrap SUPER_ADMIN account from LMSPLUS_ADMIN_BOOTSTRAP_PASSWORD.');
+    } else if (userCount === 0) {
+      writeLog('WARN ', 'Production database has 0 users. Demo seeding skipped; set LMSPLUS_ADMIN_BOOTSTRAP_PASSWORD (>= 12 chars) or run migration to provision admin.');
+    }
     _initPromise = Promise.resolve();
     return;
   }
@@ -339,9 +353,19 @@ export async function initSchemaAndSeed(forceReset = false) {
     if (tbls.length > 0) {
       await db.exec(`TRUNCATE TABLE ${tbls.join(', ')} RESTART IDENTITY CASCADE;`);
     }
+    // Khởi tạo lại đơn vị/bộ môn chuẩn sau TRUNCATE test database
+    await db.exec(`
+      INSERT INTO departments (id, code, name, parent_id, org_type, description, is_active, created_at, updated_at)
+      VALUES
+        ('org_root', 'LMSPLUS', 'Hệ thống Đào tạo LMSPLUS', NULL, 'ORGANIZATION', 'Đơn vị chủ quản toàn hệ thống', 1, '2026-09-01T00:00:00Z', '2026-09-01T00:00:00Z'),
+        ('khoi_5', 'KHOI5', 'Tổ Toán – Khối 5', 'org_root', 'DEPARTMENT', 'Tổ chuyên môn khối 5', 1, '2026-09-01T00:00:00Z', '2026-09-01T00:00:00Z'),
+        ('dept_se', 'DEPT-SE', 'Khoa Công nghệ Phần mềm', 'org_root', 'FACULTY', 'Khoa Kỹ thuật & Công nghệ Phần mềm', 1, '2026-09-01T00:00:00Z', '2026-09-01T00:00:00Z')
+      ON CONFLICT (id) DO NOTHING;
+    `);
   } else {
     await clearTeachingData(db);
     await db.exec(`
+    DELETE FROM auth_refresh_tokens;
     DELETE FROM learning_events;
     DELETE FROM leave_requests;
     DELETE FROM teaching_log_history;
@@ -357,7 +381,7 @@ export async function initSchemaAndSeed(forceReset = false) {
   `);
   }
 
-  const defaultPassHash = hashPassword('123456');
+  const defaultPassHash = hashPassword(process.env.LMSPLUS_SEED_PASSWORD || '123456');
   const insUser = db.prepare(
     `INSERT INTO users (id, code, email, full_name, password_hash, roles_json, department_id, assigned_course_ids_json, enrolled_subject_class_ids_json)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
@@ -559,22 +583,42 @@ const UPLOADS_DIR = process.env.LMSPLUS_UPLOADS_DIR
     ? path.join(os.tmpdir(), 'lmsplus_uploads', 'resources')
     : path.join(ROOT_DIR, 'backend', 'uploads', 'resources');
 fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+const storageAdapter = createStorageAdapter({ baseDir: UPLOADS_DIR, log: writeLog });
 export const MAX_BODY_BYTES = 24 * 1024 * 1024;
-const handleTeaching = createTeachingRouter({ db, uploadsDir: UPLOADS_DIR, jwtSecret: JWT_SECRET, log: writeLog });
+const handleTeaching = createTeachingRouter({ db, uploadsDir: UPLOADS_DIR, storage: storageAdapter, jwtSecret: JWT_SECRET, log: writeLog });
+
+async function issueSessionTokensForUser(dbClient, userRow, userAgent = '') {
+  const userObj = sanitizeUserRecord(userRow);
+  const accessToken = createJwtToken({ ...userObj, token_version: userRow.token_version ?? 1 });
+  const { rawToken, tokenHash } = generateRefreshTokenPair();
+  const expiresAt = new Date(Date.now() + 30 * 86400 * 1000).toISOString();
+  await dbClient
+    .prepare(
+      `INSERT INTO auth_refresh_tokens (id, user_id, token_hash, expires_at, revoked_at, created_at, user_agent)
+       VALUES (?, ?, ?, ?, NULL, ?, ?)`
+    )
+    .run(`rt_${crypto.randomBytes(6).toString('hex')}`, userObj.id, tokenHash, expiresAt, new Date().toISOString(), String(userAgent || '').slice(0, 200));
+  return {
+    access_token: accessToken,
+    refresh_token: rawToken,
+    token_type: 'Bearer',
+    expires_in: 3600,
+    user: userObj,
+  };
+}
 
 async function resolveUser(req, url = null, pathname = '', method = 'GET') {
   const auth = req.headers['authorization'];
   if (auth && auth.startsWith('Bearer ')) {
     const claims = verifyJwtToken(auth.slice(7).trim());
     if (!claims) return null;
-    return {
-      id: claims.sub,
-      code: claims.code || 'USR001',
-      email: claims.email,
-      full_name: claims.full_name,
-      roles: claims.roles || [],
-      department_id: claims.department_id,
-    };
+    // Đối chiếu trạng thái sống & token_version trong DB để thu hồi ngay khi logout / đổi quyền / khóa tài khoản
+    const row = await db
+      .prepare('SELECT id, code, email, full_name, roles_json, department_id, token_version, is_active FROM users WHERE id = ?')
+      .get(claims.sub);
+    if (!row || Number(row.is_active ?? 1) !== 1) return null;
+    if (Number(claims.tv ?? 1) !== Number(row.token_version ?? 1)) return null;
+    return sanitizeUserRecord(row);
   }
   // Cho phép thẻ <video> / <object> PDF phát trực tiếp qua token HMAC giới hạn theo đúng resourceId (?st=...)
   if ((method === 'GET' || method === 'HEAD') && url) {
@@ -582,30 +626,32 @@ async function resolveUser(req, url = null, pathname = '', method = 'GET') {
     const st = url.searchParams.get('st');
     if (streamMatch && st) {
       const resourceId = decodeURIComponent(streamMatch[1]);
-      const verified = verifyMediaStreamToken(JWT_SECRET, st, resourceId);
+      const verified = verifyMediaStreamTokenSafe(JWT_SECRET, st, resourceId);
       if (verified && verified.uid) {
-        const row = await db.prepare('SELECT * FROM users WHERE id = ?').get(verified.uid);
+        const row = await db.prepare('SELECT id, code, email, full_name, roles_json, department_id, is_active FROM users WHERE id = ?').get(verified.uid);
+        if (!row || Number(row.is_active ?? 1) !== 1) return null;
         return sanitizeUserRecord(row);
       }
     }
   }
-  // Không còn chấp nhận header vai trò giả lập: mọi request khác phải có JWT hợp lệ.
+  // Mọi request khác bắt buộc phải có JWT hợp lệ; không bao giờ chấp nhận X-LMSPLUS-Role
   return null;
 }
 
-function sendJson(res, statusCode, payload) {
+function sendJson(res, statusCode, payload, extraHeaders = {}) {
   const body = JSON.stringify(payload, null, 2);
+  const secHeaders = res.__securityHeaders || buildSecurityAndCorsHeaders(res.__req || null);
   res.writeHead(statusCode, {
     'Content-Type': 'application/json; charset=utf-8',
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, Authorization, Range, Idempotency-Key, X-LMSPLUS-Role',
-    'Access-Control-Expose-Headers': 'Content-Range, Accept-Ranges, Content-Length, Content-Disposition',
+    ...secHeaders,
+    ...extraHeaders,
   });
   res.end(body);
 }
 
 export async function handleApiRequest(req, res, bodyData) {
+  res.__req = req;
+  res.__securityHeaders = buildSecurityAndCorsHeaders(req);
   try {
     await ensureInitialized();
     return await handleApiRequestInner(req, res, bodyData);
@@ -640,12 +686,7 @@ async function handleApiRequestInner(req, res, bodyData) {
   const method = req.method || 'GET';
 
   if (method === 'OPTIONS') {
-    res.writeHead(204, {
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type, Authorization, Range, Idempotency-Key, X-LMSPLUS-Role',
-      'Access-Control-Expose-Headers': 'Content-Range, Accept-Ranges, Content-Length, Content-Disposition',
-    });
+    res.writeHead(204, res.__securityHeaders || buildSecurityAndCorsHeaders(req));
     res.end();
     return;
   }
@@ -679,43 +720,59 @@ async function handleApiRequestInner(req, res, bodyData) {
     return;
   }
 
+  const allowTestResetSeed =
+    !IS_PRODUCTION &&
+    process.env.LMSPLUS_ALLOW_RESET_SEED !== '0' &&
+    (process.env.LMSPLUS_ALLOW_RESET_SEED === '1' || Boolean(process.env.LMSPLUS_DB_PATH) || process.env.NODE_ENV === 'test');
   if (pathname === '/api/v1/elearning/testing/reset-seed' && method === 'POST') {
+    if (!allowTestResetSeed) {
+      sendJson(res, 404, { detail: { code: 'NOT_FOUND', message: 'Không tìm thấy đường dẫn.' } });
+      return;
+    }
     await initSchemaAndSeed(true);
     sendJson(res, 200, { success: true, data: { reset: true } });
     return;
   }
 
-  // AUTH 1: Role Switcher Token Issue
-  // Chỉ dùng cho kiểm thử tự động; tắt hoàn toàn khi NODE_ENV=production.
-  if (
-    pathname === '/api/v1/elearning/auth/token' &&
-    method === 'POST' &&
-    process.env.NODE_ENV === 'production'
-  ) {
-    sendJson(res, 404, { detail: { code: 'NOT_FOUND', message: 'Không tìm thấy đường dẫn.' } });
-    return;
-  }
+  // AUTH 1: Role Switcher Token Issue — chỉ cho phép trong môi trường kiểm thử nội bộ, tắt tuyệt đối trên Production/Dev thông thường
+  const allowTestAuthToken =
+    !IS_PRODUCTION &&
+    process.env.LMSPLUS_ENABLE_TEST_ENDPOINTS !== '0' &&
+    (Boolean(process.env.LMSPLUS_DB_PATH) ||
+      process.env.LMSPLUS_USE_PG_FOR_TESTS === '1' ||
+      process.env.LMSPLUS_ENABLE_TEST_ENDPOINTS === '1' ||
+      process.env.NODE_ENV === 'test');
   if (pathname === '/api/v1/elearning/auth/token' && method === 'POST') {
+    if (!allowTestAuthToken) {
+      sendJson(res, 404, { detail: { code: 'NOT_FOUND', message: 'Không tìm thấy đường dẫn.' } });
+      return;
+    }
     const requestedRole = String(body.role || 'STUDENT').toUpperCase();
-    const rows = await db.prepare('SELECT * FROM users').all();
+    const rows = await db.prepare('SELECT * FROM users WHERE is_active = 1').all();
     const match = rows.find((r) => JSON.parse(r.roles_json).includes(requestedRole));
     if (!match) {
       sendJson(res, 404, { detail: { code: 'USER_NOT_FOUND', message: 'Không tìm thấy tài khoản.' } });
       return;
     }
-    const userObj = sanitizeUserRecord(match);
-    const token = createJwtToken(userObj);
-    sendJson(res, 200, {
-      success: true,
-      data: { access_token: token, token_type: 'Bearer', user: userObj },
-    });
+    const tokensData = await issueSessionTokensForUser(db, match, req.headers['user-agent']);
+    sendJson(res, 200, { success: true, data: tokensData });
     return;
   }
 
-  // AUTH 2: Login with Email / User Code + Password
+  // AUTH 2: Login with Email / User Code + Password (kèm Rate Limit & Scrypt/Progressive Upgrade)
   if (pathname === '/api/v1/elearning/auth/login' && method === 'POST') {
+    const clientIp = extractClientIp(req);
     const identifier = String(body.identifier || body.email || '').trim().toLowerCase();
     const password = String(body.password || '');
+    if (process.env.LMSPLUS_DISABLE_RATE_LIMIT !== '1') {
+      const rl = checkRateLimit(`login:${clientIp}:${identifier || '*'}`, { max: 30, windowMs: 60_000 });
+      if (!rl.allowed) {
+        sendJson(res, 429, {
+          detail: { code: 'TOO_MANY_ATTEMPTS', message: 'Đăng nhập sai hoặc thao tác quá nhanh. Vui lòng thử lại sau ít phút.' },
+        }, { 'Retry-After': String(rl.retryAfterSec) });
+        return;
+      }
+    }
     if (!identifier || !password) {
       sendJson(res, 422, {
         detail: {
@@ -737,8 +794,30 @@ async function handleApiRequestInner(req, res, bodyData) {
       });
       return;
     }
-    const expectedHash = hashPassword(password);
-    if (!row.password_hash || row.password_hash !== expectedHash) {
+    if (Number(row.is_active ?? 1) !== 1) {
+      sendJson(res, 403, {
+        detail: { code: 'ACCOUNT_DISABLED', message: 'Tài khoản này đã bị vô hiệu hóa. Vui lòng liên hệ Quản trị viên.' },
+      });
+      return;
+    }
+    if (row.locked_until && Date.parse(row.locked_until) > Date.now()) {
+      sendJson(res, 429, {
+        detail: { code: 'ACCOUNT_TEMPORARILY_LOCKED', message: 'Tài khoản tạm thời bị khóa do đăng nhập sai nhiều lần. Vui lòng thử lại sau 5 phút.' },
+      });
+      return;
+    }
+    const legacyCandidates = [
+      process.env.LMSPLUS_LEGACY_PASSWORD_KEY || '',
+      !IS_PRODUCTION ? 'lmsplus-production-grade-hmac-secret-2026' : '',
+      !IS_PRODUCTION ? JWT_SECRET : '',
+    ];
+    const verified = verifyPassword(password, row.password_hash, legacyCandidates);
+    if (!verified.valid) {
+      const nextFails = Number(row.failed_login_count || 0) + 1;
+      const lockUntil = nextFails >= 10 ? new Date(Date.now() + 5 * 60_000).toISOString() : null;
+      await db
+        .prepare('UPDATE users SET failed_login_count = ?, locked_until = COALESCE(?, locked_until) WHERE id = ?')
+        .run(nextFails, lockUntil, row.id);
       sendJson(res, 401, {
         detail: {
           code: 'INVALID_CREDENTIALS',
@@ -747,25 +826,80 @@ async function handleApiRequestInner(req, res, bodyData) {
       });
       return;
     }
-    const userObj = sanitizeUserRecord(row);
-    const token = createJwtToken(userObj);
-    sendJson(res, 200, {
-      success: true,
-      data: { access_token: token, token_type: 'Bearer', user: userObj },
+    if (verified.needsRehash || Number(row.failed_login_count || 0) > 0 || row.locked_until) {
+      const upgradedHash = verified.needsRehash ? hashPassword(password) : row.password_hash;
+      await db
+        .prepare('UPDATE users SET password_hash = ?, failed_login_count = 0, locked_until = NULL WHERE id = ?')
+        .run(upgradedHash, row.id);
+    }
+    const tokensData = await issueSessionTokensForUser(db, row, req.headers['user-agent']);
+    sendJson(res, 200, { success: true, data: tokensData });
+    return;
+  }
+
+  // AUTH 2b: Refresh Access Token (Refresh Token Rotation)
+  if (pathname === '/api/v1/elearning/auth/refresh' && method === 'POST') {
+    const rawRefresh = String(body.refresh_token || '').trim();
+    if (!rawRefresh) {
+      sendJson(res, 401, { detail: { code: 'INVALID_REFRESH_TOKEN', message: 'Thiếu refresh token.' } });
+      return;
+    }
+    const tokenHash = hashOpaqueToken(rawRefresh);
+    const rtRow = await db.prepare('SELECT * FROM auth_refresh_tokens WHERE token_hash = ?').get(tokenHash);
+    if (!rtRow || rtRow.revoked_at || Date.parse(rtRow.expires_at) <= Date.now()) {
+      sendJson(res, 401, { detail: { code: 'INVALID_REFRESH_TOKEN', message: 'Refresh token không hợp lệ hoặc đã hết hạn.' } });
+      return;
+    }
+    const userRow = await db.prepare('SELECT * FROM users WHERE id = ?').get(rtRow.user_id);
+    if (!userRow || Number(userRow.is_active ?? 1) !== 1) {
+      sendJson(res, 401, { detail: { code: 'ACCOUNT_DISABLED', message: 'Tài khoản không còn hoạt động.' } });
+      return;
+    }
+    const now = new Date().toISOString();
+    let rotated = null;
+    await db.tx(async (txDb) => {
+      await txDb.prepare('UPDATE auth_refresh_tokens SET revoked_at = ? WHERE id = ?').run(now, rtRow.id);
+      rotated = await issueSessionTokensForUser(txDb, userRow, req.headers['user-agent']);
     });
+    sendJson(res, 200, { success: true, data: rotated });
+    return;
+  }
+
+  // AUTH 2c: Logout (Thu hồi Access Token ngay qua token_version + revoke toàn bộ Refresh Token)
+  if (pathname === '/api/v1/elearning/auth/logout' && method === 'POST') {
+    const requester = await resolveUser(req, url, pathname, method);
+    if (requester) {
+      const now = new Date().toISOString();
+      await db.tx(async (txDb) => {
+        await txDb.prepare('UPDATE users SET token_version = COALESCE(token_version, 1) + 1 WHERE id = ?').run(requester.id);
+        await txDb.prepare('UPDATE auth_refresh_tokens SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL').run(now, requester.id);
+      });
+    } else if (body.refresh_token) {
+      await db.prepare('UPDATE auth_refresh_tokens SET revoked_at = ? WHERE token_hash = ?').run(
+        new Date().toISOString(),
+        hashOpaqueToken(String(body.refresh_token))
+      );
+    }
+    sendJson(res, 200, { success: true, data: { logged_out: true } });
     return;
   }
 
   // AUTH 3: Register New User Account
   if (pathname === '/api/v1/elearning/auth/register' && method === 'POST') {
+    if (process.env.LMSPLUS_DISABLE_RATE_LIMIT !== '1') {
+      const rl = checkRateLimit(`register:${extractClientIp(req)}`, { max: 20, windowMs: 60_000 });
+      if (!rl.allowed) {
+        sendJson(res, 429, { detail: { code: 'TOO_MANY_ATTEMPTS', message: 'Quá nhiều yêu cầu đăng ký. Vui lòng thử lại sau.' } }, { 'Retry-After': String(rl.retryAfterSec) });
+        return;
+      }
+    }
     const fullName = String(body.full_name || '').trim();
     const email = String(body.email || '').trim().toLowerCase();
     const password = String(body.password || '');
     const role = String(body.role || 'STUDENT').toUpperCase();
-    const validRoles = ['STUDENT', 'INSTRUCTOR', 'TEACHING_ASSISTANT', 'ACADEMIC_STAFF', 'ADMIN'];
     // Tự đăng ký công khai chỉ tạo tài khoản Học viên; vai trò khác phải do Quản trị viên tạo.
     const requester = await resolveUser(req);
-    const requesterIsAdmin = Boolean(requester && requester.roles.includes('ADMIN'));
+    const requesterIsAdmin = Boolean(requester && isAdmin(requester));
     if (role !== 'STUDENT' && !requesterIsAdmin) {
       sendJson(res, 403, {
         detail: {
@@ -775,13 +909,18 @@ async function handleApiRequestInner(req, res, bodyData) {
       });
       return;
     }
-    const assignedRole = validRoles.includes(role) ? role : 'STUDENT';
+    if (role === 'SUPER_ADMIN' && !(requester && requester.roles.includes('SUPER_ADMIN'))) {
+      sendJson(res, 403, { detail: { code: 'REGISTER_ROLE_FORBIDDEN', message: 'Chỉ Super Admin mới được cấp quyền Super Admin.' } });
+      return;
+    }
+    const assignedRole = VALID_USER_ROLES.includes(role) ? role : 'STUDENT';
+    const pwCheck = validatePasswordStrength(password, { strictProduction: IS_PRODUCTION });
 
-    if (!fullName || !email || password.length < 6) {
+    if (!fullName || !email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || !pwCheck.ok) {
       sendJson(res, 422, {
         detail: {
           code: 'INVALID_REGISTRATION_DATA',
-          message: 'Vui lòng nhập Họ tên, Email hợp lệ và Mật khẩu tối thiểu 6 ký tự.',
+          message: !pwCheck.ok ? pwCheck.message : 'Vui lòng nhập Họ tên, Email hợp lệ và Mật khẩu an toàn.',
         },
       });
       return;
@@ -819,8 +958,8 @@ async function handleApiRequestInner(req, res, bodyData) {
     const newId = `usr_${crypto.randomBytes(4).toString('hex')}`;
 
     await db.prepare(
-      `INSERT INTO users (id, code, email, full_name, password_hash, roles_json, department_id, assigned_course_ids_json, enrolled_subject_class_ids_json)
-       VALUES (?, ?, ?, ?, ?, ?, ?, '[]', '[]')`
+      `INSERT INTO users (id, code, email, full_name, password_hash, roles_json, department_id, assigned_course_ids_json, enrolled_subject_class_ids_json, token_version, is_active)
+       VALUES (?, ?, ?, ?, ?, ?, ?, '[]', '[]', 1, 1)`
     ).run(
       newId,
       userCode,
@@ -832,12 +971,49 @@ async function handleApiRequestInner(req, res, bodyData) {
     );
 
     const createdRow = await db.prepare('SELECT * FROM users WHERE id = ?').get(newId);
-    const userObj = sanitizeUserRecord(createdRow);
-    const token = createJwtToken(userObj);
+    const tokensData = await issueSessionTokensForUser(db, createdRow, req.headers['user-agent']);
     sendJson(res, 201, {
       success: true,
-      data: { access_token: token, token_type: 'Bearer', user: userObj },
+      data: tokensData,
     });
+    return;
+  }
+
+  // AUTH 4: Đổi mật khẩu an toàn & thu hồi mọi phiên cũ
+  if (pathname === '/api/v1/elearning/auth/change-password' && method === 'POST') {
+    const requester = await resolveUser(req, url, pathname, method);
+    if (!requester) {
+      sendJson(res, 401, { detail: { code: 'INVALID_OR_EXPIRED_JWT', message: 'Phiên đăng nhập không hợp lệ.' } });
+      return;
+    }
+    const currentPw = String(body.current_password || '');
+    const newPw = String(body.new_password || '');
+    const pwCheck = validatePasswordStrength(newPw, { strictProduction: IS_PRODUCTION });
+    if (!currentPw || !pwCheck.ok) {
+      sendJson(res, 422, { detail: { code: 'VALIDATION_ERROR', message: !pwCheck.ok ? pwCheck.message : 'Vui lòng nhập mật khẩu hiện tại và mật khẩu mới.' } });
+      return;
+    }
+    const row = await db.prepare('SELECT * FROM users WHERE id = ?').get(requester.id);
+    const legacyCandidates = [
+      process.env.LMSPLUS_LEGACY_PASSWORD_KEY || '',
+      !IS_PRODUCTION ? 'lmsplus-production-grade-hmac-secret-2026' : '',
+      !IS_PRODUCTION ? JWT_SECRET : '',
+    ];
+    const verified = verifyPassword(currentPw, row?.password_hash, legacyCandidates);
+    if (!row || !verified.valid) {
+      sendJson(res, 401, { detail: { code: 'INVALID_CURRENT_PASSWORD', message: 'Mật khẩu hiện tại không chính xác.' } });
+      return;
+    }
+    const now = new Date().toISOString();
+    let updatedRow;
+    await db.tx(async (txDb) => {
+      await txDb.prepare('UPDATE users SET password_hash = ?, token_version = COALESCE(token_version, 1) + 1 WHERE id = ?')
+        .run(hashPassword(newPw), row.id);
+      await txDb.prepare('UPDATE auth_refresh_tokens SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL').run(now, row.id);
+      updatedRow = await txDb.prepare('SELECT * FROM users WHERE id = ?').get(row.id);
+    });
+    const tokensData = await issueSessionTokensForUser(db, updatedRow, req.headers['user-agent']);
+    sendJson(res, 200, { success: true, data: tokensData });
     return;
   }
 
@@ -941,11 +1117,37 @@ async function handleApiRequestInner(req, res, bodyData) {
       formula_or_example: wt.formula_or_example || undefined,
     }));
 
-    const users_list = user.roles.includes('ADMIN')
+    const users_list = isAdmin(user)
       ? (await db.prepare('SELECT * FROM users ORDER BY id').all()).map(sanitizeUserRecord)
       : [];
 
-    const sessions = (await db.prepare('SELECT * FROM sessions ORDER BY session_id DESC').all()).map((s) => ({
+    let sessionRows = await db.prepare('SELECT * FROM sessions ORDER BY session_id DESC').all();
+    let leaveRows = await db.prepare('SELECT * FROM leave_requests ORDER BY id').all();
+    const onlyStudent = user.roles.includes('STUDENT') && !isAdmin(user) && !isStaff(user) && !isHeadOfDepartment(user) && !isInstructor(user);
+    if (onlyStudent) {
+      const enrolledClassIds = new Set(
+        (await db.prepare("SELECT subject_class_id FROM class_enrollments WHERE student_id = ? AND status = 'ACTIVE'").all(user.id))
+          .map((r) => r.subject_class_id)
+      );
+      if (enrolledClassIds.size > 0) {
+        sessionRows = sessionRows.filter((s) => enrolledClassIds.has(s.subject_class_id));
+      }
+      leaveRows = leaveRows.filter((lv) => lv.student_id === user.id || lv.student_code === user.code);
+    } else if (!isAdmin(user)) {
+      const deptClasses = new Set(
+        (await db.prepare('SELECT id FROM subject_classes WHERE department_id = ?').all(user.department_id || ''))
+          .map((r) => r.id)
+      );
+      const assignedClasses = new Set(
+        (await db.prepare('SELECT subject_class_id FROM teaching_staff_assignments WHERE user_id = ? AND is_active = 1').all(user.id))
+          .map((r) => r.subject_class_id)
+      );
+      const allowedCls = new Set([...deptClasses, ...assignedClasses]);
+      sessionRows = sessionRows.filter((s) => allowedCls.has(s.subject_class_id) || s.scheduled_instructor_id === user.id);
+      leaveRows = leaveRows.filter((lv) => allowedCls.has(lv.subject_class_id));
+    }
+
+    const sessions = sessionRows.map((s) => ({
       session_id: s.session_id,
       subject_class_code: s.subject_class_code,
       subject_title: s.subject_title,
@@ -970,14 +1172,14 @@ async function handleApiRequestInner(req, res, bodyData) {
     const teaching_log_history = await db
       .prepare('SELECT * FROM teaching_log_history ORDER BY changed_at DESC, id DESC')
       .all();
-    const leave_requests = await db.prepare('SELECT * FROM leave_requests ORDER BY id').all();
+    const leave_requests = leaveRows;
 
     sendJson(res, 200, {
       success: true,
       data: {
         viewer: user,
         courses,
-        all_courses,
+        all_courses: isAdmin(user) || isStaff(user) || isHeadOfDepartment(user) || isInstructor(user) ? all_courses : courses,
         chapters,
         blocks,
         wiki_terms,
@@ -997,8 +1199,8 @@ async function handleApiRequestInner(req, res, bodyData) {
   if (pathname.startsWith('/api/v1/elearning/crud/')) {
     const isUserCrud = pathname.startsWith('/api/v1/elearning/crud/users');
     const allowed = isUserCrud
-      ? user.roles.includes('ADMIN')
-      : ['INSTRUCTOR', 'ACADEMIC_STAFF', 'ADMIN'].some((r) => user.roles.includes(r));
+      ? isAdmin(user)
+      : ['INSTRUCTOR', 'ACADEMIC_STAFF', 'HEAD_OF_DEPARTMENT', 'ADMIN', 'SUPER_ADMIN'].some((r) => user.roles.includes(r));
     if (!allowed) {
       sendJson(res, 403, {
         detail: {
@@ -1018,7 +1220,12 @@ async function handleApiRequestInner(req, res, bodyData) {
     const code = String(body.code || `CRS-${Math.floor(100 + Math.random() * 900)}`).trim().toUpperCase();
     const title = String(body.title || 'Khóa học mới').trim();
     const instructorName = String(body.instructor_name || user.full_name).trim();
-    const departmentName = String(body.department_name || 'Khoa Công nghệ Phần mềm').trim();
+    const fallbackDeptRow = await db
+      .prepare("SELECT department_id FROM courses WHERE department_id IS NOT NULL AND department_id <> '' ORDER BY CASE WHEN department_id = 'khoi_5' THEN 0 ELSE 1 END LIMIT 1")
+      .get();
+    const departmentId = String(body.department_id || user.department_id || fallbackDeptRow?.department_id || 'khoi_5').trim();
+    const deptMeta = await db.prepare('SELECT name FROM departments WHERE id = ?').get(departmentId);
+    const departmentName = String(body.department_name || deptMeta?.name || 'Tổ chuyên môn').trim();
     const chaptersCount = Number(body.chapters_count || 6);
     const lessonsCount = Number(body.lessons_count || 24);
     const policy = ['ASSIGNED_ONLY', 'REQUEST_APPROVAL', 'SELF_ENROLL'].includes(body.enrollment_policy)
@@ -1031,13 +1238,14 @@ async function handleApiRequestInner(req, res, bodyData) {
       `INSERT INTO courses (id, code, title, instructor_id, instructor_name, department_id, department_name,
                             chapters_count, lessons_count, progress_pct, enrollment_policy, enrollment_status,
                             is_assigned_to_student, updated_at)
-       VALUES (?, ?, ?, ?, ?, 'dept_se', ?, ?, ?, 0, ?, ?, ?, ?)`
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`
     ).run(
       newId,
       code,
       title,
       user.id,
       instructorName,
+      departmentId,
       departmentName,
       chaptersCount,
       lessonsCount,
@@ -1065,6 +1273,10 @@ async function handleApiRequestInner(req, res, bodyData) {
     const existing = await db.prepare('SELECT * FROM courses WHERE id = ?').get(courseId);
     if (!existing) {
       sendJson(res, 404, { detail: { code: 'COURSE_NOT_FOUND', message: 'Không tìm thấy khóa học.' } });
+      return;
+    }
+    if (!canManageCourse(db, user, existing)) {
+      sendJson(res, 403, { detail: { code: 'CRUD_FORBIDDEN', message: 'Bạn không có quyền chỉnh sửa khóa học ngoài phạm vi phụ trách.' } });
       return;
     }
     const code = String(body.code || existing.code).trim().toUpperCase();
@@ -1113,6 +1325,15 @@ async function handleApiRequestInner(req, res, bodyData) {
   }
 
   if (crudCourseMatch && method === 'DELETE') {
+    const existing = await db.prepare('SELECT * FROM courses WHERE id = ?').get(crudCourseMatch[1]);
+    if (!existing) {
+      sendJson(res, 404, { detail: { code: 'COURSE_NOT_FOUND', message: 'Không tìm thấy khóa học.' } });
+      return;
+    }
+    if (!canManageCourse(db, user, existing)) {
+      sendJson(res, 403, { detail: { code: 'CRUD_FORBIDDEN', message: 'Bạn không có quyền xóa khóa học ngoài phạm vi phụ trách.' } });
+      return;
+    }
     const inUse = (await db
       .prepare("SELECT COUNT(*) AS n FROM subject_classes WHERE course_id = ?")
       .get(crudCourseMatch[1])).n;
@@ -1338,10 +1559,15 @@ async function handleApiRequestInner(req, res, bodyData) {
     const fullName = String(body.full_name || existing.full_name).trim();
     const email = String(body.email || existing.email).trim().toLowerCase();
     const code = String(body.code || existing.code).trim().toUpperCase();
-    const validRoles = ['STUDENT', 'INSTRUCTOR', 'TEACHING_ASSISTANT', 'ACADEMIC_STAFF', 'ADMIN'];
-    const requestedRole = String(body.role || JSON.parse(existing.roles_json)[0] || 'STUDENT').toUpperCase();
-    const role = validRoles.includes(requestedRole) ? requestedRole : 'STUDENT';
+    const currentRole = JSON.parse(existing.roles_json)[0] || 'STUDENT';
+    const requestedRole = String(body.role || currentRole).toUpperCase();
+    if (requestedRole === 'SUPER_ADMIN' && !user.roles.includes('SUPER_ADMIN')) {
+      sendJson(res, 403, { detail: { code: 'ROLE_ESCALATION_FORBIDDEN', message: 'Chỉ Super Admin mới được gán quyền Super Admin.' } });
+      return;
+    }
+    const role = VALID_USER_ROLES.includes(requestedRole) ? requestedRole : 'STUDENT';
     const departmentId = body.department_id !== undefined ? String(body.department_id || '').trim() || existing.department_id : existing.department_id;
+    const isActive = body.is_active !== undefined ? (body.is_active ? 1 : 0) : Number(existing.is_active ?? 1);
 
     if (!fullName || !email || !code) {
       sendJson(res, 422, { detail: { code: 'VALIDATION_ERROR', message: 'Họ tên, Mã định danh và Email không được để trống.' } });
@@ -1358,9 +1584,11 @@ async function handleApiRequestInner(req, res, bodyData) {
       return;
     }
 
+    const roleOrStatusChanged = role !== currentRole || isActive !== Number(existing.is_active ?? 1);
     await db.prepare(
-      `UPDATE users SET full_name = ?, email = ?, code = ?, roles_json = ?, department_id = ? WHERE id = ?`
-    ).run(fullName, email, code, JSON.stringify([role]), departmentId, usrId);
+      `UPDATE users SET full_name = ?, email = ?, code = ?, roles_json = ?, department_id = ?, is_active = ?,
+                        token_version = COALESCE(token_version, 1) + ? WHERE id = ?`
+    ).run(fullName, email, code, JSON.stringify([role]), departmentId, isActive, roleOrStatusChanged ? 1 : 0, usrId);
 
     const updated = await db.prepare('SELECT * FROM users WHERE id = ?').get(usrId);
     sendJson(res, 200, { success: true, data: sanitizeUserRecord(updated) });
@@ -1424,7 +1652,7 @@ async function handleApiRequestInner(req, res, bodyData) {
       sendJson(res, 422, { detail: { code: 'INVALID_POLICY', message: 'Invalid policy' } });
       return;
     }
-    if (newPolicy === 'SELF_ENROLL' && !user.roles.includes('ADMIN')) {
+    if (newPolicy === 'SELF_ENROLL' && !isAdmin(user)) {
       sendJson(res, 403, {
         detail: {
           code: 'SELF_ENROLL_REQUIRES_ADMIN',
@@ -1433,11 +1661,24 @@ async function handleApiRequestInner(req, res, bodyData) {
       });
       return;
     }
-    if (!user.roles.includes('ADMIN') && !user.roles.includes('ACADEMIC_STAFF')) {
+    if (!isAdmin(user) && !isStaff(user)) {
       sendJson(res, 403, {
         detail: { code: 'INSUFFICIENT_ROLE', message: 'Không đủ quyền thay đổi chính sách khóa học.' },
       });
       return;
+    }
+    const crs = await db.prepare('SELECT * FROM courses WHERE id = ?').get(policyMatch[1]);
+    if (!crs) {
+      sendJson(res, 404, { detail: { code: 'COURSE_NOT_FOUND', message: 'Course not found' } });
+      return;
+    }
+    if (!isAdmin(user)) {
+      try {
+        assertDepartmentScope(user, crs.department_id);
+      } catch (e) {
+        sendJson(res, e.status || 403, { detail: { code: e.code || 'OUT_OF_SCOPE', message: e.message } });
+        return;
+      }
     }
     await db.prepare('UPDATE courses SET enrollment_policy = ?, updated_at = ? WHERE id = ?').run(
       newPolicy,
@@ -1494,11 +1735,24 @@ async function handleApiRequestInner(req, res, bodyData) {
   // 5. Academic Staff / Admin Approve Enrollment Request
   const approveMatch = pathname.match(/^\/api\/v1\/elearning\/courses\/([^/]+)\/approve-request$/);
   if (approveMatch && method === 'POST') {
-    if (!user.roles.includes('ACADEMIC_STAFF') && !user.roles.includes('ADMIN')) {
+    if (!isStaff(user) && !isAdmin(user)) {
       sendJson(res, 403, {
         detail: { code: 'APPROVAL_REQUIRES_STAFF', message: 'Chỉ Giáo vụ hoặc Quản trị viên mới được duyệt yêu cầu.' },
       });
       return;
+    }
+    const crs = await db.prepare('SELECT * FROM courses WHERE id = ?').get(approveMatch[1]);
+    if (!crs) {
+      sendJson(res, 404, { detail: { code: 'COURSE_NOT_FOUND', message: 'Course not found' } });
+      return;
+    }
+    if (!isAdmin(user)) {
+      try {
+        assertDepartmentScope(user, crs.department_id);
+      } catch (e) {
+        sendJson(res, e.status || 403, { detail: { code: e.code || 'OUT_OF_SCOPE', message: e.message } });
+        return;
+      }
     }
     const newStatus = body.decision === 'APPROVED' ? 'ENROLLED' : 'NOT_ENROLLED';
     await db.prepare(
@@ -1517,7 +1771,7 @@ async function handleApiRequestInner(req, res, bodyData) {
     if (
       !user.roles.includes('INSTRUCTOR') &&
       !user.roles.includes('TEACHING_ASSISTANT') &&
-      !user.roles.includes('ADMIN')
+      !isAdmin(user)
     ) {
       sendJson(res, 403, {
         detail: { code: 'BLOCK_EDIT_FORBIDDEN', message: 'Không có quyền chỉnh sửa bài giảng.' },
@@ -1528,6 +1782,22 @@ async function handleApiRequestInner(req, res, bodyData) {
     if (!les) {
       sendJson(res, 404, { detail: { code: 'LESSON_NOT_FOUND', message: 'Lesson not found' } });
       return;
+    }
+    const ch = await db.prepare('SELECT * FROM chapters WHERE id = ?').get(les.chapter_id);
+    if (!isAdmin(user) && ch?.subject_class_id) {
+      const assigned = await db
+        .prepare('SELECT 1 FROM teaching_staff_assignments WHERE subject_class_id = ? AND user_id = ? AND is_active = 1')
+        .get(ch.subject_class_id, user.id);
+      if (!assigned && ch.course_id) {
+        const crs = await db.prepare('SELECT * FROM courses WHERE id = ?').get(ch.course_id);
+        if (!crs || (crs.instructor_id !== user.id && crs.department_id !== user.department_id)) {
+          sendJson(res, 403, { detail: { code: 'BLOCK_EDIT_FORBIDDEN', message: 'Bạn không thuộc lớp/môn học chứa bài giảng này.' } });
+          return;
+        }
+      } else if (!assigned) {
+        sendJson(res, 403, { detail: { code: 'BLOCK_EDIT_FORBIDDEN', message: 'Bạn không được phân công biên tập lớp chứa bài giảng này.' } });
+        return;
+      }
     }
     if (Number(body.base_revision_number) !== Number(les.working_draft_revision)) {
       sendJson(res, 409, {
@@ -1541,26 +1811,28 @@ async function handleApiRequestInner(req, res, bodyData) {
       return;
     }
     const nextRev = les.working_draft_revision + 1;
-    await db.prepare('DELETE FROM lesson_blocks WHERE lesson_id = ?').run(draftMatch[1]);
-    const insBlk = db.prepare(
-      `INSERT INTO lesson_blocks (id, lesson_id, schema_version, block_type, sort_order, status, content_json)
-       VALUES (?, ?, '1.0', ?, ?, ?, ?)`
-    );
     const incomingBlocks = Array.isArray(body.blocks) ? body.blocks : [];
-    for (const [idx, b] of (incomingBlocks).entries()) {
-      await insBlk.run(
-        b.id || `blk_${idx + 1}`,
-        draftMatch[1],
-        b.block_type || 'paragraph',
-        b.sort_order || (idx + 1) * 1000,
-        b.status || 'ACTIVE',
-        JSON.stringify(b.content || {})
+    await db.tx(async (txDb) => {
+      await txDb.prepare('DELETE FROM lesson_blocks WHERE lesson_id = ?').run(draftMatch[1]);
+      const insBlk = txDb.prepare(
+        `INSERT INTO lesson_blocks (id, lesson_id, schema_version, block_type, sort_order, status, content_json)
+         VALUES (?, ?, '1.0', ?, ?, ?, ?)`
       );
-    }
-    await db.prepare('UPDATE lessons SET working_draft_revision = ? WHERE id = ?').run(
-      nextRev,
-      draftMatch[1]
-    );
+      for (const [idx, b] of incomingBlocks.entries()) {
+        await insBlk.run(
+          b.id || `blk_${idx + 1}`,
+          draftMatch[1],
+          b.block_type || 'paragraph',
+          b.sort_order || (idx + 1) * 1000,
+          b.status || 'ACTIVE',
+          JSON.stringify(b.content || {})
+        );
+      }
+      await txDb.prepare('UPDATE lessons SET working_draft_revision = ? WHERE id = ?').run(
+        nextRev,
+        draftMatch[1]
+      );
+    });
     sendJson(res, 200, {
       success: true,
       data: {
@@ -1575,7 +1847,7 @@ async function handleApiRequestInner(req, res, bodyData) {
   // 7. Publish Lesson Version (INSTRUCTOR / ADMIN only; TA forbidden -> 403)
   const publishMatch = pathname.match(/^\/api\/v1\/elearning\/lessons\/([^/]+)\/publish$/);
   if (publishMatch && method === 'POST') {
-    if (!user.roles.includes('INSTRUCTOR') && !user.roles.includes('ADMIN')) {
+    if (!user.roles.includes('INSTRUCTOR') && !isAdmin(user)) {
       sendJson(res, 403, {
         detail: {
           code: 'PUBLISH_REQUIRES_INSTRUCTOR',
@@ -1589,22 +1861,34 @@ async function handleApiRequestInner(req, res, bodyData) {
       sendJson(res, 404, { detail: { code: 'LESSON_NOT_FOUND', message: 'Lesson not found' } });
       return;
     }
+    const ch = await db.prepare('SELECT * FROM chapters WHERE id = ?').get(les.chapter_id);
+    if (!isAdmin(user) && ch?.subject_class_id) {
+      const assigned = await db
+        .prepare("SELECT 1 FROM teaching_staff_assignments WHERE subject_class_id = ? AND user_id = ? AND is_active = 1 AND staff_role IN ('PRIMARY_INSTRUCTOR','CO_INSTRUCTOR')")
+        .get(ch.subject_class_id, user.id);
+      if (!assigned) {
+        sendJson(res, 403, { detail: { code: 'PUBLISH_REQUIRES_INSTRUCTOR', message: 'Bạn không phải giảng viên phụ trách lớp chứa bài học này.' } });
+        return;
+      }
+    }
     const nextVer = les.published_version + 1;
-    const blks = await db
-      .prepare('SELECT * FROM lesson_blocks WHERE lesson_id = ? ORDER BY sort_order')
-      .all(publishMatch[1]);
-    await db.prepare(
-      `INSERT INTO lesson_versions (id, lesson_id, version_number, blocks_snapshot_json, published_by, published_at)
-       VALUES (?, ?, ?, ?, ?, ?)`
-    ).run(
-      crypto.randomUUID(),
-      publishMatch[1],
-      nextVer,
-      JSON.stringify(blks),
-      user.full_name,
-      new Date().toISOString()
-    );
-    await db.prepare('UPDATE lessons SET published_version = ? WHERE id = ?').run(nextVer, publishMatch[1]);
+    await db.tx(async (txDb) => {
+      const blks = await txDb
+        .prepare('SELECT * FROM lesson_blocks WHERE lesson_id = ? ORDER BY sort_order')
+        .all(publishMatch[1]);
+      await txDb.prepare(
+        `INSERT INTO lesson_versions (id, lesson_id, version_number, blocks_snapshot_json, published_by, published_at)
+         VALUES (?, ?, ?, ?, ?, ?)`
+      ).run(
+        crypto.randomUUID(),
+        publishMatch[1],
+        nextVer,
+        JSON.stringify(blks),
+        user.full_name,
+        new Date().toISOString()
+      );
+      await txDb.prepare('UPDATE lessons SET published_version = ? WHERE id = ?').run(nextVer, publishMatch[1]);
+    });
     sendJson(res, 200, {
       success: true,
       data: { lesson_id: publishMatch[1], published_version: nextVer },
@@ -1660,9 +1944,11 @@ async function handleApiRequestInner(req, res, bodyData) {
       });
       return;
     }
-    await db.prepare("UPDATE lessons SET status = 'COMPLETED' WHERE id = ?").run(les.id);
-    await db.prepare("UPDATE lessons SET status = 'IN_PROGRESS' WHERE id = 'les_303'").run();
-    await db.prepare('UPDATE chapters SET progress_pct = 100 WHERE id = ?').run(les.chapter_id);
+    await db.tx(async (txDb) => {
+      await txDb.prepare("UPDATE lessons SET status = 'COMPLETED' WHERE id = ?").run(les.id);
+      await txDb.prepare("UPDATE lessons SET status = 'IN_PROGRESS' WHERE id = 'les_303'").run();
+      await txDb.prepare('UPDATE chapters SET progress_pct = 100 WHERE id = ?').run(les.chapter_id);
+    });
     sendJson(res, 200, {
       success: true,
       data: {
@@ -1674,30 +1960,50 @@ async function handleApiRequestInner(req, res, bodyData) {
     return;
   }
 
-  // 10. Simulate / Run 24h Overdue Scheduler Job
+  // 10. Simulate / Run 24h Overdue Scheduler Job (Chỉ ADMIN / ACADEMIC_STAFF trong đơn vị)
   const overdueMatch = pathname.match(
     /^\/api\/v1\/elearning\/sessions\/([^/]+)\/simulate-overdue-24h$/
   );
   if (overdueMatch && method === 'POST') {
+    if (!isAdmin(user) && !isStaff(user)) {
+      sendJson(res, 403, {
+        detail: {
+          code: 'OVERDUE_SIMULATION_FORBIDDEN',
+          message: 'Chỉ Quản trị viên hoặc Giáo vụ mới được kích hoạt tác vụ kiểm tra quá hạn 24 giờ.',
+        },
+      });
+      return;
+    }
     const s = await db.prepare('SELECT * FROM sessions WHERE session_id = ?').get(overdueMatch[1]);
     if (!s) {
       sendJson(res, 404, { detail: { code: 'SESSION_NOT_FOUND', message: 'Session not found' } });
       return;
     }
+    const cls = s.subject_class_id ? await db.prepare('SELECT department_id FROM subject_classes WHERE id = ?').get(s.subject_class_id) : null;
+    if (!isAdmin(user) && cls) {
+      try {
+        assertDepartmentScope(user, cls.department_id);
+      } catch (e) {
+        sendJson(res, e.status || 403, { detail: { code: e.code || 'OUT_OF_SCOPE', message: e.message } });
+        return;
+      }
+    }
     const nowStr = new Date().toISOString();
-    await db.prepare("UPDATE sessions SET confirmation_status = 'OVERDUE_UNCONFIRMED' WHERE session_id = ?").run(
-      s.session_id
-    );
-    await db.prepare(
-      `INSERT INTO teaching_log_history (id, session_id, session_code, previous_status, new_status, changed_by, changed_at, note)
-       VALUES (?, ?, ?, ?, 'OVERDUE_UNCONFIRMED', 'Hệ thống tự động (Sau 24 giờ)', ?, 'Quá 24 giờ kể từ khi kết thúc buổi học chưa xác nhận -> Chuyển sang trạng thái Quá hạn chưa xác nhận (Vẫn cho phép Giảng viên ký xác nhận bổ sung).')`
-    ).run(
-      `hist_${crypto.randomBytes(4).toString('hex')}`,
-      s.session_id,
-      `${s.session_title.slice(0, 8)} (${s.subject_class_code})`,
-      s.confirmation_status,
-      nowStr
-    );
+    await db.tx(async (txDb) => {
+      await txDb.prepare("UPDATE sessions SET confirmation_status = 'OVERDUE_UNCONFIRMED' WHERE session_id = ?").run(
+        s.session_id
+      );
+      await txDb.prepare(
+        `INSERT INTO teaching_log_history (id, session_id, session_code, previous_status, new_status, changed_by, changed_at, note)
+         VALUES (?, ?, ?, ?, 'OVERDUE_UNCONFIRMED', 'Hệ thống tự động (Sau 24 giờ)', ?, 'Quá 24 giờ kể từ khi kết thúc buổi học chưa xác nhận -> Chuyển sang trạng thái Quá hạn chưa xác nhận (Vẫn cho phép Giảng viên ký xác nhận bổ sung).')`
+      ).run(
+        `hist_${crypto.randomBytes(4).toString('hex')}`,
+        s.session_id,
+        `${s.session_title.slice(0, 8)} (${s.subject_class_code})`,
+        s.confirmation_status,
+        nowStr
+      );
+    });
     sendJson(res, 200, {
       success: true,
       data: { session_id: s.session_id, new_status: 'OVERDUE_UNCONFIRMED' },
@@ -1710,7 +2016,7 @@ async function handleApiRequestInner(req, res, bodyData) {
     /^\/api\/v1\/elearning\/sessions\/([^/]+)\/teaching-log\/confirm$/
   );
   if (confirmMatch && method === 'POST') {
-    if (!user.roles.includes('INSTRUCTOR') && !user.roles.includes('ADMIN')) {
+    if (!user.roles.includes('INSTRUCTOR') && !isAdmin(user)) {
       sendJson(res, 403, {
         detail: {
           code: 'TEACHING_LOG_CONFIRM_FORBIDDEN',
@@ -1733,7 +2039,7 @@ async function handleApiRequestInner(req, res, bodyData) {
              AND staff_role IN ('PRIMARY_INSTRUCTOR','CO_INSTRUCTOR')`
         ).get(s.subject_class_id, user.id)
       );
-    if (!user.roles.includes('ADMIN') && !isAssigned) {
+    if (!isAdmin(user) && !isAssigned) {
       sendJson(res, 403, {
         detail: {
           code: 'TEACHING_LOG_CONFIRM_FORBIDDEN',
@@ -1749,25 +2055,27 @@ async function handleApiRequestInner(req, res, bodyData) {
       ? body.late_confirmation_reason || 'Giảng viên xác nhận bổ sung sau hạn 24 giờ.'
       : 'Giảng viên ký xác nhận đúng hạn 24 giờ.';
 
-    await db.prepare(
-      `UPDATE sessions
-       SET confirmation_status = ?, confirmed_at = ?, is_late_confirmation = ?, late_confirmation_reason = ?
-       WHERE session_id = ?`
-    ).run(nextStatus, nowStr, isOverdue ? 1 : 0, isOverdue ? reason : null, s.session_id);
+    await db.tx(async (txDb) => {
+      await txDb.prepare(
+        `UPDATE sessions
+         SET confirmation_status = ?, confirmed_at = ?, is_late_confirmation = ?, late_confirmation_reason = ?
+         WHERE session_id = ?`
+      ).run(nextStatus, nowStr, isOverdue ? 1 : 0, isOverdue ? reason : null, s.session_id);
 
-    await db.prepare(
-      `INSERT INTO teaching_log_history (id, session_id, session_code, previous_status, new_status, changed_by, changed_at, note)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-    ).run(
-      `hist_${crypto.randomBytes(4).toString('hex')}`,
-      s.session_id,
-      `${s.session_title.slice(0, 8)} (${s.subject_class_code})`,
-      s.confirmation_status,
-      nextStatus,
-      user.full_name,
-      nowStr,
-      `Kết thúc buổi học: ${s.scheduled_end_at} | Xác nhận thực tế: ${nowStr} | Ghi chú: ${reason}`
-    );
+      await txDb.prepare(
+        `INSERT INTO teaching_log_history (id, session_id, session_code, previous_status, new_status, changed_by, changed_at, note)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run(
+        `hist_${crypto.randomBytes(4).toString('hex')}`,
+        s.session_id,
+        `${s.session_title.slice(0, 8)} (${s.subject_class_code})`,
+        s.confirmation_status,
+        nextStatus,
+        user.full_name,
+        nowStr,
+        `Kết thúc buổi học: ${s.scheduled_end_at} | Xác nhận thực tế: ${nowStr} | Ghi chú: ${reason}`
+      );
+    });
 
     sendJson(res, 200, {
       success: true,
@@ -1781,17 +2089,40 @@ async function handleApiRequestInner(req, res, bodyData) {
     return;
   }
 
-  // 12. Leave Request Approval
+  // 12. Leave Request Approval (Kiểm tra trạng thái & đúng phạm vi lớp/đơn vị)
   const leaveMatch = pathname.match(/^\/api\/v1\/elearning\/leave-requests\/([^/]+)\/decision$/);
   if (leaveMatch && method === 'POST') {
-    if (user.roles.includes('STUDENT')) {
+    if (user.roles.includes('STUDENT') && !isAdmin(user) && !isStaff(user) && !isHeadOfDepartment(user) && !isInstructor(user)) {
       sendJson(res, 403, {
         detail: { code: 'LEAVE_APPROVAL_FORBIDDEN', message: 'Học viên không có quyền tự duyệt đơn xin nghỉ.' },
       });
       return;
     }
-    await db.prepare('UPDATE leave_requests SET status = ? WHERE id = ?').run(body.status, leaveMatch[1]);
-    sendJson(res, 200, { success: true, data: { id: leaveMatch[1], status: body.status } });
+    const decisionStatus = String(body.status || '').toUpperCase();
+    if (!['APPROVED', 'REJECTED'].includes(decisionStatus)) {
+      sendJson(res, 422, { detail: { code: 'INVALID_DECISION', message: 'Trạng thái duyệt phải là APPROVED hoặc REJECTED.' } });
+      return;
+    }
+    const leaveRow = await db.prepare('SELECT * FROM leave_requests WHERE id = ?').get(leaveMatch[1]);
+    if (!leaveRow) {
+      sendJson(res, 404, { detail: { code: 'LEAVE_REQUEST_NOT_FOUND', message: 'Không tìm thấy đơn xin nghỉ.' } });
+      return;
+    }
+    if (!isAdmin(user)) {
+      const cls = await db.prepare('SELECT * FROM subject_classes WHERE id = ?').get(leaveRow.subject_class_id);
+      const deptMatch = cls && (isStaff(user) || isHeadOfDepartment(user)) && user.department_id && cls.department_id === user.department_id;
+      const instrAssigned = Boolean(
+        await db
+          .prepare("SELECT 1 FROM teaching_staff_assignments WHERE subject_class_id = ? AND user_id = ? AND is_active = 1 AND staff_role IN ('PRIMARY_INSTRUCTOR','CO_INSTRUCTOR')")
+          .get(leaveRow.subject_class_id, user.id)
+      );
+      if (!deptMatch && !instrAssigned) {
+        sendJson(res, 403, { detail: { code: 'LEAVE_APPROVAL_FORBIDDEN', message: 'Bạn không có quyền duyệt đơn xin nghỉ ngoài lớp/đơn vị phụ trách.' } });
+        return;
+      }
+    }
+    await db.prepare('UPDATE leave_requests SET status = ? WHERE id = ?').run(decisionStatus, leaveMatch[1]);
+    sendJson(res, 200, { success: true, data: { id: leaveMatch[1], status: decisionStatus } });
     return;
   }
 
@@ -1846,8 +2177,44 @@ export async function invokeApiAsync(method, urlPath, headers = {}, bodyObj = {}
   return result();
 }
 
+export function sanitizeUrlForLog(rawUrl) {
+  if (!rawUrl) return '/';
+  return String(rawUrl).replace(/([?&](?:st|token|access_token|refresh_token|api_key)=)[^&\s]+/gi, '$1[REDACTED]');
+}
+
+function isTransientDbStartupError(err) {
+  const code = String(err?.code || '').toUpperCase();
+  const msg = String(err?.message || '');
+  return (
+    code === 'ECONNREFUSED' ||
+    code === 'ECONNRESET' ||
+    code === 'ETIMEDOUT' ||
+    code === 'EPIPE' ||
+    code === '57P03' ||
+    /database system is starting up|timeout expired|connection terminated unexpectedly/i.test(msg)
+  );
+}
+
+async function ensureInitializedWithCliRetry() {
+  const maxAttempts = db.isPg && !IS_SERVERLESS ? 10 : 1;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      await ensureInitialized();
+      return;
+    } catch (err) {
+      if (attempt < maxAttempts && isTransientDbStartupError(err)) {
+        writeLog('WARN ', `PostgreSQL chưa sẵn sàng (${err?.code || err?.message}). Đang thử lại (${attempt}/${maxAttempts})...`);
+        await new Promise((r) => setTimeout(r, 2000));
+        continue;
+      }
+      throw err;
+    }
+  }
+}
+
 if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(currentFilePath)) {
-  (await ensureInitialized())
+  const HOST = process.env.HOST || '127.0.0.1';
+  ensureInitializedWithCliRetry()
     .then(() => {
       const server = http.createServer((req, res) => {
         const chunks = [];
@@ -1865,18 +2232,44 @@ if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(currentFil
         });
         req.on('end', async () => {
           if (aborted) return;
-          writeLog('INFO ', `${req.method} ${req.url}`);
+          writeLog('INFO ', `${req.method} ${sanitizeUrlForLog(req.url)}`);
           Promise.resolve(await handleApiRequest(req, res, Buffer.concat(chunks).toString('utf8'))).catch((err) => {
-            writeLog('ERROR', `${req.method} ${req.url}: ${err && err.stack ? err.stack : err}`);
+            writeLog('ERROR', `${req.method} ${sanitizeUrlForLog(req.url)}: ${err && err.stack ? err.stack : err}`);
             if (!res.headersSent) sendJson(res, 500, { detail: { code: 'INTERNAL_ERROR', message: 'Đã xảy ra lỗi hệ thống.' } });
           });
         });
       });
 
-      server.listen(PORT, '127.0.0.1', () => {
+      server.keepAliveTimeout = 65_000;
+      server.headersTimeout = 66_000;
+
+      let shuttingDown = false;
+      const gracefulShutdown = (signal) => {
+        if (shuttingDown) return;
+        shuttingDown = true;
+        writeLog('INFO ', `[shutdown] Nhận tín hiệu ${signal}, đang đóng kết nối HTTP và CSDL an toàn...`);
+        const forceTimer = setTimeout(() => {
+          writeLog('WARN ', '[shutdown] Hết thời gian chờ drain kết nối, thoát cưỡng bức.');
+          process.exit(0);
+        }, 5000);
+        forceTimer.unref();
+        server.close(async () => {
+          try {
+            await db.close();
+          } catch {
+            // Bỏ qua lỗi khi đóng pool
+          }
+          clearTimeout(forceTimer);
+          process.exit(0);
+        });
+      };
+      process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+      process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+
+      server.listen(PORT, HOST, () => {
         writeLog(
           'PASS ',
-          `LMSPLUS E-Learning SQL Backend API listening on http://localhost:${PORT} (${db.targetLabel})`
+          `LMSPLUS E-Learning SQL Backend API listening on http://${HOST}:${PORT} (${db.targetLabel})`
         );
       });
     })

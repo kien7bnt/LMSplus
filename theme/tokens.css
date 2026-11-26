@@ -89,19 +89,20 @@
    * TIER 2: SEMANTIC TOKENS — DEFAULT: AIRBNB DAYLIGHT (`airbnb-light`)
    * -------------------------------------------------------------------------- */
   --bg-canvas:         var(--primitive-white);
+  --bg-shell-canvas:   #F8FAFC;
   --bg-surface:        var(--primitive-white);
   --bg-surface-subtle: var(--primitive-surface-50);
   --bg-surface-hover:  var(--primitive-surface-100);
-  --bg-glass-header:   rgba(255, 255, 255, 0.92);
+  --bg-glass-header:   rgba(255, 255, 255, 0.96);
 
-  --text-primary:      var(--primitive-hof-900);
-  --text-secondary:    var(--primitive-foggy-600);
-  --text-muted:        var(--primitive-foggy-400);
+  --text-primary:      #1F2937;
+  --text-secondary:    #4B5563;
+  --text-muted:        #6B7280;
   --text-on-brand:     var(--primitive-white);
 
-  --border-subtle:     var(--primitive-line-200);
-  --border-strong:     var(--primitive-line-300);
-  --border-focus:      var(--primitive-hof-900);
+  --border-subtle:     #E5E7EB;
+  --border-strong:     #D1D5DB;
+  --border-focus:      #1F2937;
 
   --brand-primary:       var(--primitive-rausch-500);
   --brand-primary-hover: var(--primitive-rausch-600);
@@ -124,7 +125,7 @@
   /* Semantic Scrims & Layout Metrics */
   --overlay-scrim:     rgba(18, 18, 20, 0.56);
   --overlay-quiz:      rgba(18, 18, 20, 0.78);
-  --app-header-h:      80px;
+  --app-header-h:      64px;
   --card-pad:          24px;
 }
 
@@ -136,6 +137,7 @@
 [data-theme="cinema-dark"],
 .dark {
   --bg-canvas:         var(--primitive-obsidian-950);
+  --bg-shell-canvas:   var(--primitive-obsidian-950);
   --bg-surface:        var(--primitive-obsidian-900);
   --bg-surface-subtle: var(--primitive-obsidian-800);
   --bg-surface-hover:  var(--primitive-obsidian-700);
@@ -175,6 +177,7 @@
  * Shifts primary brand accent to Airbnb Babu Teal for academic/enterprise LMS.
  * ---------------------------------------------------------------------------- */
 [data-theme="babu-academy"] {
+  --bg-shell-canvas:     #F4F9F9;
   --bg-surface-subtle:   #F4F9F9;
   --bg-surface-hover:    #E8F3F2;
   --text-primary:        #182625;

@@ -17,6 +17,7 @@ import hashlib
 import hmac
 import json
 import os
+import secrets
 import sqlite3
 import time
 from datetime import datetime, timedelta, timezone
@@ -27,7 +28,11 @@ from uuid import uuid4
 ROOT_DIR = Path(__file__).resolve().parent.parent.parent.parent
 DB_PATH = ROOT_DIR / "database" / "lmsplus_elearning.sqlite"
 SEED_PATH = ROOT_DIR / "database" / "lmsplus_elearning_seed.json"
-JWT_SECRET = os.environ.get("LMSPLUS_JWT_SECRET", "lmsplus-production-grade-hmac-secret-2026")
+JWT_SECRET = os.environ.get("LMSPLUS_JWT_SECRET") or ""
+if os.environ.get("NODE_ENV") == "production" and len(JWT_SECRET.strip()) < 32:
+    raise RuntimeError("LMSPLUS_JWT_SECRET environment variable (>= 32 chars) is required in production.")
+if not JWT_SECRET:
+    JWT_SECRET = secrets.token_hex(32)
 
 
 def create_jwt_token(user: Dict[str, Any], expires_in_sec: int = 86400) -> str:

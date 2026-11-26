@@ -1,54 +1,93 @@
-import React, { useState } from 'react';
-import {
-  AuthenticatedUser, apiAdminCreateUser, apiDeleteUser, apiUpdateUser, fetchWorkspaceBootstrap,
-} from '../../api/elearningClient';
+import React, { useMemo, useState } from 'react';
 import { ROLE_DISPLAY_LABELS } from '../../components/elearning/AuthPage';
 import { UserRole } from '../../types/elearning';
+import { ManagedUserItem, teachingApi } from '../api';
 import {
-  Btn, Card, ConfirmDialog, EmptyState, ErrorState, Field, Loading, Modal, PageHeader, Pagination, SearchInput, Tone,
-  errMsg, useAsync, useToast,
+  Btn,
+  Card,
+  ConfirmDialog,
+  EmptyState,
+  ErrorState,
+  Field,
+  Loading,
+  Modal,
+  PageHeader,
+  Pagination,
+  SearchInput,
+  Tone,
+  errMsg,
+  useAsync,
+  useToast,
 } from '../ui';
 
-const ROLES: UserRole[] = ['STUDENT', 'INSTRUCTOR', 'TEACHING_ASSISTANT', 'ACADEMIC_STAFF', 'ADMIN'];
+const ROLES: UserRole[] = [
+  'STUDENT',
+  'INSTRUCTOR',
+  'TEACHING_ASSISTANT',
+  'HEAD_OF_DEPARTMENT',
+  'ACADEMIC_STAFF',
+  'ADMIN',
+  'SUPER_ADMIN',
+];
 const PAGE_SIZE = 10;
 
 export const AdminAccountsPage: React.FC = () => {
   const toast = useToast();
   const [q, setQ] = useState('');
   const [roleFilter, setRoleFilter] = useState<string>('');
+  const [deptFilter, setDeptFilter] = useState<string>('');
+  const [showInactive, setShowInactive] = useState(false);
   const [page, setPage] = useState<number>(1);
-  const [modalUser, setModalUser] = useState<null | 'new' | AuthenticatedUser>(null);
-  const [deleteTarget, setDeleteTarget] = useState<AuthenticatedUser | null>(null);
+  const [modalUser, setModalUser] = useState<null | 'new' | ManagedUserItem>(null);
+  const [deactivateTarget, setDeactivateTarget] = useState<ManagedUserItem | null>(null);
 
   const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
   const [code, setCode] = useState('');
   const [role, setRole] = useState<UserRole>('STUDENT');
+  const [departmentId, setDepartmentId] = useState<string>('');
+  const [isActive, setIsActive] = useState(true);
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
   const [formErr, setFormErr] = useState<string | null>(null);
 
-  const bootReq = useAsync(async () => {
-    const b = await fetchWorkspaceBootstrap();
-    if (!b) throw new Error('Không thể tải danh sách tài khoản.');
-    return b.users_list || [];
+  const dataReq = useAsync(async () => {
+    const [usersRes, deptRes] = await Promise.all([
+      teachingApi.listUsers({ include_inactive: 1 }),
+      teachingApi.listDepartments(),
+    ]);
+    return {
+      users: usersRes.items || [],
+      canManage: usersRes.capabilities?.can_manage ?? false,
+      departments: deptRes.items || [],
+    };
   }, []);
+
+  const deptMap = useMemo(() => {
+    const m = new Map<string, string>();
+    (dataReq.data?.departments || []).forEach((d) => m.set(d.id, d.name));
+    return m;
+  }, [dataReq.data?.departments]);
 
   const openCreate = () => {
     setFullName('');
     setEmail('');
     setCode('');
     setRole('STUDENT');
-    setPassword('123456');
+    setDepartmentId('');
+    setIsActive(true);
+    setPassword('');
     setFormErr(null);
     setModalUser('new');
   };
 
-  const openEdit = (u: AuthenticatedUser) => {
+  const openEdit = (u: ManagedUserItem) => {
     setFullName(u.full_name);
     setEmail(u.email);
     setCode(u.code);
     setRole((u.roles?.[0] as UserRole) || 'STUDENT');
+    setDepartmentId(u.department_id || '');
+    setIsActive(u.is_active);
     setPassword('');
     setFormErr(null);
     setModalUser(u);
@@ -69,24 +108,29 @@ export const AdminAccountsPage: React.FC = () => {
           setBusy(false);
           return;
         }
-        await apiAdminCreateUser({
+        await teachingApi.createUser({
           full_name: fullName.trim(),
           email: email.trim(),
           code: code.trim() || undefined,
-          role,
+          roles: [role],
+          department_id: departmentId || null,
           password,
         });
         toast({ tone: 'success', title: 'Đã tạo tài khoản người dùng mới' });
       } else if (modalUser) {
-        await apiUpdateUser(
-          modalUser.id,
-          { full_name: fullName.trim(), email: email.trim(), code: code.trim(), role },
-          'ADMIN'
-        );
-        toast({ tone: 'success', title: 'Đã cập nhật thông tin tài khoản' });
+        await teachingApi.updateUser(modalUser.id, {
+          full_name: fullName.trim(),
+          email: email.trim(),
+          code: code.trim(),
+          roles: [role],
+          department_id: departmentId || null,
+          is_active: isActive,
+          password: password.trim() || undefined,
+        });
+        toast({ tone: 'success', title: 'Đã cập nhật thông tin & phân quyền tài khoản' });
       }
       setModalUser(null);
-      bootReq.reload();
+      dataReq.reload();
     } catch (err) {
       setFormErr(errMsg(err));
     } finally {
@@ -94,29 +138,37 @@ export const AdminAccountsPage: React.FC = () => {
     }
   };
 
-  const items = (bootReq.data || []).filter((u) => {
-    if (roleFilter && !u.roles.includes(roleFilter as UserRole)) return false;
+  const items = (dataReq.data?.users || []).filter((u) => {
+    if (!showInactive && !u.is_active) return false;
+    if (roleFilter && !u.roles.includes(roleFilter)) return false;
+    if (deptFilter && (u.department_id || '') !== deptFilter) return false;
     if (q.trim() && !`${u.code} ${u.full_name} ${u.email}`.toLowerCase().includes(q.trim().toLowerCase())) return false;
     return true;
   });
   const totalPages = Math.max(1, Math.ceil(items.length / PAGE_SIZE));
   const safePage = Math.min(page, totalPages);
   const pagedItems = items.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
+  const canManage = dataReq.data?.canManage ?? false;
 
   return (
     <div className="t-page">
       <PageHeader
-        title="Quản lý tài khoản hệ thống"
-        subtitle="Cấp mới, chỉnh sửa vai trò hoặc thu hồi tài khoản giảng viên, trợ giảng, giáo vụ và học viên."
+        title="Quản lý tài khoản & Phân quyền"
+        subtitle="Quản trị tài khoản theo vai trò RBAC, đơn vị/bộ môn và trạng thái phiên đăng nhập."
         actions={
-          <Btn variant="primary" onClick={openCreate}>
-            + Tạo tài khoản
-          </Btn>
+          canManage ? (
+            <Btn variant="primary" onClick={openCreate}>
+              + Tạo tài khoản
+            </Btn>
+          ) : null
         }
       />
 
       <Card padded={false}>
-        <div className="t-toolbar" style={{ padding: '16px var(--card-pad, 24px)', borderBottom: '1px solid var(--border-subtle)' }}>
+        <div
+          className="t-toolbar"
+          style={{ padding: '16px var(--card-pad, 24px)', borderBottom: '1px solid var(--border-subtle)', flexWrap: 'wrap', gap: 12 }}
+        >
           <SearchInput
             value={q}
             onChange={(v) => {
@@ -134,22 +186,49 @@ export const AdminAccountsPage: React.FC = () => {
             }}
             aria-label="Lọc theo nhóm người dùng"
           >
-            <option value="">Tất cả nhóm người dùng</option>
+            <option value="">Tất cả vai trò</option>
             {ROLES.map((r) => (
               <option key={r} value={r}>
                 {ROLE_DISPLAY_LABELS[r]}
               </option>
             ))}
           </select>
+          <select
+            className="t-input"
+            value={deptFilter}
+            onChange={(e) => {
+              setDeptFilter(e.target.value);
+              setPage(1);
+            }}
+            aria-label="Lọc theo đơn vị bộ môn"
+          >
+            <option value="">Tất cả bộ môn/đơn vị</option>
+            {(dataReq.data?.departments || []).map((d) => (
+              <option key={d.id} value={d.id}>
+                {d.name} ({d.code})
+              </option>
+            ))}
+          </select>
+          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, minHeight: 44, fontSize: 13, cursor: 'pointer' }}>
+            <input
+              type="checkbox"
+              checked={showInactive}
+              onChange={(e) => {
+                setShowInactive(e.target.checked);
+                setPage(1);
+              }}
+            />
+            Hiện tài khoản đã khóa
+          </label>
         </div>
 
-        {bootReq.loading && <Loading rows={5} />}
-        {bootReq.error && <ErrorState error={bootReq.error} onRetry={bootReq.reload} />}
-        {!bootReq.loading && !bootReq.error && (
+        {dataReq.loading && <Loading rows={5} />}
+        {dataReq.error && <ErrorState error={dataReq.error} onRetry={dataReq.reload} />}
+        {!dataReq.loading && !dataReq.error && (
           items.length === 0 ? (
             <EmptyState
               title="Không tìm thấy tài khoản nào"
-              text={q.trim() || roleFilter ? 'Thử đổi từ khóa tìm kiếm hoặc bộ lọc nhóm người dùng.' : 'Chưa có tài khoản trong hệ thống.'}
+              text={q.trim() || roleFilter || deptFilter ? 'Thử đổi từ khóa tìm kiếm hoặc bộ lọc.' : 'Chưa có tài khoản trong hệ thống.'}
             />
           ) : (
             <>
@@ -160,7 +239,9 @@ export const AdminAccountsPage: React.FC = () => {
                       <th>Mã số</th>
                       <th>Họ và tên</th>
                       <th>Email</th>
-                      <th>Nhóm người dùng</th>
+                      <th>Vai trò RBAC</th>
+                      <th>Đơn vị / Bộ môn</th>
+                      <th>Trạng thái</th>
                       <th className="actions">Thao tác</th>
                     </tr>
                   </thead>
@@ -172,20 +253,30 @@ export const AdminAccountsPage: React.FC = () => {
                         <td style={{ overflowWrap: 'anywhere' }}>{u.email}</td>
                         <td>
                           <Tone tone="neutral">
-                            {u.roles.map((r) => ROLE_DISPLAY_LABELS[r] || r).join(', ')}
+                            {u.roles.map((r) => ROLE_DISPLAY_LABELS[r as UserRole] || r).join(', ')}
+                          </Tone>
+                        </td>
+                        <td>{u.department_id ? deptMap.get(u.department_id) || u.department_id : 'Toàn hệ thống / Chưa gán'}</td>
+                        <td>
+                          <Tone tone={u.is_active ? 'success' : 'danger'}>
+                            {u.is_active ? 'Đang hoạt động' : 'Đã vô hiệu'}
                           </Tone>
                         </td>
                         <td className="actions">
-                          <div className="t-actions">
-                            <Btn small variant="quiet" onClick={() => openEdit(u)}>
-                              Sửa
-                            </Btn>
-                            {!u.roles.includes('ADMIN') && (
-                              <Btn small variant="danger" onClick={() => setDeleteTarget(u)}>
-                                Xóa
+                          {canManage ? (
+                            <div className="t-actions">
+                              <Btn small variant="quiet" onClick={() => openEdit(u)}>
+                                Sửa
                               </Btn>
-                            )}
-                          </div>
+                              {u.is_active && !u.roles.includes('ADMIN') && !u.roles.includes('SUPER_ADMIN') && (
+                                <Btn small variant="danger" onClick={() => setDeactivateTarget(u)}>
+                                  Vô hiệu hóa
+                                </Btn>
+                              )}
+                            </div>
+                          ) : (
+                            <span className="t-sub">Chỉ xem</span>
+                          )}
                         </td>
                       </tr>
                     ))}
@@ -204,13 +295,13 @@ export const AdminAccountsPage: React.FC = () => {
 
       {modalUser && (
         <Modal
-          title={modalUser === 'new' ? 'Tạo tài khoản mới' : 'Chỉnh sửa tài khoản'}
+          title={modalUser === 'new' ? 'Tạo tài khoản mới' : 'Chỉnh sửa tài khoản & Quyền'}
           onClose={() => setModalUser(null)}
-          width={520}
+          width={560}
           footer={
             <>
               <Btn variant="ghost" onClick={() => setModalUser(null)} disabled={busy}>Hủy</Btn>
-              <Btn variant="primary" onClick={submitForm} loading={busy}>Lưu</Btn>
+              <Btn variant="primary" onClick={submitForm} loading={busy}>Lưu thay đổi</Btn>
             </>
           }
         >
@@ -224,7 +315,7 @@ export const AdminAccountsPage: React.FC = () => {
             <Field label="Mã định danh" hint="Để trống nếu tạo mới để hệ thống tự cấp">
               <input className="t-input tabular-nums" value={code} onChange={(e) => setCode(e.target.value)} />
             </Field>
-            <Field label="Nhóm người dùng" required>
+            <Field label="Vai trò RBAC" required>
               <select className="t-input" value={role} onChange={(e) => setRole(e.target.value as UserRole)}>
                 {ROLES.map((r) => (
                   <option key={r} value={r}>
@@ -233,31 +324,57 @@ export const AdminAccountsPage: React.FC = () => {
                 ))}
               </select>
             </Field>
-            {modalUser === 'new' && (
-              <Field label="Mật khẩu khởi tạo" required wide>
-                <input className="t-input" type="text" value={password} onChange={(e) => setPassword(e.target.value)} />
+            <Field label="Đơn vị / Khoa / Bộ môn" wide>
+              <select className="t-input" value={departmentId} onChange={(e) => setDepartmentId(e.target.value)}>
+                <option value="">-- Không giới hạn / Chưa gắn đơn vị --</option>
+                {(dataReq.data?.departments || []).map((d) => (
+                  <option key={d.id} value={d.id}>
+                    {d.name} ({d.code})
+                  </option>
+                ))}
+              </select>
+            </Field>
+            {modalUser !== 'new' && (
+              <Field label="Trạng thái hoạt động" wide>
+                <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, minHeight: 44, cursor: 'pointer' }}>
+                  <input type="checkbox" checked={isActive} onChange={(e) => setIsActive(e.target.checked)} />
+                  Tài khoản đang hoạt động (bỏ chọn để khóa và thu hồi JWT ngay)
+                </label>
               </Field>
             )}
+            <Field
+              label={modalUser === 'new' ? 'Mật khẩu khởi tạo' : 'Đặt lại mật khẩu mới (tùy chọn)'}
+              required={modalUser === 'new'}
+              wide
+            >
+              <input
+                className="t-input"
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder={modalUser === 'new' ? 'Tối thiểu 6 ký tự (8+ ở Production)' : 'Để trống nếu giữ nguyên mật khẩu hiện tại'}
+              />
+            </Field>
             {formErr && <p className="t-field__error t-field--wide" role="alert">{formErr}</p>}
           </form>
         </Modal>
       )}
 
-      {deleteTarget && (
+      {deactivateTarget && (
         <ConfirmDialog
-          title="Xóa tài khoản người dùng?"
-          message={`Bạn sắp xóa tài khoản "${deleteTarget.full_name}" (${deleteTarget.email}).`}
-          confirmLabel="Xóa tài khoản"
+          title="Vô hiệu hóa tài khoản người dùng?"
+          message={`Tài khoản "${deactivateTarget.full_name}" (${deactivateTarget.email}) sẽ bị khóa đăng nhập và thu hồi toàn bộ phiên hiện tại, nhưng dữ liệu học tập/giảng dạy lịch sử vẫn được bảo toàn.`}
+          confirmLabel="Vô hiệu hóa"
           danger
-          onCancel={() => setDeleteTarget(null)}
+          onCancel={() => setDeactivateTarget(null)}
           onConfirm={async () => {
             try {
-              await apiDeleteUser(deleteTarget.id, 'ADMIN');
-              setDeleteTarget(null);
-              toast({ tone: 'success', title: 'Đã xóa tài khoản' });
-              bootReq.reload();
+              await teachingApi.deleteUser(deactivateTarget.id);
+              setDeactivateTarget(null);
+              toast({ tone: 'success', title: 'Đã vô hiệu hóa tài khoản' });
+              dataReq.reload();
             } catch (err) {
-              toast({ tone: 'error', title: 'Không xóa được tài khoản', detail: errMsg(err) });
+              toast({ tone: 'error', title: 'Không vô hiệu hóa được tài khoản', detail: errMsg(err) });
             }
           }}
         />

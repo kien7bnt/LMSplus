@@ -9,6 +9,7 @@
 import crypto from 'node:crypto';
 import { ATTENDANCE_STATUSES, vnIso } from './schema.mjs';
 import { isStudent } from './scope.mjs';
+import { appCache } from '../common/cache.mjs';
 import { fail, nowIso, nowVn, text, intField, tx, compareVietnameseName } from './http.mjs';
 import { requireSession, requireClassAccess } from './classes.mjs';
 
@@ -17,19 +18,27 @@ const EDIT_REASON_AFTER_HOURS = 24;
 const OPEN_BEFORE_START_MIN = 30;
 
 export async function getAttendancePolicy(db) {
-  const row = await db.prepare("SELECT value FROM app_meta WHERE key = 'attendance_policy'").get();
-  let p = {};
-  try {
-    p = row ? JSON.parse(row.value) : {};
-  } catch {
-    p = {};
-  }
-  const policy = { ...DEFAULT_POLICY, ...p };
-  policy.formula_text =
-    `Tỷ lệ chuyên cần = (Có mặt${policy.late_counts_as_present ? ' + Đi muộn' : ''}) ÷ ` +
-    `(Có mặt + Đi muộn + Vắng không phép${policy.excused_in_denominator ? ' + Vắng có phép' : ''}) × 100%. ` +
-    'Buổi bị hủy và học viên chưa được điểm danh không được tính.';
-  return policy;
+  return await appCache.remember(
+    db,
+    'attendance_policy',
+    'default',
+    async () => {
+      const row = await db.prepare("SELECT value FROM app_meta WHERE key = 'attendance_policy'").get();
+      let p = {};
+      try {
+        p = row ? JSON.parse(row.value) : {};
+      } catch {
+        p = {};
+      }
+      const policy = { ...DEFAULT_POLICY, ...p };
+      policy.formula_text =
+        `Tỷ lệ chuyên cần = (Có mặt${policy.late_counts_as_present ? ' + Đi muộn' : ''}) ÷ ` +
+        `(Có mặt + Đi muộn + Vắng không phép${policy.excused_in_denominator ? ' + Vắng có phép' : ''}) × 100%. ` +
+        'Buổi bị hủy và học viên chưa được điểm danh không được tính.';
+      return policy;
+    },
+    30_000
+  );
 }
 
 export function rateFromCounts(counts, policy = DEFAULT_POLICY) {

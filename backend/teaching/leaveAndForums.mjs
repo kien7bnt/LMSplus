@@ -9,6 +9,7 @@
 
 import crypto from 'node:crypto';
 import { fail, nowIso, nowVn, text, oneOf, tx, mapAsync, filterAsync } from './http.mjs';
+import { sanitizeExternalHttpUrl } from '../common/security.mjs';
 import { isAdmin, isStaff, isStudent, classRole, classCapabilities, classScopeSql, canManageCourse, canViewCourse, safeJson } from './scope.mjs';
 import { getClass, requireClassAccess } from './classes.mjs';
 import { getClassContentVersionKey } from './masterSchema.mjs';
@@ -231,10 +232,15 @@ export function registerLeaveAndForumRoutes(route) {
       }
     }
 
-    const reasonCategory = oneOf(body, 'reason_category', ['SICK', 'FAMILY', 'OFFICIAL_DUTY', 'OTHER'], { fallback: 'OTHER', label: 'nhóm lý do' });
+    const reasonCategory = oneOf(body, 'reason_category', ['SICK', 'FAMILY', 'OFFICIAL_DUTY', 'ACADEMIC_CONFLICT', 'OTHER'], { fallback: 'OTHER', label: 'nhóm lý do' });
     const reason = text(body, 'reason', { required: true, max: 2000, label: 'lý do xin nghỉ' });
     const makeup = text(body, 'makeup_class_requested', { max: 500, fallback: '', label: 'nguyện vọng học bù' }) || '';
-    const evidenceUrl = text(body, 'evidence_url', { max: 500, label: 'liên kết minh chứng' }) || null;
+    const rawEvidenceUrl = text(body, 'evidence_url', { max: 500, label: 'liên kết minh chứng' }) || null;
+    const evidenceCheck = sanitizeExternalHttpUrl(rawEvidenceUrl);
+    if (!evidenceCheck.ok) {
+      fail(422, 'INVALID_EVIDENCE_URL', evidenceCheck.message, { field: 'evidence_url' });
+    }
+    const evidenceUrl = evidenceCheck.url;
     const evidenceName = text(body, 'evidence_name', { max: 200, label: 'tên tệp minh chứng' }) || null;
 
     const id = `lv_${crypto.randomBytes(5).toString('hex')}`;

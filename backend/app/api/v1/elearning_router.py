@@ -7,6 +7,7 @@ Multi-criteria Progress Completion, and 24-Hour Teaching Log State Machine.
 
 from __future__ import annotations
 
+import os
 import json
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -101,7 +102,9 @@ class LeaveDecisionInput(BaseModel):
 
 @router.post("/auth/token")
 async def issue_jwt_for_role(payload: LoginRequest):
-    """Issues a signed HMAC-SHA256 JWT token for an existing user in the SQL database."""
+    """Dev/Test-only helper; disabled unless LMSPLUS_ENABLE_TEST_ENDPOINTS=1 and not production."""
+    if os.environ.get("NODE_ENV") == "production" or os.environ.get("LMSPLUS_ENABLE_TEST_ENDPOINTS") != "1":
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Not found"})
     with repo._connect() as conn:
         rows = conn.execute("SELECT * FROM users").fetchall()
         target = None
@@ -666,6 +669,8 @@ async def decide_leave_request(
 
 @router.post("/testing/reset-seed")
 async def reset_database_to_seed():
-    """Resets SQL database to clean initial seed state for deterministic automated testing."""
+    """Test-only endpoint; disabled in production and unless LMSPLUS_ALLOW_RESET_SEED=1."""
+    if os.environ.get("NODE_ENV") == "production" or os.environ.get("LMSPLUS_ALLOW_RESET_SEED") != "1":
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Not found"})
     repo.reset_from_seed()
     return {"success": True, "data": {"reset": True}}

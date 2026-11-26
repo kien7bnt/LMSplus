@@ -27,20 +27,26 @@ logging.basicConfig(
     handlers=_handlers,
 )
 logger = logging.getLogger("lmsplus.elearning")
-logger.info("[PASS] LMSPLUS E-Learning FastAPI module initialized (http://localhost:8000)")
+logger.warning("[LEGACY] backend/main.py (FastAPI) chỉ giữ cho mục đích tương thích /api/v1/elearning/*. Runtime chuẩn là backend/server_fallback.mjs (Node.js ESM + PostgreSQL 18).")
 
 app = FastAPI(
-    title="LMSPLUS E-Learning Extension API",
+    title="LMSPLUS E-Learning Legacy Extension API",
     version="1.0.0",
-    description="API mở rộng phân hệ E-Learning tích hợp LMSPLUS",
+    description="API mở rộng kế thừa (/api/v1/elearning/*). Lưu ý: Runtime chuẩn toàn hệ thống sử dụng Node.js ESM + PostgreSQL 18.",
 )
+
+_allowed_origins = [
+    o.strip()
+    for o in os.environ.get("LMSPLUS_ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(",")
+    if o.strip()
+]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=_allowed_origins,
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization", "Range", "Idempotency-Key"],
 )
 
 app.include_router(elearning_router)

@@ -1,10 +1,9 @@
 import React, { useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { useBreadcrumbTrail } from '../../layout/BreadcrumbContext';
 import { CourseDetail, CourseStatus, OutlineChapter, masterApi, saveBlob, teachingApi } from '../api';
-import {
-  Badge, Btn, Card, ConfirmDialog, EmptyState, ErrorState, Field, Loading, Modal, PageHeader, ProgressMeter, SmartImage, Tone,
-  errMsg, fmtBytes, fmtDate, fmtDateTime, useAsync, useToast,
-} from '../ui';
+import { Badge, Btn, Card, ConfirmDialog, EmptyState, ErrorState, Field, Loading, Modal, PageHeader, ProgressMeter, SmartImage, Tone, errMsg, fmtBytes, fmtDate, fmtDateTime, useAsync, useToast } from '../ui';
+import { IconTrash, IconVideo } from '../components/Icons';
 import { CourseFormModal } from './CourseFormModal';
 import {
   CourseLifecycleAndDiffPanel,
@@ -143,26 +142,26 @@ const OutlineEditor: React.FC<{ course: CourseDetail; onChanged: () => void; set
         <div className="t-actions">
           {canManage ? <span className="t-sub">Kéo biểu tượng ⠿ để sắp xếp, hoặc dùng nút ↑ ↓.</span> : <Tone tone="neutral">Chỉ xem</Tone>}
           <Link className="t-btn t-btn--small t-btn--primary" to={`/teaching/courses/${course.id}/studio`}>
-            🎬 Mở Lesson Studio
+            <IconVideo size={15} /> Mở Lesson Studio
           </Link>
         </div>
       }
     >
       {course.classes.length > 1 && (
         <div className="t-notice" style={{ marginBottom: 16 }}>
-          Khóa học đang được <strong>{course.classes.length} lớp</strong> sử dụng chung. Lớp đang hoạt động ghim theo Snapshot phiên bản đã cấp; khi muốn cập nhật giáo án mới cho các lớp mới, hãy xuất bản phiên bản Snapshot mới.
+          Môn học đang được <strong>{course.classes.length} lớp</strong> sử dụng chung. Lớp đang hoạt động ghim theo Snapshot phiên bản đã cấp; khi muốn cập nhật giáo án mới cho các lớp mới, hãy xuất bản phiên bản Snapshot mới.
         </div>
       )}
 
-      {/* Cây cấu trúc Chủ đề (Cấp Chủ đề -> Chương -> Bài học) */}
+      {/* Cây cấu trúc Chủ đề (Chủ đề -> Chương -> Bài học) */}
       <div style={{ marginBottom: 20, padding: 14, borderRadius: 'var(--radius-md)', backgroundColor: 'var(--bg-surface-subtle)', border: '1px solid var(--border-subtle)' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: topics.length || canManage ? 10 : 0 }}>
           <div>
-            <strong style={{ fontSize: 14 }}>Chủ đề học tập (Cấp 1 của cây nội dung 4 cấp)</strong>
-            <span className="t-sub" style={{ margin: '2px 0 0' }}>Nhóm các chương theo chủ đề để đồng bộ với 3 Ngân hàng học liệu.</span>
+            <strong style={{ fontSize: 14 }}>Chủ đề học tập</strong>
+            <span className="t-sub" style={{ margin: '2px 0 0' }}>Nhóm các chương theo chủ đề để đồng bộ với Ngân hàng học liệu.</span>
           </div>
           <Link className="t-btn t-btn--small" to={`/teaching/banks?course_id=${course.id}`}>
-            Mở Học liệu theo cây
+            Mở Ngân hàng học liệu
           </Link>
         </div>
         {topics.length > 0 && (
@@ -236,8 +235,8 @@ const OutlineEditor: React.FC<{ course: CourseDetail; onChanged: () => void; set
                         aria-label={`Sửa chủ đề ${tp.title}`}
                         title="Sửa tên chủ đề"
                         style={{
-                          minWidth: 36,
-                          minHeight: 36,
+                          minWidth: 44,
+                          minHeight: 44,
                           border: 'none',
                           borderRadius: 'var(--radius-pill)',
                           background: 'transparent',
@@ -259,8 +258,8 @@ const OutlineEditor: React.FC<{ course: CourseDetail; onChanged: () => void; set
                         aria-label={`Xóa chủ đề ${tp.title}`}
                         title="Xóa chủ đề"
                         style={{
-                          minWidth: 36,
-                          minHeight: 36,
+                          minWidth: 44,
+                          minHeight: 44,
                           border: 'none',
                           borderRadius: 'var(--radius-pill)',
                           background: 'transparent',
@@ -550,7 +549,7 @@ const OutlineEditor: React.FC<{ course: CourseDetail; onChanged: () => void; set
                       })
                     }
                   >
-                    🗑
+                    <IconTrash size={15} />
                   </button>
                 </>
               )}
@@ -735,7 +734,7 @@ const ResourcesSection: React.FC<{ courseId: string }> = ({ courseId }) => {
                       </Btn>
                       {data.can_edit && (
                         <button type="button" className="t-icon-btn" aria-label={`Gỡ ${r.title}`} onClick={() => setToDelete(r.id)}>
-                          🗑
+                          <IconTrash size={15} />
                         </button>
                       )}
                     </div>
@@ -951,6 +950,7 @@ export const CourseDetailPage: React.FC = () => {
   const navigate = useNavigate();
   const toast = useToast();
   const { data, setData, error, loading, reload } = useAsync(() => teachingApi.course(courseId), [courseId]);
+  useBreadcrumbTrail(data ? [{ label: data.code }] : []);
   const me = useAsync(() => teachingApi.me(), []);
   const stats = useAsync(() => (section === 'stats' ? teachingApi.courseStats(courseId) : Promise.resolve(null)), [courseId, section]);
   const [editOpen, setEditOpen] = useState(false);
@@ -973,7 +973,6 @@ export const CourseDetailPage: React.FC = () => {
   return (
     <div className="t-page">
       <PageHeader
-        breadcrumb={<><Link to="/teaching/courses">Giáo trình môn</Link><span aria-hidden="true">›</span><span>{c.code}</span></>}
         title={c.title}
         subtitle={
           <span style={{ display: 'inline-flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
@@ -986,10 +985,10 @@ export const CourseDetailPage: React.FC = () => {
         actions={
           <>
             <Link className="t-btn t-btn--primary" to={`/teaching/courses/${c.id}/studio`}>
-              🎬 Mở Lesson Studio
+              <IconVideo size={15} /> Mở Lesson Studio
             </Link>
             <Link className="t-btn" to={`/teaching/banks?course_id=${c.id}`}>
-              Học liệu
+              Ngân hàng học liệu
             </Link>
             {canManage && c.status !== 'PUBLISHED' && <Btn variant="secondary" onClick={() => setStatusConfirm('PUBLISHED')}>Xuất bản giáo trình</Btn>}
             {canManage && <Btn onClick={() => setEditOpen(true)}>Sửa thông tin</Btn>}

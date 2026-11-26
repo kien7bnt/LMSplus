@@ -25,6 +25,7 @@ import {
   Badge,
   Btn,
   Card,
+  ConfirmDialog,
   EmptyState,
   ErrorState,
   Field,
@@ -63,15 +64,24 @@ type SelectedNode =
   | { level: 'LESSON'; courseId: string; topicId: string; chapterId: string; lessonId: string; title: string; canEdit: boolean };
 
 export const BanksPage: React.FC = () => {
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const initialCourseId = searchParams.get('course_id') || '';
   const initialLessonId = searchParams.get('lesson_id') || '';
+  const rawTabParam = searchParams.get('tab');
+  const activeTabFromUrl: 'questions' | 'assignments' | 'resources' =
+    rawTabParam === 'assignments' || rawTabParam === 'resources' ? rawTabParam : 'questions';
   const toast = useToast();
   const push = (title: string, detail = '', tone: 'success' | 'error' | 'info' = 'info') => toast({ title, detail: detail || undefined, tone });
 
   const treeRes = useAsync(() => masterApi.getBanksTree(), []);
   const [selected, setSelected] = useState<SelectedNode>({ level: 'ALL' });
-  const [bankTab, setBankTab] = useState<'questions' | 'assignments' | 'resources'>('questions');
+  const bankTab = activeTabFromUrl;
+  const setBankTab = (nextTab: 'questions' | 'assignments' | 'resources') => {
+    const next = new URLSearchParams(searchParams);
+    if (nextTab === 'questions') next.delete('tab');
+    else next.set('tab', nextTab);
+    setSearchParams(next, { replace: true });
+  };
   const [q, setQ] = useState('');
   const dq = useDebounced(q);
   const [page, setPage] = useState(1);
@@ -83,6 +93,7 @@ export const BanksPage: React.FC = () => {
   const [editingAssignment, setEditingAssignment] = useState<AssignmentBankItem | null>(null);
   const [createResourceOpen, setCreateResourceOpen] = useState(false);
   const [editingResource, setEditingResource] = useState<BankResourceItem | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<{ title: string; message: string; onConfirm: () => Promise<void> } | null>(null);
 
   // Tự động chọn node từ query param khi tải cây xong
   useEffect(() => {
@@ -213,8 +224,8 @@ export const BanksPage: React.FC = () => {
   return (
     <div className="t-page">
       <PageHeader
-        title="Học liệu đồng bộ 4 cấp"
-        subtitle="Cây thư mục học liệu tự động sinh từ Cấu trúc Giáo trình → Chủ đề → Chương → Bài học. Nhấp chọn cấp cha để xem tổng hợp; chọn Bài học (nút lá) để thêm hoặc import mới."
+        title="Ngân hàng học liệu 4 cấp"
+        subtitle="Cây thư mục học liệu tự động sinh từ Cấu trúc Môn học & Giáo trình → Chủ đề → Chương → Bài học. Nhấp chọn cấp cha để xem tổng hợp; chọn Bài học (nút lá) để thêm hoặc import mới."
       />
 
       <div className="m-banks-layout">
@@ -327,7 +338,7 @@ export const BanksPage: React.FC = () => {
 
             {!treeRes.loading && !canCreateAny ? (
               <div className="m-semantic-notice m-semantic-notice--warning" style={{ marginBottom: 16 }}>
-                Chưa có bài học nào trong các giáo trình bạn phụ trách. Hãy tạo ít nhất 1 Chương và 1 Bài học trong <strong>Giáo trình môn</strong> để gắn học liệu.
+                Chưa có bài học nào trong các môn học bạn phụ trách. Hãy tạo ít nhất 1 Chương và 1 Bài học trong <strong>Môn học & Giáo trình</strong> để gắn học liệu.
               </div>
             ) : !isLeafLesson && (
               <div className="m-semantic-notice" style={{ marginBottom: 16 }}>
@@ -384,11 +395,22 @@ export const BanksPage: React.FC = () => {
                                     <Btn
                                       small
                                       variant="ghost"
-                                      onClick={async () => {
-                                        await masterApi.deleteQuestionBankItem(item.id);
-                                        push('Đã xóa câu hỏi khỏi ngân hàng', '', 'info');
-                                        reloadAll();
-                                      }}
+                                      onClick={() =>
+                                        setConfirmDelete({
+                                          title: 'Xóa câu hỏi khỏi ngân hàng?',
+                                          message: `Bạn sắp xóa câu hỏi "${item.prompt.slice(0, 80)}". Hành động này không thể hoàn tác.`,
+                                          onConfirm: async () => {
+                                            try {
+                                              await masterApi.deleteQuestionBankItem(item.id);
+                                              setConfirmDelete(null);
+                                              push('Đã xóa câu hỏi khỏi ngân hàng', '', 'info');
+                                              reloadAll();
+                                            } catch (ex) {
+                                              push('Không xóa được câu hỏi', errMsg(ex), 'error');
+                                            }
+                                          },
+                                        })
+                                      }
                                     >
                                       Xóa
                                     </Btn>
@@ -451,11 +473,22 @@ export const BanksPage: React.FC = () => {
                                     <Btn
                                       small
                                       variant="ghost"
-                                      onClick={async () => {
-                                        await masterApi.deleteAssignmentBankItem(a.id);
-                                        push('Đã xóa bài tập mẫu', '', 'info');
-                                        reloadAll();
-                                      }}
+                                      onClick={() =>
+                                        setConfirmDelete({
+                                          title: `Xóa bài tập mẫu "${a.title}"?`,
+                                          message: 'Bài tập mẫu sẽ bị xóa khỏi ngân hàng môn học.',
+                                          onConfirm: async () => {
+                                            try {
+                                              await masterApi.deleteAssignmentBankItem(a.id);
+                                              setConfirmDelete(null);
+                                              push('Đã xóa bài tập mẫu', '', 'info');
+                                              reloadAll();
+                                            } catch (ex) {
+                                              push('Không xóa được bài tập mẫu', errMsg(ex), 'error');
+                                            }
+                                          },
+                                        })
+                                      }
                                     >
                                       Xóa
                                     </Btn>
@@ -535,11 +568,22 @@ export const BanksPage: React.FC = () => {
                                     <Btn
                                       small
                                       variant="ghost"
-                                      onClick={async () => {
-                                        await masterApi.deleteResourceBankItem(r.id);
-                                        push('Đã xóa tài nguyên', '', 'info');
-                                        reloadAll();
-                                      }}
+                                      onClick={() =>
+                                        setConfirmDelete({
+                                          title: `Xóa tài nguyên "${r.title}"?`,
+                                          message: 'Tài nguyên sẽ bị gỡ khỏi danh mục ngân hàng học liệu.',
+                                          onConfirm: async () => {
+                                            try {
+                                              await masterApi.deleteResourceBankItem(r.id);
+                                              setConfirmDelete(null);
+                                              push('Đã xóa tài nguyên', '', 'info');
+                                              reloadAll();
+                                            } catch (ex) {
+                                              push('Không xóa được tài nguyên', errMsg(ex), 'error');
+                                            }
+                                          },
+                                        })
+                                      }
                                     >
                                       Xóa
                                     </Btn>
@@ -582,6 +626,17 @@ export const BanksPage: React.FC = () => {
           defaultLessonId={defaultModalLessonId}
           onClose={() => setImportQuestionOpen(false)}
           onImported={(cnt) => { setImportQuestionOpen(false); push(`Đã import ${cnt} câu hỏi`, '', 'success'); reloadAll(); }}
+        />
+      )}
+
+      {confirmDelete && (
+        <ConfirmDialog
+          title={confirmDelete.title}
+          message={confirmDelete.message}
+          confirmLabel="Xác nhận xóa"
+          danger
+          onCancel={() => setConfirmDelete(null)}
+          onConfirm={confirmDelete.onConfirm}
         />
       )}
 
@@ -953,6 +1008,120 @@ const CreateBankQuestionModal: React.FC<{
   );
 };
 
+const SAMPLE_QB_CSV = [
+  'question_type,prompt,options_pipe,answer,points,difficulty,explanation',
+  'TRUE_FALSE,"Phân số có mẫu bằng 0 là hợp lệ.", "",false,1,EASY,"Mẫu số phải luôn khác 0."',
+  'SINGLE_CHOICE,"2 + 3 x 4 bằng bao nhiêu?","20|14|24|10",1,2,MEDIUM,"Nhân chia trước, cộng trừ sau."',
+].join('\n');
+
+function parseCsvRow(line: string): string[] {
+  const out: string[] = [];
+  let cur = '';
+  let inQ = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '"') {
+      if (inQ && line[i + 1] === '"') { cur += '"'; i++; }
+      else inQ = !inQ;
+    } else if (ch === ',' && !inQ) {
+      out.push(cur.trim());
+      cur = '';
+    } else {
+      cur += ch;
+    }
+  }
+  out.push(cur.trim());
+  return out;
+}
+
+function parseQuestionsInput(mode: 'JSON' | 'CSV', raw: string): {
+  items: Array<Record<string, unknown>>;
+  errors: Array<{ row: number; message: string }>;
+  duplicates: number;
+} {
+  const errors: Array<{ row: number; message: string }> = [];
+  const items: Array<Record<string, unknown>> = [];
+  const seenPrompts = new Set<string>();
+  let duplicates = 0;
+
+  if (mode === 'JSON') {
+    const parsed = JSON.parse(raw);
+    const list = Array.isArray(parsed) ? parsed : parsed?.items;
+    if (!Array.isArray(list)) throw new Error('JSON cần là một mảng các đối tượng câu hỏi.');
+    list.forEach((entry, idx) => {
+      const prompt = String(entry?.prompt || '').trim();
+      if (!prompt) {
+        errors.push({ row: idx + 1, message: 'Thiếu nội dung câu hỏi (prompt).' });
+        return;
+      }
+      const norm = prompt.toLowerCase();
+      if (seenPrompts.has(norm)) {
+        duplicates++;
+        return;
+      }
+      seenPrompts.add(norm);
+      items.push(entry);
+    });
+    return { items, errors, duplicates };
+  }
+
+  const lines = raw.split(/\r?\n/).filter((l) => l.trim().length > 0);
+  if (lines.length < 2) {
+    return { items: [], errors: [{ row: 1, message: 'CSV cần có dòng tiêu đề và ít nhất 1 dòng câu hỏi.' }], duplicates: 0 };
+  }
+  const headers = parseCsvRow(lines[0]).map((h) => h.toLowerCase());
+  const idxOf = (name: string) => headers.indexOf(name);
+  for (let r = 1; r < lines.length; r++) {
+    const cols = parseCsvRow(lines[r]);
+    const rowNum = r + 1;
+    const qType = String(cols[idxOf('question_type')] || 'SINGLE_CHOICE').toUpperCase();
+    const prompt = String(cols[idxOf('prompt')] || '').trim();
+    if (!prompt) {
+      errors.push({ row: rowNum, message: 'Thiếu cột prompt.' });
+      continue;
+    }
+    const norm = prompt.toLowerCase();
+    if (seenPrompts.has(norm)) {
+      duplicates++;
+      continue;
+    }
+    seenPrompts.add(norm);
+    const optsPipe = String(cols[idxOf('options_pipe')] || '').trim();
+    const ansRaw = String(cols[idxOf('answer')] || '').trim();
+    const points = Number(cols[idxOf('points')] || 1) || 1;
+    const difficulty = String(cols[idxOf('difficulty')] || 'MEDIUM').toUpperCase();
+    const explanation = String(cols[idxOf('explanation')] || '').trim();
+
+    let options: Array<{ id: string; text: string }> | undefined;
+    let answer_key: Record<string, unknown> = {};
+    if (qType === 'TRUE_FALSE') {
+      answer_key = { boolean_answer: ansRaw.toLowerCase() === 'true' || ansRaw === '1' || ansRaw.toLowerCase() === 'đúng' };
+    } else if (qType === 'SINGLE_CHOICE' || qType === 'MULTIPLE_CHOICE') {
+      const labels = optsPipe.split('|').map((s) => s.trim()).filter(Boolean);
+      if (labels.length < 2) {
+        errors.push({ row: rowNum, message: 'Câu trắc nghiệm cần tối thiểu 2 lựa chọn (ngăn bởi "|").' });
+        continue;
+      }
+      options = labels.map((t, oi) => ({ id: `opt_${oi}`, text: t }));
+      if (qType === 'SINGLE_CHOICE') {
+        const pickIdx = Number(ansRaw);
+        const selId = Number.isInteger(pickIdx) && options[pickIdx] ? options[pickIdx].id : options[0].id;
+        answer_key = { correct_option_id: selId };
+      } else {
+        const picks = ansRaw.split('|').map((x) => Number(x.trim())).filter((n) => Number.isInteger(n) && options![n]);
+        answer_key = { correct_option_ids: picks.map((p) => options![p].id) };
+      }
+    } else if (qType === 'FILL_BLANK' || qType === 'SHORT_ANSWER') {
+      answer_key = { accepted_answers: ansRaw.split('|').map((s) => s.trim()).filter(Boolean) };
+    } else {
+      errors.push({ row: rowNum, message: `Loại câu hỏi "${qType}" không hợp lệ.` });
+      continue;
+    }
+    items.push({ question_type: qType, prompt, options, answer_key, points, difficulty, explanation });
+  }
+  return { items, errors, duplicates };
+}
+
 const ImportBankQuestionModal: React.FC<{
   options: LeafLessonOption[];
   defaultLessonId: string;
@@ -960,24 +1129,28 @@ const ImportBankQuestionModal: React.FC<{
   onImported: (n: number) => void;
 }> = ({ options, defaultLessonId, onClose, onImported }) => {
   const [lessonId, setLessonId] = useState(defaultLessonId || options[0]?.lessonId || '');
-  const [rawJson, setRawJson] = useState(
+  const [mode, setMode] = useState<'CSV' | 'JSON'>('JSON');
+  const [rawInput, setRawInput] = useState(
     '[\n  {\n    "question_type": "TRUE_FALSE",\n    "prompt": "Phân số có mẫu bằng 0 là hợp lệ.",\n    "answer_key": { "boolean_answer": false },\n    "points": 1,\n    "difficulty": "EASY"\n  }\n]'
   );
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
+  const preview = useMemo(() => {
+    try {
+      return { ok: true as const, ...parseQuestionsInput(mode, rawInput) };
+    } catch (e) {
+      return { ok: false as const, errorMsg: errMsg(e), items: [], errors: [], duplicates: 0 };
+    }
+  }, [mode, rawInput]);
+
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!lessonId) return;
+    if (!lessonId || !preview.ok || preview.items.length === 0) return;
     setBusy(true);
     setErr(null);
     try {
-      const parsed = JSON.parse(rawJson);
-      const items = Array.isArray(parsed) ? parsed : parsed?.items;
-      if (!Array.isArray(items) || items.length === 0) {
-        throw new Error('JSON cần là một mảng các đối tượng câu hỏi.');
-      }
-      const res = await masterApi.importQuestionBank({ lesson_id: lessonId, node_level: 'LESSON', items });
+      const res = await masterApi.importQuestionBank({ lesson_id: lessonId, node_level: 'LESSON', items: preview.items });
       onImported(res.imported_count);
     } catch (ex) {
       setErr(errMsg(ex));
@@ -987,20 +1160,84 @@ const ImportBankQuestionModal: React.FC<{
 
   return (
     <Modal
-      title="Import JSON câu hỏi vào ngân hàng"
+      title="Import câu hỏi (CSV / JSON) vào Ngân hàng"
       onClose={onClose}
+      width={760}
       footer={
         <>
           <Btn variant="ghost" onClick={onClose} disabled={busy}>Hủy</Btn>
-          <Btn variant="primary" type="submit" form="qb-import-form" loading={busy}>Import câu hỏi</Btn>
+          <Btn
+            variant="primary"
+            type="submit"
+            form="qb-import-form"
+            loading={busy}
+            disabled={!preview.ok || preview.items.length === 0}
+          >
+            Import {preview.ok ? preview.items.length : 0} câu hợp lệ
+          </Btn>
         </>
       }
     >
       <form id="qb-import-form" className="t-form-grid" onSubmit={submit}>
         <LessonTargetSelect options={options} value={lessonId} onChange={setLessonId} />
-        <Field label="Dán mảng JSON câu hỏi" required wide>
-          <textarea className="t-input" rows={10} value={rawJson} onChange={(e) => setRawJson(e.target.value)} style={{ fontFamily: 'var(--font-mono)' }} required />
+        <div className="t-field--wide" style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          <Btn
+            small
+            variant={mode === 'JSON' ? 'primary' : 'secondary'}
+            onClick={() => { setMode('JSON'); setRawInput('[\n  {\n    "question_type": "TRUE_FALSE",\n    "prompt": "Phân số có mẫu bằng 0 là hợp lệ.",\n    "answer_key": { "boolean_answer": false },\n    "points": 1,\n    "difficulty": "EASY"\n  }\n]'); }}
+          >
+            Định dạng JSON
+          </Btn>
+          <Btn
+            small
+            variant={mode === 'CSV' ? 'primary' : 'secondary'}
+            onClick={() => { setMode('CSV'); setRawInput(SAMPLE_QB_CSV); }}
+          >
+            Định dạng CSV
+          </Btn>
+          <label className="t-btn t-btn--small" style={{ cursor: 'pointer', minHeight: 44 }}>
+            Chọn tệp {mode}
+            <input
+              type="file"
+              accept={mode === 'CSV' ? '.csv,.txt' : '.json'}
+              style={{ display: 'none' }}
+              onChange={async (e) => {
+                const f = e.target.files?.[0];
+                if (f) setRawInput(await f.text());
+                e.currentTarget.value = '';
+              }}
+            />
+          </label>
+        </div>
+        <Field label={`Dán dữ liệu ${mode} câu hỏi`} required wide>
+          <textarea
+            className="t-input"
+            rows={8}
+            value={rawInput}
+            onChange={(e) => setRawInput(e.target.value)}
+            style={{ fontFamily: 'var(--font-mono)' }}
+            required
+          />
         </Field>
+        <div className="t-field--wide m-semantic-notice">
+          {!preview.ok ? (
+            <span style={{ color: 'var(--status-danger)' }}>Lỗi cú pháp: {preview.errorMsg}</span>
+          ) : (
+            <div>
+              <strong>Xem trước kiểm tra dữ liệu:</strong>{' '}
+              <span className="tabular-nums">{preview.items.length}</span> câu hợp lệ ·{' '}
+              <span className="tabular-nums">{preview.duplicates}</span> câu trùng lặp đã lọc ·{' '}
+              <span className="tabular-nums">{preview.errors.length}</span> dòng lỗi
+              {preview.errors.length > 0 && (
+                <ul className="t-small" style={{ margin: '6px 0 0', paddingLeft: 18, color: 'var(--status-danger)' }}>
+                  {preview.errors.slice(0, 8).map((er) => (
+                    <li key={er.row}>Dòng {er.row}: {er.message}</li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+        </div>
         {err && <p className="t-field__error t-field--wide" role="alert">{err}</p>}
       </form>
     </Modal>

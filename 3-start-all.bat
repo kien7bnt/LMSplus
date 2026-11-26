@@ -44,11 +44,30 @@ echo [1/5] Dong cua so cu va giai phong port 8000, 5173...
 call :STOP_SERVICES >nul 2>&1
 
 REM =====================================================
-REM  2. KIEM TRA NHANH (UI/UX + MIGRATION) - KHONG CHAN KHOI DONG
+REM  2. KIEM TRA VA KHOI DONG POSTGRESQL 18 + AUDIT
 REM =====================================================
-echo [2/5] Kiem tra chuan giao dien va migration (ghi vao logs\)...
-if exist "%BASE_DIR%1-audit-and-verify.bat" call "%BASE_DIR%1-audit-and-verify.bat" >nul 2>&1
-if exist "%BASE_DIR%2-migrate-db.bat" call "%BASE_DIR%2-migrate-db.bat" >nul 2>&1
+echo [2/5] Kiem tra PostgreSQL 18, migration va chuan giao dien...
+if exist "%BASE_DIR%scripts\ensure-local-pg.ps1" (
+    powershell -NoProfile -ExecutionPolicy Bypass -File "%BASE_DIR%scripts\ensure-local-pg.ps1" -AutoMigrate
+    if errorlevel 1 (
+        echo.
+        echo [LOI] Co so du lieu PostgreSQL 18 chua san sang ^(ECONNREFUSED 127.0.0.1:5432^).
+        echo       Hay mo Docker Desktop, chay 'docker compose up -d', roi bam [R] de khoi dong lai.
+        echo       Chi tiet: %LOG_DIR%\db-migration.log
+        goto MENU
+    )
+) else if exist "%BASE_DIR%2-migrate-db.bat" (
+    call "%BASE_DIR%2-migrate-db.bat" SCHEMA >nul 2>&1
+    if errorlevel 1 (
+        echo [CANH BAO] Migration bao loi. Kiem tra %LOG_DIR%\db-migration.log
+    )
+)
+if exist "%BASE_DIR%1-audit-and-verify.bat" (
+    call "%BASE_DIR%1-audit-and-verify.bat" >nul 2>&1
+    if errorlevel 1 (
+        echo [CANH BAO] Kiem tra audit giao dien/he thong co canh bao. Xem %LOG_DIR%\audit-verify.log
+    )
+)
 
 REM =====================================================
 REM  3. KHOI DONG BACKEND
@@ -57,8 +76,8 @@ echo [3/5] Khoi dong Backend (PostgreSQL 18 / SQLite Fallback + JWT API)...
 echo ================= BACKEND START %DATE% %TIME% ================= >> "%LOG_DIR%\backend.log"
 start "LMSPLUS Backend (Port 8000)" /D "%BASE_DIR%" cmd /k "chcp 65001 >nul && title LMSPLUS Backend (Port 8000) && node backend\server_fallback.mjs"
 
-echo       Dang khoi dong Backend - doi 3 giay...
-ping 127.0.0.1 -n 4 >nul
+echo       Dang khoi dong Backend va cho /health phan hoi...
+powershell -NoProfile -Command "$ok=$false; for($i=1;$i -le 15;$i++){ try { $r=Invoke-WebRequest -Uri 'http://127.0.0.1:8000/health' -UseBasicParsing -TimeoutSec 2; if($r.StatusCode -lt 500){ $ok=$true; Write-Host '      Backend :8000 da SAN SANG (HTTP 200).' -ForegroundColor Green; break } } catch {}; Start-Sleep -Seconds 1 }; if(-not $ok){ Write-Host '[CANH BAO] Backend :8000 chua phan hoi sau 15s. Kiem tra cua so LMSPLUS Backend va logs\backend.log' -ForegroundColor Yellow }"
 
 REM =====================================================
 REM  4. KHOI DONG FRONTEND

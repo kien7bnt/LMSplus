@@ -3,6 +3,7 @@
  */
 import React, { useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
+import { useBreadcrumbTrail } from '../../layout/BreadcrumbContext';
 import {
   Course,
   CurriculumDetail,
@@ -34,6 +35,7 @@ import {
   useToast,
 } from '../ui';
 import { CohortInitializeWizardModal, CurriculumBlueprintWorkspace } from './CurriculumBlueprintPanels';
+import { IconRocket } from '../components/Icons';
 
 export const CurriculumListPage: React.FC = () => {
   const nav = useNavigate();
@@ -44,6 +46,7 @@ export const CurriculumListPage: React.FC = () => {
   const [status, setStatus] = useState('');
   const [page, setPage] = useState(1);
   const [creating, setCreating] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<CurriculumItem | null>(null);
 
   const list = useAsync(
     () => masterApi.listCurricula({ q: dq, status, page, page_size: 20 }),
@@ -136,6 +139,11 @@ export const CurriculumListPage: React.FC = () => {
                           <Btn small onClick={() => nav(`/teaching/curricula/${c.id}`)}>
                             Chi tiết
                           </Btn>
+                          {c.cohorts_count === 0 && (
+                            <Btn small variant="danger" onClick={() => setDeleteTarget(c)}>
+                              Xóa
+                            </Btn>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -155,6 +163,26 @@ export const CurriculumListPage: React.FC = () => {
             setCreating(false);
             push('Đã tạo khung chương trình mới', created.title, 'success');
             nav(`/teaching/curricula/${created.id}`);
+          }}
+        />
+      )}
+
+      {deleteTarget && (
+        <ConfirmDialog
+          title={`Xóa khung chương trình "${deleteTarget.title}"?`}
+          message="Khung chương trình chưa gắn khóa học nào sẽ bị xóa vĩnh viễn."
+          confirmLabel="Xóa khung CT"
+          danger
+          onCancel={() => setDeleteTarget(null)}
+          onConfirm={async () => {
+            try {
+              await masterApi.deleteCurriculum(deleteTarget.id);
+              setDeleteTarget(null);
+              push('Đã xóa khung chương trình', '', 'info');
+              list.reload();
+            } catch (ex) {
+              push('Không xóa được khung chương trình', errMsg(ex), 'error');
+            }
           }}
         />
       )}
@@ -244,6 +272,7 @@ export const CurriculumDetailPage: React.FC = () => {
   const toast = useToast();
   const push = (title: string, detail = '', tone: 'success' | 'error' | 'info' = 'info') => toast({ title, detail: detail || undefined, tone });
   const detail = useAsync(() => masterApi.getCurriculum(curriculumId), [curriculumId]);
+  useBreadcrumbTrail(detail.data ? [{ label: detail.data.code }] : []);
   const [tab, setTab] = useState('overview');
   const [editingInfo, setEditingInfo] = useState(false);
   const [addingSubject, setAddingSubject] = useState(false);
@@ -258,11 +287,6 @@ export const CurriculumDetailPage: React.FC = () => {
   return (
     <div className="t-page">
       <PageHeader
-        breadcrumb={
-          <>
-            <Link to="/teaching/curricula">Khung chương trình</Link> / <span>{c.code}</span>
-          </>
-        }
         title={
           <span className="t-title-inline">
             {c.title} <Badge kind="lifecycleStatus" value={effLifecycle} />
@@ -277,7 +301,7 @@ export const CurriculumDetailPage: React.FC = () => {
                 <Btn onClick={() => setAddingSubject(true)}>+ Thêm môn học vào khung</Btn>
                 {effLifecycle === 'PUBLISHED' && (
                   <Btn variant="primary" onClick={() => setOpeningWizard(true)}>
-                    🚀 Mở khóa học từ khung này
+                    <IconRocket size={15} /> Mở lớp khóa học từ khung này
                   </Btn>
                 )}
               </>

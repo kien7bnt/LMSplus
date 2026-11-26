@@ -8,7 +8,7 @@
 import crypto from 'node:crypto';
 import { fail, nowIso, nowVn, oneOf, text, tx , mapAsync} from './http.mjs';
 import { vnDate } from './schema.mjs';
-import { isAdmin, isInstructor, isStaff } from './scope.mjs';
+import { isAdmin, isInstructor, isStaff, isHeadOfDepartment, canApproveDepartmentAcademic, assertDepartmentScope } from './scope.mjs';
 
 const PERIOD_MONTH_RE = /^\d{4}-(0[1-9]|1[0-2])$/;
 
@@ -203,12 +203,16 @@ export function registerTeachingHoursRoutes(route) {
                     FROM users u
                     WHERE u.roles_json LIKE '%"INSTRUCTOR"%'`;
     const params = [];
-    if (!isAdmin(user) && !isStaff(user)) {
+    if (!isAdmin(user) && !isStaff(user) && !isHeadOfDepartment(user)) {
       instrSql += ' AND u.id = ?';
       params.push(user.id);
-    } else if (isStaff(user) && !isAdmin(user) && user.department_id) {
-      instrSql += ' AND (u.department_id = ? OR u.department_id IS NULL)';
-      params.push(user.department_id);
+    } else if (!isAdmin(user)) {
+      if (!user.department_id) {
+        instrSql += ' AND 1 = 0';
+      } else {
+        instrSql += ' AND u.department_id = ?';
+        params.push(user.department_id);
+      }
     }
     instrSql += ' ORDER BY u.full_name';
 
@@ -234,26 +238,33 @@ export function registerTeachingHoursRoutes(route) {
   });
 
   route('PUT', '/teaching-hours/quotas', async ({ db, user, body }) => {
-    if (!isAdmin(user) && !isStaff(user)) {
-      fail(403, 'FORBIDDEN', 'Chỉ Giáo vụ hoặc Quản trị viên mới được thiết lập định mức giờ giảng.');
+    if (!isAdmin(user) && !isStaff(user) && !isHeadOfDepartment(user)) {
+      fail(403, 'FORBIDDEN', 'Chỉ Trưởng bộ môn, Giáo vụ hoặc Quản trị viên mới được thiết lập định mức giờ giảng.');
     }
     const instructorId = text(body, 'instructor_id', { required: true, max: 64, label: 'giảng viên' });
+    const targetInstr = await db.prepare('SELECT id, department_id FROM users WHERE id = ?').get(instructorId);
+    if (!targetInstr) fail(404, 'INSTRUCTOR_NOT_FOUND', 'Không tìm thấy giảng viên.');
+    if (!isAdmin(user)) {
+      assertDepartmentScope(user, targetInstr.department_id, 'Chỉ được thiết lập định mức cho giảng viên trong bộ môn/đơn vị phụ trách.');
+    }
     const periodKey = text(body, 'period_key', { required: true, max: 32, label: 'kỳ/tháng định mức' });
     const standardPeriods = Math.max(0, Number(body.standard_periods ?? 40));
     const standardHours = Math.max(0, Number(body.standard_hours ?? round2((standardPeriods * 45) / 60)));
     const note = text(body, 'note', { max: 300, label: 'ghi chú' }) || '';
     const now = nowIso();
 
-    const existing = await db.prepare('SELECT id FROM instructor_quotas WHERE instructor_id = ? AND period_key = ?').get(instructorId, periodKey);
-    if (existing) {
-      await db.prepare('UPDATE instructor_quotas SET standard_periods = ?, standard_hours = ?, note = ?, updated_at = ? WHERE id = ?')
-        .run(standardPeriods, standardHours, note, now, existing.id);
-    } else {
-      await db.prepare(
-        `INSERT INTO instructor_quotas (id, instructor_id, period_key, standard_periods, standard_hours, note, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`
-      ).run(`iq_${crypto.randomBytes(5).toString('hex')}`, instructorId, periodKey, standardPeriods, standardHours, note, now);
-    }
+    await tx(db, async () => {
+      const existing = await db.prepare('SELECT id FROM instructor_quotas WHERE instructor_id = ? AND period_key = ?').get(instructorId, periodKey);
+      if (existing) {
+        await db.prepare('UPDATE instructor_quotas SET standard_periods = ?, standard_hours = ?, note = ?, updated_at = ? WHERE id = ?')
+          .run(standardPeriods, standardHours, note, now, existing.id);
+      } else {
+        await db.prepare(
+          `INSERT INTO instructor_quotas (id, instructor_id, period_key, standard_periods, standard_hours, note, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`
+        ).run(`iq_${crypto.randomBytes(5).toString('hex')}`, instructorId, periodKey, standardPeriods, standardHours, note, now);
+      }
+    });
 
     return await resolveQuotaForInstructor(db, instructorId, periodKey);
   });
@@ -269,7 +280,7 @@ export function registerTeachingHoursRoutes(route) {
     const includeFuture = url.searchParams.get('include_future') === 'true';
 
     assertAnalyticsAccess(user, reqInstructorId);
-    const effectiveInstructorId = !isAdmin(user) && !isStaff(user) ? user.id : reqInstructorId;
+    const effectiveInstructorId = !isAdmin(user) && !isStaff(user) && !isHeadOfDepartment(user) ? user.id : reqInstructorId;
 
     const where = [
       "COALESCE(s.schedule_state, 'PUBLISHED') = 'PUBLISHED'",
@@ -282,9 +293,13 @@ export function registerTeachingHoursRoutes(route) {
       where.push("(s.scheduled_start_at <= ? OR s.confirmation_status IN ('CONFIRMED','CONFIRMED_LATE') OR s.session_status = 'CANCELLED')");
       params.push(nowVn());
     }
-    if (isStaff(user) && !isAdmin(user) && user.department_id) {
-      where.push('(sc.department_id = ? OR sc.department_id IS NULL)');
-      params.push(user.department_id);
+    if ((isStaff(user) || isHeadOfDepartment(user)) && !isAdmin(user)) {
+      if (!user.department_id) {
+        where.push('1 = 0');
+      } else {
+        where.push('sc.department_id = ?');
+        params.push(user.department_id);
+      }
     }
     if (courseId) { where.push('sc.course_id = ?'); params.push(courseId); }
     if (classId) { where.push('s.subject_class_id = ?'); params.push(classId); }
@@ -517,12 +532,16 @@ export function registerTeachingHoursRoutes(route) {
 
     const where = ['period_month = ?'];
     const params = [periodMonth];
-    if (!isAdmin(user) && !isStaff(user)) {
+    if (!isAdmin(user) && !isStaff(user) && !isHeadOfDepartment(user)) {
       where.push('instructor_id = ?');
       params.push(user.id);
-    } else if (isStaff(user) && !isAdmin(user) && user.department_id) {
-      where.push('(department_id = ? OR department_id IS NULL)');
-      params.push(user.department_id);
+    } else if (!isAdmin(user)) {
+      if (!user.department_id) {
+        where.push('1 = 0');
+      } else {
+        where.push('department_id = ?');
+        params.push(user.department_id);
+      }
     }
 
     const items = await db
@@ -542,9 +561,13 @@ export function registerTeachingHoursRoutes(route) {
     const where = ['period_month = ?'];
     const params = [periodMonth];
     if (onlyLocked) where.push("status IN ('LOCKED','APPROVED')");
-    if (isStaff(user) && !isAdmin(user) && user.department_id) {
-      where.push('(department_id = ? OR department_id IS NULL)');
-      params.push(user.department_id);
+    if ((isStaff(user) || isHeadOfDepartment(user)) && !isAdmin(user)) {
+      if (!user.department_id) {
+        where.push('1 = 0');
+      } else {
+        where.push('department_id = ?');
+        params.push(user.department_id);
+      }
     }
 
     const sheets = await db
@@ -652,9 +675,13 @@ export function registerTeachingHoursRoutes(route) {
       where.push('(COALESCE(NULLIF(s.actual_instructor_id, \'\'), s.scheduled_instructor_id) = ? OR s.scheduled_instructor_id = ?)');
       params.push(targetInstructorId, targetInstructorId);
     }
-    if (isStaff(user) && !isAdmin(user) && user.department_id) {
-      where.push('(sc.department_id = ? OR sc.department_id IS NULL)');
-      params.push(user.department_id);
+    if (isStaff(user) && !isAdmin(user)) {
+      if (!user.department_id) {
+        where.push('1 = 0');
+      } else {
+        where.push('sc.department_id = ?');
+        params.push(user.department_id);
+      }
     }
 
     const sessions = await db
@@ -892,17 +919,17 @@ export function registerTeachingHoursRoutes(route) {
     return await db.prepare('SELECT * FROM teaching_timesheets WHERE id = ?').get(sheet.id);
   });
 
-  // Bước 3: Giáo vụ / Trưởng bộ môn duyệt
+  // Bước 3: Trưởng bộ môn / Giáo vụ duyệt bảng giờ giảng thuộc bộ môn mình phụ trách
   route('POST', '/teaching-hours/timesheets/:id/approve', async ({ db, user, body, params }) => {
-    if (!isAdmin(user) && !isStaff(user)) {
-      fail(403, 'FORBIDDEN', 'Chỉ Giáo vụ / Trưởng bộ môn hoặc Quản trị viên mới được duyệt bảng giờ giảng.');
+    if (!isAdmin(user) && !isStaff(user) && !isHeadOfDepartment(user)) {
+      fail(403, 'FORBIDDEN', 'Chỉ Trưởng bộ môn, Giáo vụ hoặc Quản trị viên mới được duyệt bảng giờ giảng.');
     }
     const sheet = await db.prepare('SELECT * FROM teaching_timesheets WHERE id = ?').get(params.id);
     if (!sheet) fail(404, 'TIMESHEET_NOT_FOUND', 'Không tìm thấy bảng giờ giảng.');
     if (sheet.status === 'LOCKED') {
       fail(409, 'TIMESHEET_LOCKED', 'Bảng giờ giảng đã khóa.');
     }
-    if (isStaff(user) && !isAdmin(user) && user.department_id && sheet.department_id && user.department_id !== sheet.department_id) {
+    if (!canApproveDepartmentAcademic(user, sheet.department_id)) {
       fail(403, 'DEPARTMENT_MISMATCH', 'Bạn chỉ được duyệt bảng giờ giảng thuộc tổ/bộ môn của mình.');
     }
     if (sheet.status !== 'TEACHER_CONFIRMED' && !body.force_approve) {
@@ -921,13 +948,16 @@ export function registerTeachingHoursRoutes(route) {
     return await db.prepare('SELECT * FROM teaching_timesheets WHERE id = ?').get(sheet.id);
   });
 
-  // Bước 4: Khóa bảng đã duyệt & gắn mã lô chuyển sang Tài chính tính thù lao
+  // Bước 4: Khóa bảng đã duyệt & gắn mã lô chuyển sang Tài chính tính thù lao (chỉ ADMIN / ACADEMIC_STAFF trong đơn vị)
   route('POST', '/teaching-hours/timesheets/:id/lock', async ({ db, user, body, params }) => {
     if (!isAdmin(user) && !isStaff(user)) {
       fail(403, 'FORBIDDEN', 'Chỉ Giáo vụ hoặc Quản trị viên mới được khóa sổ chuyển Tài chính.');
     }
     const sheet = await db.prepare('SELECT * FROM teaching_timesheets WHERE id = ?').get(params.id);
     if (!sheet) fail(404, 'TIMESHEET_NOT_FOUND', 'Không tìm thấy bảng giờ giảng.');
+    if (!isAdmin(user)) {
+      assertDepartmentScope(user, sheet.department_id, 'Bạn chỉ được khóa sổ bảng giờ giảng thuộc đơn vị phụ trách.');
+    }
     if (sheet.status === 'LOCKED') {
       return sheet;
     }

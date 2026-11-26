@@ -11,7 +11,7 @@ import {
   mapAsync,
 } from './http.mjs';
 import {
-  canManageCourse, canViewCourse, isAdmin, isStaff, isInstructor, safeJson,
+  canManageCourse, canViewCourse, canApproveDepartmentAcademic, isAdmin, isStaff, isHeadOfDepartment, isInstructor, sameDept, safeJson,
 } from './scope.mjs';
 import { buildCourseSnapshotPayload } from './masterSchema.mjs';
 import { insertClassSession, vnDate, vnDateTime } from './schema.mjs';
@@ -34,14 +34,11 @@ async function requireCurriculumRow(db, id) {
 }
 
 function requireApprovePermission(user, deptId = null) {
-  if (isAdmin(user)) return;
-  if (isStaff(user)) {
-    if (deptId && user.department_id && deptId !== user.department_id) {
-      fail(403, 'OUT_OF_SCOPE', 'Bạn không có quyền phê duyệt ngoài đơn vị phụ trách.');
-    }
-    return;
+  if (canApproveDepartmentAcademic(user, deptId)) return;
+  if ((isStaff(user) || isHeadOfDepartment(user)) && (!user?.department_id || (deptId && deptId !== user.department_id))) {
+    fail(403, 'OUT_OF_SCOPE', 'Bạn không có quyền phê duyệt ngoài bộ môn/đơn vị phụ trách.');
   }
-  fail(403, 'APPROVAL_FORBIDDEN', 'Chỉ Giáo vụ / Trưởng bộ môn hoặc Quản trị viên mới có quyền phê duyệt ban hành.');
+  fail(403, 'APPROVAL_FORBIDDEN', 'Chỉ Trưởng bộ môn, Giáo vụ phụ trách hoặc Quản trị viên mới có quyền phê duyệt ban hành.');
 }
 
 function nextVersionLabel(currentLabel) {
@@ -423,7 +420,7 @@ export function registerTrainingPrepRoutes(route) {
       versions,
       capabilities: {
         can_manage: canManageCourse(db, user, course),
-        can_approve: isAdmin(user) || (isStaff(user) && (!course.department_id || course.department_id === user.department_id)),
+        can_approve: canApproveDepartmentAcademic(user, course.department_id),
       },
     };
   });
@@ -468,62 +465,65 @@ export function registerTrainingPrepRoutes(route) {
     // Nếu môn đang PUBLISHED mà chỉnh sửa -> tự động mở phiên bản nháp kế tiếp (1.2.6)
     let nextLifecycle = course.lifecycle_status || 'PUBLISHED';
     let nextVerCode = course.version_code || 'v2026.1';
-    if (nextLifecycle === 'PUBLISHED' && body.fork_new_version !== false) {
-      const hasSnap = await db.prepare('SELECT 1 FROM course_versions WHERE course_id = ? LIMIT 1').get(course.id);
-      if (!hasSnap) {
-        const snap = await buildCourseSnapshotPayload(db, course.id);
-        await db.prepare(
-          `INSERT INTO course_versions (id, course_id, version_number, version_label, status, snapshot_json, changelog_note, published_by, published_by_name, published_at)
-           VALUES (?, ?, 1, ?, 'PUBLISHED', ?, 'Bản lưu tự động trước khi chỉnh sửa phiên bản mới', ?, ?, ?)`
-        ).run(`cver_${crypto.randomBytes(5).toString('hex')}`, course.id, nextVerCode, JSON.stringify(snap), user.id, user.full_name, nowIso());
-      }
-      nextLifecycle = 'DRAFT';
-      nextVerCode = nextVersionLabel(nextVerCode);
-    }
-
     const now = nowIso();
-    await db.prepare(
-      `UPDATE courses SET
-         description = COALESCE(?, description),
-         objectives = COALESCE(?, objectives),
-         department_name = COALESCE(?, department_name),
-         outcomes_json = ?,
-         reference_tuition_fee = ?,
-         theory_periods = ?,
-         practice_periods = ?,
-         self_study_periods = ?,
-         minutes_per_period = ?,
-         required_room_type = ?,
-         grading_scale = ?,
-         pass_score = ?,
-         exam_conditions_json = ?,
-         lifecycle_status = ?,
-         version_code = ?,
-         updated_at = ?
-       WHERE id = ?`
-    ).run(
-      'description' in body ? text(body, 'description', { max: 2000, label: 'mô tả' }) : null,
-      'objectives' in body ? text(body, 'objectives', { max: 5000, label: 'mục tiêu' }) : null,
-      'department_name' in body ? text(body, 'department_name', { max: 120, label: 'tổ / bộ môn' }) : null,
-      JSON.stringify(outcomes),
-      refTuition,
-      theoryPeriods,
-      practicePeriods,
-      selfStudyPeriods,
-      minsPerPeriod,
-      roomType,
-      gradingScale,
-      passScore,
-      JSON.stringify(examCond),
-      nextLifecycle,
-      nextVerCode,
-      now,
-      course.id
-    );
 
-    // Cập nhật lại tổng học phí tham chiếu ở các khung chương trình có chứa môn này
-    const linkedCurrs = await db.prepare('SELECT DISTINCT curriculum_id FROM curriculum_subjects WHERE course_id = ?').all(course.id);
-    for (const lc of linkedCurrs) await computeCurriculumStructureAndTotals(db, lc.curriculum_id);
+    await tx(db, async () => {
+      if (nextLifecycle === 'PUBLISHED' && body.fork_new_version !== false) {
+        const hasSnap = await db.prepare('SELECT 1 FROM course_versions WHERE course_id = ? LIMIT 1').get(course.id);
+        if (!hasSnap) {
+          const snap = await buildCourseSnapshotPayload(db, course.id);
+          await db.prepare(
+            `INSERT INTO course_versions (id, course_id, version_number, version_label, status, snapshot_json, changelog_note, published_by, published_by_name, published_at)
+             VALUES (?, ?, 1, ?, 'PUBLISHED', ?, 'Bản lưu tự động trước khi chỉnh sửa phiên bản mới', ?, ?, ?)`
+          ).run(`cver_${crypto.randomBytes(5).toString('hex')}`, course.id, nextVerCode, JSON.stringify(snap), user.id, user.full_name, now);
+        }
+        nextLifecycle = 'DRAFT';
+        nextVerCode = nextVersionLabel(nextVerCode);
+      }
+
+      await db.prepare(
+        `UPDATE courses SET
+           description = COALESCE(?, description),
+           objectives = COALESCE(?, objectives),
+           department_name = COALESCE(?, department_name),
+           outcomes_json = ?,
+           reference_tuition_fee = ?,
+           theory_periods = ?,
+           practice_periods = ?,
+           self_study_periods = ?,
+           minutes_per_period = ?,
+           required_room_type = ?,
+           grading_scale = ?,
+           pass_score = ?,
+           exam_conditions_json = ?,
+           lifecycle_status = ?,
+           version_code = ?,
+           updated_at = ?
+         WHERE id = ?`
+      ).run(
+        'description' in body ? text(body, 'description', { max: 2000, label: 'mô tả' }) : null,
+        'objectives' in body ? text(body, 'objectives', { max: 5000, label: 'mục tiêu' }) : null,
+        'department_name' in body ? text(body, 'department_name', { max: 120, label: 'tổ / bộ môn' }) : null,
+        JSON.stringify(outcomes),
+        refTuition,
+        theoryPeriods,
+        practicePeriods,
+        selfStudyPeriods,
+        minsPerPeriod,
+        roomType,
+        gradingScale,
+        passScore,
+        JSON.stringify(examCond),
+        nextLifecycle,
+        nextVerCode,
+        now,
+        course.id
+      );
+
+      // Cập nhật lại tổng học phí tham chiếu ở các khung chương trình có chứa môn này
+      const linkedCurrs = await db.prepare('SELECT DISTINCT curriculum_id FROM curriculum_subjects WHERE course_id = ?').all(course.id);
+      for (const lc of linkedCurrs) await computeCurriculumStructureAndTotals(db, lc.curriculum_id);
+    });
 
     const refreshed = await requireCourseRow(db, course.id);
     return {
@@ -922,10 +922,13 @@ export function registerTrainingPrepRoutes(route) {
   // =========================================================================
 
   route('GET', '/curricula/:id/blueprint', async ({ db, user, params }) => {
-    if (!isAdmin(user) && !isStaff(user) && !isInstructor(user)) {
+    if (!isAdmin(user) && !isStaff(user) && !isHeadOfDepartment(user) && !isInstructor(user)) {
       fail(403, 'PROGRAM_ACCESS_DENIED', 'Bạn không có quyền xem thiết kế Khung chương trình.');
     }
     const curr = await requireCurriculumRow(db, params.id);
+    if (!isAdmin(user) && !sameDept(user, curr.department_id)) {
+      fail(403, 'OUT_OF_SCOPE', 'Bạn không có quyền xem thiết kế khung chương trình ngoài đơn vị/bộ môn.');
+    }
     const structure = await computeCurriculumStructureAndTotals(db, curr.id);
     const freshCurr = await requireCurriculumRow(db, curr.id);
 
@@ -976,8 +979,8 @@ export function registerTrainingPrepRoutes(route) {
       versions,
       audit_logs: auditLogs,
       capabilities: {
-        can_manage: isAdmin(user) || (isStaff(user) && (!curr.department_id || curr.department_id === user.department_id)),
-        can_approve: isAdmin(user) || (isStaff(user) && (!curr.department_id || curr.department_id === user.department_id)),
+        can_manage: isAdmin(user) || ((isStaff(user) || isHeadOfDepartment(user)) && sameDept(user, curr.department_id)),
+        can_approve: canApproveDepartmentAcademic(user, curr.department_id),
       },
     };
   });
@@ -1018,45 +1021,47 @@ export function registerTrainingPrepRoutes(route) {
     }
 
     const now = nowIso();
-    await db.prepare(
-      `UPDATE curricula SET
-         title = COALESCE(?, title),
-         description = COALESCE(?, description),
-         program_type = ?,
-         delivery_mode = ?,
-         standard_duration_months = ?,
-         standard_duration_text = ?,
-         target_audience = ?,
-         entry_requirements = ?,
-         is_tuition_overridden = ?,
-         final_tuition_fee = ?,
-         graduation_criteria_json = ?,
-         lifecycle_status = ?,
-         version = ?,
-         updated_at = ?
-       WHERE id = ?`
-    ).run(
-      'title' in body ? text(body, 'title', { required: true, min: 3, max: 200, label: 'tên khung chương trình' }) : null,
-      'description' in body ? text(body, 'description', { max: 2000, label: 'mô tả' }) : null,
-      programType,
-      deliveryMode,
-      stdMonths,
-      stdText,
-      targetAud,
-      entryReq,
-      isOverridden ? 1 : 0,
-      manualTuition,
-      JSON.stringify(grad),
-      nextLifecycle,
-      nextVer,
-      now,
-      curr.id
-    );
+    await tx(db, async () => {
+      await db.prepare(
+        `UPDATE curricula SET
+           title = COALESCE(?, title),
+           description = COALESCE(?, description),
+           program_type = ?,
+           delivery_mode = ?,
+           standard_duration_months = ?,
+           standard_duration_text = ?,
+           target_audience = ?,
+           entry_requirements = ?,
+           is_tuition_overridden = ?,
+           final_tuition_fee = ?,
+           graduation_criteria_json = ?,
+           lifecycle_status = ?,
+           version = ?,
+           updated_at = ?
+         WHERE id = ?`
+      ).run(
+        'title' in body ? text(body, 'title', { required: true, min: 3, max: 200, label: 'tên khung chương trình' }) : null,
+        'description' in body ? text(body, 'description', { max: 2000, label: 'mô tả' }) : null,
+        programType,
+        deliveryMode,
+        stdMonths,
+        stdText,
+        targetAud,
+        entryReq,
+        isOverridden ? 1 : 0,
+        manualTuition,
+        JSON.stringify(grad),
+        nextLifecycle,
+        nextVer,
+        now,
+        curr.id
+      );
 
-    await db.prepare(
-      `INSERT INTO curriculum_audit_logs (id, curriculum_id, action_type, payload_json, actor_id, actor_name, created_at)
-       VALUES (?, ?, 'BLUEPRINT_UPDATED', ?, ?, ?, ?)`
-    ).run(crypto.randomUUID(), curr.id, JSON.stringify({ version: nextVer, lifecycle_status: nextLifecycle }), user.id, user.full_name, now);
+      await db.prepare(
+        `INSERT INTO curriculum_audit_logs (id, curriculum_id, action_type, payload_json, actor_id, actor_name, created_at)
+         VALUES (?, ?, 'BLUEPRINT_UPDATED', ?, ?, ?, ?)`
+      ).run(crypto.randomUUID(), curr.id, JSON.stringify({ version: nextVer, lifecycle_status: nextLifecycle }), user.id, user.full_name, now);
+    });
 
     return await computeCurriculumStructureAndTotals(db, curr.id);
   });
@@ -1192,7 +1197,7 @@ export function registerTrainingPrepRoutes(route) {
           `INSERT INTO session_plan_items (
              id, scope_type, course_id, curriculum_id, session_order, title, duration_minutes, periods_count,
              delivery_mode, required_room_type, lesson_ids_json, note, updated_at
-           ) VALUES (?, 'CURRICULUM_SUBJECT', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+           ) VALUES (?, 'CURRICULUM_SUBJECT', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         ).run(
           `spi_${crypto.randomBytes(5).toString('hex')}`,
           course.id,
@@ -1297,10 +1302,13 @@ export function registerTrainingPrepRoutes(route) {
   });
 
   route('GET', '/curricula/:id/versions/compare', async ({ db, user, params, url }) => {
-    if (!isAdmin(user) && !isStaff(user) && !isInstructor(user)) {
+    if (!isAdmin(user) && !isStaff(user) && !isHeadOfDepartment(user) && !isInstructor(user)) {
       fail(403, 'PROGRAM_ACCESS_DENIED', 'Bạn không có quyền xem phiên bản Khung chương trình.');
     }
     const curr = await requireCurriculumRow(db, params.id);
+    if (!isAdmin(user) && !sameDept(user, curr.department_id)) {
+      fail(403, 'OUT_OF_SCOPE', 'Bạn không có quyền xem phiên bản khung chương trình ngoài đơn vị/bộ môn.');
+    }
     const versions = await db.prepare('SELECT * FROM curriculum_versions WHERE curriculum_id = ? ORDER BY version_number DESC').all(curr.id);
     const fromId = url.searchParams.get('from_id') || versions[1]?.id || versions[0]?.id;
     const toId = url.searchParams.get('to_id') || 'CURRENT';
@@ -1397,7 +1405,10 @@ export function registerTrainingPrepRoutes(route) {
     const endDate = dateField(body, 'end_date', { label: 'ngày bế giảng' }) || null;
     const maxStudents = intField(body, 'max_students', { min: 1, max: 2000, label: 'sĩ số tối đa' }) || 35;
     const deliveryMode = oneOf(body, 'delivery_mode', ['OFFLINE', 'ONLINE', 'HYBRID'], { fallback: curr.delivery_mode || 'HYBRID', label: 'hình thức' });
-    const campusId = body.campus_id || 'cp_cs1';
+    const defaultCampusRow = body.campus_id
+      ? null
+      : await db.prepare('SELECT id FROM campuses WHERE is_active = 1 ORDER BY code, id LIMIT 1').get();
+    const campusId = body.campus_id || defaultCampusRow?.id || null;
     const defaultClassroomId = body.classroom_id || null;
     const publishScheduleNow = Boolean(body.publish_schedule);
 

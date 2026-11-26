@@ -12,6 +12,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { parseYouTubeUrl } from '../../shared/youtube.mjs';
 import { BLOCK_SCHEMA_VERSION, normalizeSnapshot, validateBlocks, validateDirectVideoUrl } from './blocks.mjs';
+import { verifyMediaStreamTokenSafe, sanitizeThumbnailUrl } from '../common/security.mjs';
+import { createStorageAdapter } from '../storage/adapter.mjs';
 import { draftBlocks, getCourse, latestPublishedBlocks, lessonContext, outline } from './courses.mjs';
 import { fail, intField, nowIso, oneOf, safeFilename, text, tx , mapAsync} from './http.mjs';
 import { getClassContentVersionKey } from './masterSchema.mjs';
@@ -57,19 +59,7 @@ export function createMediaStreamToken(secret, resourceId, userId, expiresInSec 
 }
 
 export function verifyMediaStreamToken(secret, token, expectedResourceId) {
-  try {
-    if (typeof token !== 'string' || !token.includes('.')) return null;
-    const [payloadB64, sig] = token.split('.');
-    if (!payloadB64 || !sig) return null;
-    const expectedSig = crypto.createHmac('sha256', secret).update(`media.${payloadB64}`).digest('base64url');
-    if (sig !== expectedSig) return null;
-    const decoded = JSON.parse(Buffer.from(payloadB64, 'base64url').toString('utf8'));
-    if (!decoded || decoded.rid !== expectedResourceId) return null;
-    if (Number(decoded.exp) < Math.floor(Date.now() / 1000)) return null;
-    return decoded;
-  } catch {
-    return null;
-  }
+  return verifyMediaStreamTokenSafe(secret, token, expectedResourceId);
 }
 
 export function buildMediaStreamUrl(secret, resourceId, userId) {
@@ -248,7 +238,7 @@ export async function getPublishedClassCustom(db, classId, lessonId) {
 }
 
 export function resourceDto(row, jwtSecret, userId) {
-  const isStreamable = ['VIDEO', 'PDF', 'FILE'].includes(row.resource_type) && row.storage_provider === 'LOCAL_DISK';
+  const isStreamable = ['VIDEO', 'PDF', 'FILE'].includes(row.resource_type) && row.storage_provider && row.storage_provider !== 'EXTERNAL_URL';
   return {
     id: row.id,
     course_id: row.course_id,
@@ -339,9 +329,9 @@ async function validateAndPersistMarkers(db, { lessonId, classId = null, courseI
       let rawQ = m.question;
       if (!rawQ && questionId) {
         const bankRow = await db
-          .prepare('SELECT * FROM question_bank_items WHERE id = ? AND deleted_at IS NULL')
-          .get(questionId);
-        if (!bankRow) fail(422, 'VALIDATION_ERROR', `Mốc #${idx + 1}: không tìm thấy câu hỏi trong ngân hàng.`);
+          .prepare('SELECT * FROM question_bank_items WHERE id = ? AND course_id = ? AND deleted_at IS NULL')
+          .get(questionId, courseId);
+        if (!bankRow) fail(422, 'VALIDATION_ERROR', `Mốc #${idx + 1}: không tìm thấy câu hỏi thuộc môn học này trong ngân hàng.`);
         rawQ = {
           id: bankRow.id,
           question_id: bankRow.id,
@@ -535,7 +525,8 @@ async function loadCourseWikiPages(db, courseId, { includeDraft = false } = {}) 
 
 // ------------------------------------------------------------------ Đăng ký Routes
 
-export function registerStudioRoutes(route, { uploadsDir, jwtSecret }) {
+export function registerStudioRoutes(route, { uploadsDir, storage, jwtSecret }) {
+  const store = storage || createStorageAdapter({ baseDir: uploadsDir });
   // ==================== 1. MODE A — COURSE LESSON STUDIO ====================
 
   route('GET', '/studio/courses/:courseId', async ({ db, user, params }) => {
@@ -1408,10 +1399,7 @@ export function registerStudioRoutes(route, { uploadsDir, jwtSecret }) {
     });
 
     const uploadId = `vup_${crypto.randomBytes(8).toString('hex')}`;
-    const tmpDir = path.join(uploadsDir, '_tmp_videos');
-    fs.mkdirSync(tmpDir, { recursive: true });
-    const tempPath = path.join(tmpDir, `${uploadId}.${ext}.part`);
-    fs.writeFileSync(tempPath, Buffer.alloc(0));
+    const tempPath = store.initTempVideo(uploadId, ext);
 
     const now = nowIso();
     await db.prepare(
@@ -1469,7 +1457,7 @@ export function registerStudioRoutes(route, { uploadsDir, jwtSecret }) {
       fail(422, 'UPLOAD_SIZE_EXCEEDED', 'Tổng dữ liệu gửi lên vượt quá dung lượng tệp đã khai báo.');
     }
 
-    fs.appendFileSync(sess.temp_path, buf);
+    store.appendTempChunk(sess.temp_path, buf);
     const nextReceived = sess.received_bytes + buf.length;
     const nextChunks = sess.chunks_received + 1;
     await db.prepare(
@@ -1490,59 +1478,36 @@ export function registerStudioRoutes(route, { uploadsDir, jwtSecret }) {
     if (!sess) fail(404, 'UPLOAD_NOT_FOUND', 'Không tìm thấy phiên tải lên video.');
     if (sess.created_by !== user.id) fail(403, 'UPLOAD_FORBIDDEN', 'Bạn không phải người khởi tạo phiên tải lên này.');
     if (sess.status !== 'UPLOADING') fail(409, 'UPLOAD_NOT_ACTIVE', `Phiên tải lên đang ở trạng thái ${sess.status}.`);
-    if (!fs.existsSync(sess.temp_path)) fail(410, 'TEMP_FILE_MISSING', 'Tệp tạm không còn tồn tại. Vui lòng tải lại.');
 
-    const stat = fs.statSync(sess.temp_path);
-    if (stat.size !== sess.total_size_bytes) {
+    const ext = path.extname(sess.file_name).slice(1).toLowerCase() || 'mp4';
+    const inspected = store.inspectTempFile(sess.temp_path, ext);
+    if (!inspected.exists) fail(410, 'TEMP_FILE_MISSING', 'Tệp tạm không còn tồn tại. Vui lòng tải lại.');
+    if (inspected.size !== sess.total_size_bytes) {
       fail(
         422,
         'INCOMPLETE_UPLOAD',
-        `Tệp tải lên chưa hoàn tất (đã nhận ${stat.size}/${sess.total_size_bytes} byte).`
+        `Tệp tải lên chưa hoàn tất (đã nhận ${inspected.size}/${sess.total_size_bytes} byte).`
       );
     }
-
-    // Tính mã băm SHA-256 theo luồng nhỏ 1 MB để không tốn RAM với video lớn
-    const hash = crypto.createHash('sha256');
-    const fd = fs.openSync(sess.temp_path, 'r');
-    try {
-      const chunkBuf = Buffer.allocUnsafe(1024 * 1024);
-      let pos = 0;
-      while (pos < stat.size) {
-        const bytesRead = fs.readSync(fd, chunkBuf, 0, chunkBuf.length, pos);
-        if (bytesRead <= 0) break;
-        hash.update(chunkBuf.subarray(0, bytesRead));
-        pos += bytesRead;
-      }
-    } finally {
-      fs.closeSync(fd);
+    if (inspected.magic && !inspected.magic.ok) {
+      fail(422, 'INVALID_VIDEO_CONTENT', inspected.magic.message);
     }
-    const checksum = hash.digest('hex');
-
-    const ext = path.extname(sess.file_name).slice(1).toLowerCase() || 'mp4';
+    const checksum = inspected.checksum;
     const replaceId = typeof body.replace_resource_id === 'string' && body.replace_resource_id.trim()
       ? body.replace_resource_id.trim()
       : null;
     const existingRes = replaceId
       ? await db
-          .prepare('SELECT * FROM learning_resources WHERE id = ? AND course_id = ? AND deleted_at IS NULL')
+          .prepare("SELECT * FROM learning_resources WHERE id = ? AND course_id = ? AND resource_type = 'VIDEO' AND deleted_at IS NULL")
           .get(replaceId, sess.course_id)
       : null;
 
     const resId = existingRes ? existingRes.id : `res_${crypto.randomBytes(6).toString('hex')}`;
-    const relKey = path.join('videos', sess.course_id, `${resId}_${Date.now().toString(36)}.${ext}`).replace(/\\/g, '/');
-    const finalPath = path.join(uploadsDir, relKey);
-    fs.mkdirSync(path.dirname(finalPath), { recursive: true });
-    fs.renameSync(sess.temp_path, finalPath);
+    const relKey = store.buildKey('videos', sess.course_id, `${resId}_${Date.now().toString(36)}.${ext}`);
+    const finalized = await store.finalizeTempVideo(sess.temp_path, relKey, sess.mime_type);
 
-    if (existingRes && existingRes.storage_provider === 'LOCAL_DISK' && existingRes.storage_key) {
-      const oldFull = path.resolve(uploadsDir, existingRes.storage_key);
-      if (oldFull.startsWith(path.resolve(uploadsDir)) && fs.existsSync(oldFull)) {
-        try {
-          fs.unlinkSync(oldFull);
-        } catch {
-          // Bỏ qua nếu hệ điều hành chưa nhả tệp cũ ngay lập tức
-        }
-      }
+    if (existingRes && existingRes.storage_provider && existingRes.storage_provider !== 'EXTERNAL_URL' && existingRes.storage_key) {
+      await store.removeObject(existingRes.storage_key, existingRes.storage_provider);
     }
 
     const durationSec = Number(body.duration_seconds);
@@ -1553,34 +1518,35 @@ export function registerStudioRoutes(route, { uploadsDir, jwtSecret }) {
         : typeof body.thumbnail_url === 'string'
           ? body.thumbnail_url
           : '';
-    const thumbDataUrl = rawThumbInput.startsWith('data:image/') ? rawThumbInput.slice(0, 120_000) : null;
+    const thumbDataUrl = sanitizeThumbnailUrl(rawThumbInput);
     const now = nowIso();
 
     await tx(db, async () => {
       if (existingRes) {
         await db.prepare(
           `UPDATE learning_resources
-           SET title = ?, storage_key = ?, file_name = ?, mime_type = ?, file_size_bytes = ?, checksum_sha256 = ?,
+           SET title = ?, storage_provider = ?, storage_key = ?, file_name = ?, mime_type = ?, file_size_bytes = ?, checksum_sha256 = ?,
                duration_seconds = ?, thumbnail_url = COALESCE(?, thumbnail_url), processing_status = 'READY', updated_at = ?
            WHERE id = ?`
-        ).run(sess.title, relKey, sess.file_name, sess.mime_type, stat.size, checksum, cleanDuration, thumbDataUrl, now, resId);
+        ).run(sess.title, finalized.storageProvider, finalized.storageKey, sess.file_name, sess.mime_type, inspected.size, checksum, cleanDuration, thumbDataUrl, now, resId);
       } else {
         await db.prepare(
           `INSERT INTO learning_resources (
              id, course_id, class_id, title, description, visibility, resource_type, storage_provider,
              storage_key, file_name, mime_type, file_size_bytes, checksum_sha256, duration_seconds,
              thumbnail_url, status, processing_status, created_by, created_at, updated_at
-           ) VALUES (?, ?, ?, ?, ?, 'ENROLLED', 'VIDEO', 'LOCAL_DISK', ?, ?, ?, ?, ?, ?, ?, 'READY', 'READY', ?, ?, ?)`
+           ) VALUES (?, ?, ?, ?, ?, 'ENROLLED', 'VIDEO', ?, ?, ?, ?, ?, ?, ?, ?, 'READY', 'READY', ?, ?, ?)`
         ).run(
           resId,
           sess.course_id,
           sess.class_id,
           sess.title,
           text(body, 'description', { max: 1000, label: 'mô tả video' }),
-          relKey,
+          finalized.storageProvider,
+          finalized.storageKey,
           sess.file_name,
           sess.mime_type,
-          stat.size,
+          inspected.size,
           checksum,
           cleanDuration,
           thumbDataUrl,
@@ -1592,7 +1558,7 @@ export function registerStudioRoutes(route, { uploadsDir, jwtSecret }) {
       await db.prepare("UPDATE video_upload_sessions SET status = 'COMPLETED', updated_at = ? WHERE id = ?").run(now, sess.id);
     });
 
-    log('INFO', `[studio] video uploaded ${resId} (${stat.size} bytes) by ${user.id}`);
+    log('INFO', `[studio] video uploaded ${resId} (${inspected.size} bytes) by ${user.id}`);
     const row = await db.prepare('SELECT * FROM learning_resources WHERE id = ?').get(resId);
     return [201, resourceDto(row, jwtSecret, user.id)];
   });
@@ -1602,13 +1568,7 @@ export function registerStudioRoutes(route, { uploadsDir, jwtSecret }) {
     const sess = await db.prepare('SELECT * FROM video_upload_sessions WHERE id = ?').get(params.uploadId);
     if (!sess) fail(404, 'UPLOAD_NOT_FOUND', 'Không tìm thấy phiên tải lên video.');
     if (sess.created_by !== user.id) fail(403, 'UPLOAD_FORBIDDEN', 'Bạn không có quyền hủy phiên tải lên này.');
-    if (sess.temp_path && fs.existsSync(sess.temp_path)) {
-      try {
-        fs.unlinkSync(sess.temp_path);
-      } catch {
-        // ignore
-      }
-    }
+    store.cleanupTemp(sess.temp_path);
     await db.prepare("UPDATE video_upload_sessions SET status = 'CANCELLED', updated_at = ? WHERE id = ?").run(nowIso(), sess.id);
     return { cancelled_id: sess.id, status: 'CANCELLED' };
   });
@@ -1641,29 +1601,27 @@ export function registerStudioRoutes(route, { uploadsDir, jwtSecret }) {
     if (buf.length > MAX_PDF_BYTES) fail(413, 'FILE_TOO_LARGE', 'Tệp PDF vượt quá giới hạn 12 MB.');
 
     const resId = `res_${crypto.randomBytes(6).toString('hex')}`;
-    const relKey = path.join('pdfs', course.id, `${resId}.pdf`).replace(/\\/g, '/');
-    const full = path.join(uploadsDir, relKey);
-    fs.mkdirSync(path.dirname(full), { recursive: true });
-    fs.writeFileSync(full, buf);
+    const relKey = store.buildKey('pdfs', course.id, `${resId}.pdf`);
+    const stored = await store.putBuffer(relKey, buf, 'application/pdf');
 
     const now = nowIso();
-    const checksum = crypto.createHash('sha256').update(buf).digest('hex');
     await db.prepare(
       `INSERT INTO learning_resources (
          id, course_id, class_id, title, description, visibility, resource_type, storage_provider,
          storage_key, file_name, mime_type, file_size_bytes, checksum_sha256, status, processing_status,
          created_by, created_at, updated_at
-       ) VALUES (?, ?, ?, ?, ?, 'ENROLLED', 'PDF', 'LOCAL_DISK', ?, ?, 'application/pdf', ?, ?, 'READY', 'READY', ?, ?, ?)`
+       ) VALUES (?, ?, ?, ?, ?, 'ENROLLED', 'PDF', ?, ?, ?, 'application/pdf', ?, ?, 'READY', 'READY', ?, ?, ?)`
     ).run(
       resId,
       course.id,
       classId,
       title,
       text(body, 'description', { max: 1000, label: 'mô tả' }),
-      relKey,
+      stored.storageProvider,
+      stored.storageKey,
       safeFilename(fileName),
-      buf.length,
-      checksum,
+      stored.sizeBytes,
+      stored.checksumSha256,
       user.id,
       now,
       now
@@ -1755,22 +1713,22 @@ export function registerStudioRoutes(route, { uploadsDir, jwtSecret }) {
     );
   });
 
-  // Streaming Video / PDF qua HTTP Range (206 Partial Content) — đóng fd ngay sau khi đọc mảnh
-  route('GET', '/media/:resourceId/stream', async ({ req, db, user, params, raw }) => {
+  // Streaming Video / PDF qua HTTP Range (206 Partial Content) — hỗ trợ Local Disk & Remote Object Storage
+  route('GET', '/media/:resourceId/stream', async ({ req, db, user, params, res, raw }) => {
     const r = await db.prepare('SELECT * FROM learning_resources WHERE id = ?').get(params.resourceId);
     if (!r || r.deleted_at) fail(404, 'RESOURCE_NOT_FOUND', 'Không tìm thấy tệp phương tiện.');
     if (!await canStreamResource(db, user, r)) {
       fail(403, 'RESOURCE_ACCESS_DENIED', 'Bạn không có quyền truy cập học liệu này.');
     }
-    if (r.storage_provider !== 'LOCAL_DISK') {
+    const provider = r.storage_provider || 'LOCAL_DISK';
+    if (provider === 'EXTERNAL_URL') {
       fail(422, 'NOT_LOCAL_MEDIA', 'Học liệu này là liên kết ngoài, không phát trực tiếp từ máy chủ.');
     }
-    const full = path.resolve(uploadsDir, r.storage_key);
-    if (!full.startsWith(path.resolve(uploadsDir)) || !fs.existsSync(full)) {
+    const stat = await store.statObject(r.storage_key, provider);
+    if (!stat.exists) {
       fail(404, 'FILE_MISSING', 'Không tìm thấy tệp trên máy chủ.');
     }
 
-    const stat = fs.statSync(full);
     const total = stat.size;
     const contentType = r.mime_type || 'application/octet-stream';
     if (req && req.method === 'HEAD') {
@@ -1815,31 +1773,17 @@ export function registerStudioRoutes(route, { uploadsDir, jwtSecret }) {
         'Cache-Control': 'private, max-age=3600',
         'X-Content-Type-Options': 'nosniff',
       };
-      if (chunkLen > 16 * 1024 * 1024 && res && typeof res.write === 'function') {
-        res.writeHead(206, {
-          'Access-Control-Allow-Origin': '*',
-          'Access-Control-Expose-Headers': 'Content-Range, Accept-Ranges, Content-Length, Content-Disposition',
-          ...rangeHeaders,
-        });
-        return new Promise((resolve, reject) => {
-          const stream = fs.createReadStream(full, { start, end });
-          stream.on('error', reject);
-          res.on('close', () => {
-            stream.destroy();
-            resolve();
-          });
-          stream.on('end', resolve);
-          stream.pipe(res);
-        });
-      }
-      const buf = Buffer.allocUnsafe(chunkLen);
-      const fd = fs.openSync(full, 'r');
-      try {
-        fs.readSync(fd, buf, 0, chunkLen, start);
-      } finally {
-        fs.closeSync(fd);
-      }
-      raw(206, rangeHeaders, buf);
+      await store.streamObjectToResponse({
+        res,
+        raw,
+        status: 206,
+        headers: rangeHeaders,
+        storageKey: r.storage_key,
+        storageProvider: provider,
+        start,
+        end,
+        size: total,
+      });
       return;
     }
 
@@ -1851,31 +1795,15 @@ export function registerStudioRoutes(route, { uploadsDir, jwtSecret }) {
       'Content-Disposition': `inline; filename="media"; filename*=UTF-8''${encodeURIComponent(r.file_name || 'media')}`,
       'X-Content-Type-Options': 'nosniff',
     };
-    if (total > 16 * 1024 * 1024 && res && typeof res.write === 'function') {
-      res.writeHead(200, {
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Expose-Headers': 'Content-Range, Accept-Ranges, Content-Length, Content-Disposition',
-        ...fullHeaders,
-      });
-      return new Promise((resolve, reject) => {
-        const stream = fs.createReadStream(full);
-        stream.on('error', reject);
-        res.on('close', () => {
-          stream.destroy();
-          resolve();
-        });
-        stream.on('end', resolve);
-        stream.pipe(res);
-      });
-    }
-    const buf = Buffer.allocUnsafe(total);
-    const fd = fs.openSync(full, 'r');
-    try {
-      fs.readSync(fd, buf, 0, total, 0);
-    } finally {
-      fs.closeSync(fd);
-    }
-    raw(200, fullHeaders, buf);
+    await store.streamObjectToResponse({
+      res,
+      raw,
+      status: 200,
+      headers: fullHeaders,
+      storageKey: r.storage_key,
+      storageProvider: provider,
+      size: total,
+    });
   });
 
   // ==================== 6. BÁO CÁO KẾT QUẢ VIDEO & QUIZ THEO LỚP ====================

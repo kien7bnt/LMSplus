@@ -25,6 +25,7 @@ import {
   useAsync,
   useToast,
 } from '../ui';
+import { IconBolt, IconCheck } from '../components/Icons';
 
 const ROOM_OPTIONS: RoomType[] = ['THEORY_ROOM', 'COMPUTER_LAB', 'ONLINE'];
 const SOURCE_OPTIONS: AssessmentSourceType[] = ['ATTENDANCE', 'ASSIGNMENT', 'EXAM', 'EXAM_MATRIX', 'MANUAL'];
@@ -744,7 +745,7 @@ export const CourseSyllabusAndSessionPlanSection: React.FC<{ courseId: string; c
           canManage && (
             <div className="t-actions">
               <Btn small loading={savingPlans} onClick={autoSplitSessions}>
-                ⚡ Chia sẵn 1 buổi = 1 bài
+                <IconBolt size={14} /> Chia sẵn 1 buổi = 1 bài
               </Btn>
               <Btn
                 small
@@ -1048,7 +1049,7 @@ export const CourseLifecycleAndDiffPanel: React.FC<{ course: CourseDetail; onCha
             )}
             {can_approve && (lifecycle_status === 'PENDING_APPROVAL' || lifecycle_status === 'DRAFT') && (
               <Btn variant="primary" loading={busyAction} onClick={() => runLifecycle('APPROVE_PUBLISH')}>
-                ✓ Phê duyệt & Ban hành ({version_code})
+                <IconCheck size={15} /> Phê duyệt & Ban hành ({version_code})
               </Btn>
             )}
             {can_approve && lifecycle_status === 'PENDING_APPROVAL' && (

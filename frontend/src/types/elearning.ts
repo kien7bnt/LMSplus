@@ -7,8 +7,10 @@ export type UserRole =
   | 'STUDENT'
   | 'TEACHING_ASSISTANT'
   | 'INSTRUCTOR'
+  | 'HEAD_OF_DEPARTMENT'
   | 'ACADEMIC_STAFF'
-  | 'ADMIN';
+  | 'ADMIN'
+  | 'SUPER_ADMIN';
 
 export type ThemeMode = 'airbnb-light' | 'cinema-dark' | 'babu-academy';
 
@@ -112,7 +114,7 @@ export interface LessonBlock {
   sort_order: number;
   status: 'ACTIVE' | 'HIDDEN' | 'DRAFT_ONLY';
   shared_block_id?: string | null;
-  content: Record<string, any>;
+  content: Record<string, unknown>;
 }
 
 export interface CurriculumLessonNode {

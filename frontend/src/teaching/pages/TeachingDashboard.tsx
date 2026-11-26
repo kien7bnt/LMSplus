@@ -55,8 +55,24 @@ export const TeachingDashboard: React.FC = () => {
   const { data, error, loading, reload } = useAsync(() => teachingApi.dashboard(), []);
   const me = useAsync(() => teachingApi.me(), []);
   const pendingLeaves = useAsync(() => masterApi.listStaffLeaveRequests({ status: 'PENDING' }), []);
+  const deptSummary = useAsync(
+    () => (me.data?.user?.department_id ? teachingApi.getDepartmentSummary(me.data.user.department_id) : Promise.resolve(null)),
+    [me.data?.user?.department_id]
+  );
   const [view, setView] = useState<DashView>('overview');
   const [feedTab, setFeedTab] = useState<FeedTab>('today');
+
+  const roles = me.data?.user?.roles || [];
+  const isAdmin = roles.includes('ADMIN') || roles.includes('SUPER_ADMIN');
+  const isHod = roles.includes('HEAD_OF_DEPARTMENT');
+  const isStaff = roles.includes('ACADEMIC_STAFF');
+  const roleHeaderLabel = isAdmin
+    ? 'Tổng quan Quản trị & Đào tạo'
+    : isHod
+      ? 'Tổng quan Trưởng bộ môn'
+      : isStaff
+        ? 'Tổng quan Giáo vụ đào tạo'
+        : 'Tổng quan Giảng dạy';
 
   const leaveItems = pendingLeaves.data?.items || [];
   const pendingLeavesCount = leaveItems.length || data?.leave_requests_pending || 0;
@@ -66,18 +82,21 @@ export const TeachingDashboard: React.FC = () => {
     : 0;
   const todayTotal = data?.today_sessions.length || 0;
   const attPct = todayTotal > 0 ? Math.round((todayDone / todayTotal) * 100) : 100;
-  const logPct = data ? Math.max(12, Math.min(100, 100 - data.logs_unconfirmed.length * 15)) : 100;
+  const unconfirmedCount = data?.logs_unconfirmed.length || 0;
+  const sessionBasis = Math.max(todayTotal, data?.counts.classes || 0, unconfirmedCount);
+  const logPct = unconfirmedCount === 0 ? 100 : Math.max(0, Math.round(((sessionBasis - unconfirmedCount) / Math.max(1, sessionBasis)) * 100));
   const studentAlertPct = data && data.counts.students > 0
-    ? Math.max(8, Math.round(((data.counts.students - data.low_attendance.length) / data.counts.students) * 100))
+    ? Math.max(0, Math.round(((data.counts.students - data.low_attendance.length) / data.counts.students) * 100))
     : 100;
 
   return (
     <div className="t-page bento-page">
       <div className="bento-context">
         <div className="bento-context__left">
-          <h1>Tổng quan giảng dạy</h1>
+          <h1>{roleHeaderLabel}</h1>
           <span className="bento-muted">
             Hôm nay, {fmtDate(new Date().toISOString())}
+            {deptSummary.data?.department?.name ? ` · ${deptSummary.data.department.name}` : ''}
           </span>
         </div>
 
@@ -345,12 +364,63 @@ export const TeachingDashboard: React.FC = () => {
 
               <div className="bento-pill-actions">
                 <Link className="bento-pill-action" to="/teaching/cohorts">Khóa học</Link>
+                {(isAdmin || isStaff || isHod) && (
+                  <>
+                    <Link className="bento-pill-action" to="/teaching/timetable">Xếp TKB</Link>
+                    <Link className="bento-pill-action" to="/teaching/hours">Giờ dạy</Link>
+                  </>
+                )}
                 {me.data?.can_create_course && (
                   <Link className="bento-pill-action bento-pill-action--primary" to="/teaching/courses?new=1">+ Giáo trình</Link>
                 )}
               </div>
             </section>
           </div>
+
+          {deptSummary.data && (isHod || isStaff) && (
+            <section className="bento-card" aria-label="Tổng hợp bộ môn phụ trách">
+              <div className="bento-card__head">
+                <div>
+                  <h2>Bộ môn phụ trách: {deptSummary.data.department.name}</h2>
+                  <span className="bento-muted">
+                    {deptSummary.data.courses.length} môn học · {deptSummary.data.members.length} nhân sự ·{' '}
+                    {deptSummary.data.pending_syllabus_courses.length} đề cương & {deptSummary.data.pending_curricula.length} khung CT chờ xử lý
+                  </span>
+                </div>
+                <Link className="bento-pill-action" to="/teaching/courses">
+                  Quản lý môn học →
+                </Link>
+              </div>
+              {deptSummary.data.pending_syllabus_courses.length === 0 && deptSummary.data.pending_curricula.length === 0 ? (
+                <EmptyState title="Không còn đề cương hoặc khung chương trình chờ duyệt trong bộ môn" />
+              ) : (
+                <div className="bento-row-list">
+                  {deptSummary.data.pending_syllabus_courses.slice(0, 4).map((crs) => (
+                    <div key={crs.id} className="bento-row">
+                      <div>
+                        <strong>{crs.code} — {crs.title}</strong>
+                        <span className="t-sub">Giảng viên: {crs.instructor_name} · Trạng thái: {crs.syllabus_status || crs.status}</span>
+                      </div>
+                      <Link className="bento-pill-action bento-pill-action--primary" to={`/teaching/courses/${crs.id}`}>
+                        {isHod ? 'Xem & Duyệt' : 'Chi tiết'}
+                      </Link>
+                    </div>
+                  ))}
+                  {deptSummary.data.pending_curricula.slice(0, 3).map((cur) => (
+                    <div key={cur.id} className="bento-row">
+                      <div>
+                        <strong>Khung CT: {cur.code} — {cur.title}</strong>
+                        <span className="t-sub">Năm học: {cur.academic_year || '—'} · Nháp chờ duyệt</span>
+                      </div>
+                      <Link className="bento-pill-action bento-pill-action--primary" to={`/teaching/curricula/${cur.id}`}>
+                        Xem khung CT
+                      </Link>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+          )}
         </>
       )}
 

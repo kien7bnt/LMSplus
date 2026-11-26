@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { useBreadcrumbTrail } from '../../layout/BreadcrumbContext';
 import { LearnLesson, WikiPageItem, masterApi, saveBlob, teachingApi } from '../api';
 import { BlockList } from '../BlockRenderer';
 import {
@@ -11,6 +12,7 @@ import { StudentLeaveRequestsPage } from './LeaveRequestsPage';
 import { StudentWikiPanel } from './WikiPanel';
 import { ForumWorkspace } from './ForumPanel';
 import { WikiAnnotatedText, WikiReaderProvider } from '../WikiText';
+import { IconCheck, IconMoon, IconSun } from '../components/Icons';
 
 // ------------------------------------------------------------------ /learn — Trang chủ học viên
 
@@ -88,7 +90,9 @@ export const StudentHomePage: React.FC = () => {
   const tasksTotal = (ov?.pending_assignments_count || 0) + (ov?.pending_exams_count || 0);
   const progressPct = ov ? Math.min(100, Math.max(0, Math.round(ov.overall_progress_pct || 0))) : 0;
   const attPct = ov && ov.attendance_summary.rate !== null ? Math.min(100, Math.max(0, Math.round(ov.attendance_summary.rate))) : 100;
-  const taskClearPct = ov ? Math.max(15, 100 - tasksTotal * 15) : 100;
+  const taskClearPct = ov
+    ? (tasksTotal === 0 ? 100 : Math.round((ov.completed_lessons / Math.max(1, ov.completed_lessons + tasksTotal)) * 100))
+    : 100;
 
   return (
     <div className="t-page bento-page">
@@ -368,7 +372,7 @@ export const StudentHomePage: React.FC = () => {
                 <button
                   type="button"
                   className="bento-pill-action bento-pill-action--light"
-                  style={{ minHeight: 36, padding: '0 12px', fontSize: 12 }}
+                  style={{ minHeight: 44, padding: '0 14px', fontSize: 13 }}
                   onClick={() => setView('classes')}
                 >
                   Xem môn học →
@@ -573,6 +577,7 @@ export const StudentClassPage: React.FC = () => {
   const [joiningSessionId, setJoiningSessionId] = useState<string | null>(null);
 
   const detailReq = useAsync(() => teachingApi.learnClass(classId), [classId]);
+  useBreadcrumbTrail(detailReq.data ? [{ label: `Lớp ${detailReq.data.class.code}` }] : []);
   const attReq = useAsync(
     () => (tab === 'attendance' ? teachingApi.myAttendance(classId) : Promise.resolve(null)),
     [classId, tab]
@@ -610,7 +615,6 @@ export const StudentClassPage: React.FC = () => {
   return (
     <div className="t-page">
       <PageHeader
-        breadcrumb={<><Link to="/learn">Lớp của tôi</Link><span>/</span><span>Lớp {d.class.code}</span></>}
         title={displayClassTitle({ ...d.class, course: d.course })}
         subtitle={
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
@@ -871,9 +875,22 @@ export const StudentLessonPage: React.FC = () => {
   const [completing, setCompleting] = useState(false);
   const [leftOpen, setLeftOpen] = useState(true);
   const [rightTab, setRightTab] = useState<'wiki' | 'forum' | 'hidden'>('wiki');
+  const [cinemaFocus, setCinemaFocus] = useState(true);
 
   const outlineReq = useAsync(() => teachingApi.learnClass(classId), [classId]);
   const classWikiReq = useAsync(() => masterApi.listStudentClassWiki(classId), [classId]);
+
+  useBreadcrumbTrail(
+    lesson
+      ? [
+          { label: `Lớp ${outlineReq.data?.class.code || classId}`, to: `/learn/classes/${classId}` },
+          { label: lesson.chapter.title },
+          { label: lesson.title },
+        ]
+      : outlineReq.data
+        ? [{ label: `Lớp ${outlineReq.data.class.code}`, to: `/learn/classes/${classId}` }]
+        : []
+  );
 
   const effectiveWikiPages = useMemo<WikiPageItem[]>(() => {
     const byId = new Map<string, WikiPageItem>();
@@ -934,15 +951,6 @@ export const StudentLessonPage: React.FC = () => {
   return (
     <div className="t-page">
       <PageHeader
-        breadcrumb={
-          <>
-            <Link to="/learn">Lớp của tôi</Link>
-            <span>/</span>
-            <Link to={`/learn/classes/${classId}`}>{outlineReq.data?.class.code || 'Lớp học'}</Link>
-            <span>/</span>
-            <span>{lesson.chapter.title}</span>
-          </>
-        }
         title={lesson.title}
         subtitle={
           <>
@@ -953,6 +961,14 @@ export const StudentLessonPage: React.FC = () => {
         }
         actions={
           <div className="t-actions">
+            <Btn
+              small
+              variant={cinemaFocus ? 'primary' : 'ghost'}
+              aria-pressed={cinemaFocus}
+              onClick={() => setCinemaFocus((v) => !v)}
+            >
+              {cinemaFocus ? <><IconMoon size={14} /> Rạp chiếu: Bật</> : <><IconSun size={14} /> Rạp chiếu: Tắt</>}
+            </Btn>
             <Btn small onClick={() => setLeftOpen((v) => !v)}>
               {leftOpen ? 'Thu gọn mục lục' : 'Hiện mục lục'}
             </Btn>
@@ -993,8 +1009,8 @@ export const StudentLessonPage: React.FC = () => {
                         aria-current={l.id === lesson.id ? 'page' : undefined}
                       >
                         <span>{ci + 1}.{li + 1}. {l.title}</span>
-                        <span aria-label={l.progress_status === 'COMPLETED' ? 'Đã hoàn thành' : undefined}>
-                          {l.progress_status === 'COMPLETED' ? '✓' : ''}
+                        <span aria-label={l.progress_status === 'COMPLETED' ? 'Đã hoàn thành' : undefined} style={{ display: 'inline-flex', alignItems: 'center' }}>
+                          {l.progress_status === 'COMPLETED' ? <IconCheck size={14} /> : null}
                         </span>
                       </Link>
                     ))}
@@ -1005,7 +1021,7 @@ export const StudentLessonPage: React.FC = () => {
           </aside>
         )}
 
-        <div className="m-player-center">
+        <div className="m-player-center m-cinema-player-stage" data-theme={cinemaFocus && lesson.blocks.some((b) => b.block_type === 'video' || b.block_type === 'youtube') ? 'cinema-dark' : undefined}>
           <Card>
             <WikiReaderProvider wikiPages={effectiveWikiPages}>
               {lesson.class_custom_note?.instructor_note && (

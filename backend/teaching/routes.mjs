@@ -4,6 +4,10 @@
 
 import { ApiError } from './http.mjs';
 import { isUniqueViolation, isForeignKeyViolation, isCheckViolation } from '../db/client.mjs';
+import { resolveJwtSecret, buildSecurityAndCorsHeaders } from '../common/security.mjs';
+import { createStorageAdapter } from '../storage/adapter.mjs';
+import { registerDepartmentRoutes } from '../organization/departments.mjs';
+import { registerUsersRoutes } from '../users/usersService.mjs';
 import { registerCourseRoutes } from './courses.mjs';
 import { registerClassRoutes } from './classes.mjs';
 import { registerAttendanceRoutes } from './attendance.mjs';
@@ -25,26 +29,30 @@ export const TEACHING_PREFIX = '/api/v1/teaching';
 export function createTeachingRouter({
   db,
   uploadsDir,
-  jwtSecret = 'lmsplus-production-grade-hmac-secret-2026',
+  storage,
+  jwtSecret = resolveJwtSecret(),
   log,
 }) {
+  const store = storage || createStorageAdapter({ baseDir: uploadsDir, log });
   const routes = [];
   const route = (method, pattern, handler) => {
     const re = new RegExp(`^${TEACHING_PREFIX}${pattern.replace(/:(\w+)/g, '(?<$1>[^/]+)')}$`);
     routes.push({ method, re, handler });
   };
-  registerCourseRoutes(route, { uploadsDir });
+  registerDepartmentRoutes(route);
+  registerUsersRoutes(route);
+  registerCourseRoutes(route, { uploadsDir: store.baseDir, storage: store });
   registerClassRoutes(route);
   registerAttendanceRoutes(route);
   registerLearnRoutes(route, { jwtSecret });
-  registerStudioRoutes(route, { uploadsDir, jwtSecret });
+  registerStudioRoutes(route, { uploadsDir: store.baseDir, storage: store, jwtSecret });
   registerVirtualClassroomRoutes(route, { jwtSecret });
   registerStrictVideoRoutes(route);
   registerCurriculaAndCohortRoutes(route);
   registerTrainingPrepRoutes(route);
   registerContentTreeAndSnapshotRoutes(route);
-  registerBankRoutes(route, { uploadsDir });
-  registerAssessmentAndAssignmentRoutes(route);
+  registerBankRoutes(route, { uploadsDir: store.baseDir, storage: store });
+  registerAssessmentAndAssignmentRoutes(route, { storage: store });
   registerLeaveAndForumRoutes(route);
   registerTimetableRoutes(route);
   registerTeachingHoursRoutes(route);
@@ -79,9 +87,9 @@ export function createTeachingRouter({
     let sent = false;
     const raw = (status, headers, payload) => {
       sent = true;
+      const baseHeaders = res.__securityHeaders || buildSecurityAndCorsHeaders(req);
       res.writeHead(status, {
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Expose-Headers': 'Content-Range, Accept-Ranges, Content-Length, Content-Disposition',
+        ...baseHeaders,
         ...headers,
       });
       res.end(payload);

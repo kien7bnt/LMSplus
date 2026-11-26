@@ -187,11 +187,13 @@ export function registerContentTreeAndSnapshotRoutes(route) {
     const code = text(body, 'code', { max: 40, label: 'mã chủ đề' }) || `CĐ-${String(max.n + 1).padStart(2, '0')}`;
     const id = `top_${crypto.randomBytes(5).toString('hex')}`;
     const now = nowIso();
-    await db.prepare(
-      `INSERT INTO course_topics (id, course_id, code, title, description, sort_order, status, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).run(id, course.id, code, title, description, max.m + 10, status, now, now);
-    await db.prepare('UPDATE courses SET updated_at = ? WHERE id = ?').run(now, course.id);
+    await tx(db, async () => {
+      await db.prepare(
+        `INSERT INTO course_topics (id, course_id, code, title, description, sort_order, status, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run(id, course.id, code, title, description, max.m + 10, status, now, now);
+      await db.prepare('UPDATE courses SET updated_at = ? WHERE id = ?').run(now, course.id);
+    });
     return [201, { id, course_id: course.id, code, title, description, sort_order: max.m + 10, status, chapters: [] }];
   });
 
@@ -208,9 +210,11 @@ export function registerContentTreeAndSnapshotRoutes(route) {
     const keys = Object.keys(f);
     if (keys.length) {
       const now = nowIso();
-      await db.prepare(`UPDATE course_topics SET ${keys.map((k) => `${k} = ?`).join(', ')}, updated_at = ? WHERE id = ?`)
-        .run(...keys.map((k) => f[k]), now, topic.id);
-      await db.prepare('UPDATE courses SET updated_at = ? WHERE id = ?').run(now, course.id);
+      await tx(db, async () => {
+        await db.prepare(`UPDATE course_topics SET ${keys.map((k) => `${k} = ?`).join(', ')}, updated_at = ? WHERE id = ?`)
+          .run(...keys.map((k) => f[k]), now, topic.id);
+        await db.prepare('UPDATE courses SET updated_at = ? WHERE id = ?').run(now, course.id);
+      });
     }
     return await db.prepare('SELECT * FROM course_topics WHERE id = ?').get(topic.id);
   });
@@ -623,6 +627,9 @@ export function registerContentTreeAndSnapshotRoutes(route) {
   route('GET', '/learn/classes/:id/wiki', async ({ db, user, params, url }) => {
     const cls = await getClass(db, params.id);
     if (!cls) fail(404, 'CLASS_NOT_FOUND', 'Không tìm thấy lớp học.');
+    if (['DRAFT', 'CANCELLED', 'ARCHIVED'].includes(cls.status)) {
+      fail(403, 'CLASS_NOT_AVAILABLE', 'Lớp học hiện không ở trạng thái hoạt động.');
+    }
     const enrolled = await db.prepare(`SELECT 1 FROM class_enrollments WHERE subject_class_id = ? AND student_id = ? AND status = 'ACTIVE'`).get(cls.id, user.id);
     if (!enrolled) fail(403, 'NOT_ENROLLED', 'Bạn chưa được ghi danh vào lớp học này.');
     if (!cls.course_id) return { items: [] };

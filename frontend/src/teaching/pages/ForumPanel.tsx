@@ -28,6 +28,7 @@ import {
   useDebounced,
   useToast,
 } from '../ui';
+import { IconPin } from '../components/Icons';
 
 interface ForumWorkspaceProps {
   mode: 'course' | 'class' | 'student_class';
@@ -130,11 +131,11 @@ export const ForumWorkspace: React.FC<ForumWorkspaceProps> = ({ mode, targetId, 
                   <button
                     type="button"
                     className="t-row-link"
-                    style={{ background: 'none', border: 0, padding: 0, cursor: 'pointer', textAlign: 'left', fontWeight: 700 }}
+                    style={{ background: 'none', border: 0, padding: 0, cursor: 'pointer', textAlign: 'left', fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: 6 }}
                     onClick={() => setSelectedThreadId(t.id)}
                   >
-                    {t.is_pinned ? '📌 ' : ''}
-                    {t.title}
+                    {t.is_pinned && <IconPin size={14} />}
+                    <span>{t.title}</span>
                   </button>
                   <div className="t-actions">
                     <Badge kind="forumCategory" value={t.category} />

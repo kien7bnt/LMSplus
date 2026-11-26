@@ -61,54 +61,63 @@ async function classStaff(db, classId) {
 
 async function classCounters(db, cls) {
   const now = nowVn();
-  const students = (await db.prepare(`SELECT COUNT(*) n FROM class_enrollments WHERE subject_class_id = ? AND status = 'ACTIVE'`).get(cls.id)).n;
-  const sess = await db
-    .prepare(
-      `SELECT COUNT(*) total,
-         SUM(CASE WHEN scheduled_end_at < ? THEN 1 ELSE 0 END) done,
-         SUM(CASE WHEN scheduled_end_at < ? AND attendance_saved_at IS NULL THEN 1 ELSE 0 END) unmarked
-       FROM sessions WHERE subject_class_id = ? AND session_status <> 'CANCELLED'`
-    )
-    .get(now, now, cls.id);
-  const agg = await db
-    .prepare(
-      `SELECT
-         SUM(CASE WHEN ar.attendance_status = 'PRESENT' THEN 1 ELSE 0 END) p,
-         SUM(CASE WHEN ar.attendance_status = 'LATE' THEN 1 ELSE 0 END) l,
-         SUM(CASE WHEN ar.attendance_status = 'EXCUSED_ABSENCE' THEN 1 ELSE 0 END) e,
-         SUM(CASE WHEN ar.attendance_status = 'UNEXCUSED_ABSENCE' THEN 1 ELSE 0 END) a
-       FROM attendance_records ar JOIN sessions s ON s.session_id = ar.class_session_id
-       WHERE ar.subject_class_id = ? AND s.session_status <> 'CANCELLED'`
-    )
-    .get(cls.id);
-  const next = await db
-    .prepare(
-      `SELECT session_id, session_title, scheduled_start_at, scheduled_end_at, room_or_link,
-              delivery_mode, virtual_room_id, live_status, attendance_sync_status
-       FROM sessions
-       WHERE subject_class_id = ? AND session_status <> 'CANCELLED' AND scheduled_end_at >= ?
-       ORDER BY scheduled_start_at LIMIT 1`
-    )
-    .get(cls.id, now);
+  const [stuRow, sess, agg, next, policy] = await Promise.all([
+    db.prepare(`SELECT COUNT(*) n FROM class_enrollments WHERE subject_class_id = ? AND status = 'ACTIVE'`).get(cls.id),
+    db
+      .prepare(
+        `SELECT COUNT(*) total,
+           SUM(CASE WHEN scheduled_end_at < ? THEN 1 ELSE 0 END) done,
+           SUM(CASE WHEN scheduled_end_at < ? AND attendance_saved_at IS NULL THEN 1 ELSE 0 END) unmarked
+         FROM sessions WHERE subject_class_id = ? AND session_status <> 'CANCELLED'`
+      )
+      .get(now, now, cls.id),
+    db
+      .prepare(
+        `SELECT
+           SUM(CASE WHEN ar.attendance_status = 'PRESENT' THEN 1 ELSE 0 END) p,
+           SUM(CASE WHEN ar.attendance_status = 'LATE' THEN 1 ELSE 0 END) l,
+           SUM(CASE WHEN ar.attendance_status = 'EXCUSED_ABSENCE' THEN 1 ELSE 0 END) e,
+           SUM(CASE WHEN ar.attendance_status = 'UNEXCUSED_ABSENCE' THEN 1 ELSE 0 END) a
+         FROM attendance_records ar JOIN sessions s ON s.session_id = ar.class_session_id
+         WHERE ar.subject_class_id = ? AND s.session_status <> 'CANCELLED'`
+      )
+      .get(cls.id),
+    db
+      .prepare(
+        `SELECT session_id, session_title, scheduled_start_at, scheduled_end_at, room_or_link,
+                delivery_mode, virtual_room_id, live_status, attendance_sync_status
+         FROM sessions
+         WHERE subject_class_id = ? AND session_status <> 'CANCELLED' AND scheduled_end_at >= ?
+         ORDER BY scheduled_start_at LIMIT 1`
+      )
+      .get(cls.id, now),
+    getAttendancePolicy(db),
+  ]);
+  const students = stuRow?.n || 0;
   return {
     student_count: students,
-    sessions_total: sess.total || 0,
-    sessions_done: sess.done || 0,
-    sessions_unmarked: sess.unmarked || 0,
+    sessions_total: sess?.total || 0,
+    sessions_done: sess?.done || 0,
+    sessions_unmarked: sess?.unmarked || 0,
     attendance_rate: rateFromCounts(
-      { PRESENT: agg.p || 0, LATE: agg.l || 0, EXCUSED_ABSENCE: agg.e || 0, UNEXCUSED_ABSENCE: agg.a || 0 },
-      await getAttendancePolicy(db)
+      { PRESENT: agg?.p || 0, LATE: agg?.l || 0, EXCUSED_ABSENCE: agg?.e || 0, UNEXCUSED_ABSENCE: agg?.a || 0 },
+      policy
     ),
     next_session: next ? { ...next, virtual_room: await virtualRoomSummaryDto(db, next) } : null,
   };
 }
 
 export async function classDto(db, cls, user = null) {
-  const course = cls.course_id ? await db.prepare('SELECT id, code, title, status FROM courses WHERE id = ?').get(cls.course_id) : null;
-  const cohort = cls.cohort_id ? await db.prepare('SELECT id, code, title, status FROM program_cohorts WHERE id = ?').get(cls.cohort_id) : null;
-  const courseVersion = cls.course_version_id
-    ? await db.prepare('SELECT id, version_number, version_label, published_at FROM course_versions WHERE id = ?').get(cls.course_version_id)
-    : null;
+  const [course, cohort, courseVersion, staff, caps, counters] = await Promise.all([
+    cls.course_id ? db.prepare('SELECT id, code, title, status FROM courses WHERE id = ?').get(cls.course_id) : null,
+    cls.cohort_id ? db.prepare('SELECT id, code, title, status FROM program_cohorts WHERE id = ?').get(cls.cohort_id) : null,
+    cls.course_version_id
+      ? db.prepare('SELECT id, version_number, version_label, published_at FROM course_versions WHERE id = ?').get(cls.course_version_id)
+      : null,
+    classStaff(db, cls.id),
+    user ? classCapabilities(db, user, cls) : null,
+    classCounters(db, cls),
+  ]);
   return {
     id: cls.id,
     code: cls.code,
@@ -129,10 +138,10 @@ export async function classDto(db, cls, user = null) {
     room: cls.room || '',
     schedule_text: cls.schedule_text || '',
     department_id: cls.department_id,
-    staff: await classStaff(db, cls.id),
+    staff,
     updated_at: cls.updated_at,
-    ...(user ? { capabilities: await classCapabilities(db, user, cls) } : {}),
-    ...await classCounters(db, cls),
+    ...(user ? { capabilities: caps } : {}),
+    ...counters,
   };
 }
 
@@ -174,47 +183,66 @@ function assertDates(start, end) {
   if (start && end && end < start) fail(422, 'VALIDATION_ERROR', 'Ngày kết thúc phải sau ngày bắt đầu.', { field: 'end_date' });
 }
 
-async function sessionDto(db, s, rosterSize = null) {
-  const counts = (await db
-    .prepare(`SELECT attendance_status st, COUNT(*) n FROM attendance_records WHERE class_session_id = ? GROUP BY attendance_status`)
-    .all(s.session_id))
-    .reduce((acc, r) => ({ ...acc, [r.st]: r.n }), {});
-  const marked = Object.values(counts).reduce((a, b) => a + b, 0);
+async function sessionsDtoBatch(db, rows, rosterSize = null) {
+  if (!rows || rows.length === 0) return [];
+  const ids = rows.map((r) => r.session_id);
+  const inClause = ids.map(() => '?').join(',');
+  const [attRows, roomRows] = await Promise.all([
+    db
+      .prepare(`SELECT class_session_id, attendance_status st, COUNT(*) n FROM attendance_records WHERE class_session_id IN (${inClause}) GROUP BY class_session_id, attendance_status`)
+      .all(...ids),
+    Promise.all(rows.map((s) => (s.virtual_room_id || s.delivery_mode !== 'OFFLINE' ? virtualRoomSummaryDto(db, s) : Promise.resolve(null)))),
+  ]);
+  const countsMap = new Map();
+  for (const r of attRows) {
+    const cur = countsMap.get(r.class_session_id) || {};
+    cur[r.st] = r.n;
+    countsMap.set(r.class_session_id, cur);
+  }
   const now = nowVn();
-  let attendance_state = 'NOT_STARTED';
-  if (s.session_status === 'CANCELLED') attendance_state = 'CANCELLED';
-  else if (s.attendance_locked_at) attendance_state = 'LOCKED';
-  else if (s.attendance_saved_at) attendance_state = 'SAVED';
-  else if (s.scheduled_start_at <= now) attendance_state = 'NEEDS_ATTENDANCE';
-  return {
-    id: s.session_id,
-    class_id: s.subject_class_id,
-    class_code: s.subject_class_code,
-    title: s.session_title,
-    start_at: s.scheduled_start_at,
-    end_at: s.scheduled_end_at,
-    room_or_link: s.room_or_link || '',
-    session_status: s.session_status,
-    cancel_reason: s.cancel_reason || '',
-    instructor_name: s.actual_instructor_name || s.scheduled_instructor_name || '',
-    attendance_state,
-    attendance_saved_at: s.attendance_saved_at,
-    attendance_locked_at: s.attendance_locked_at,
-    counts,
-    marked_count: marked,
-    roster_size: rosterSize,
-    confirmation_status: s.confirmation_status,
-    confirmation_deadline_at: s.confirmation_deadline_at,
-    confirmed_at: s.confirmed_at,
-    is_late_confirmation: Boolean(s.is_late_confirmation),
-    delivery_mode: s.delivery_mode || 'OFFLINE',
-    teaching_content: s.teaching_content || '',
-    live_status: s.live_status || 'NOT_STARTED',
-    live_started_at: s.live_started_at || null,
-    live_ended_at: s.live_ended_at || null,
-    attendance_sync_status: s.attendance_sync_status || 'IDLE',
-    virtual_room: await virtualRoomSummaryDto(db, s),
-  };
+  return rows.map((s, idx) => {
+    const counts = countsMap.get(s.session_id) || {};
+    const marked = Object.values(counts).reduce((a, b) => a + b, 0);
+    let attendance_state = 'NOT_STARTED';
+    if (s.session_status === 'CANCELLED') attendance_state = 'CANCELLED';
+    else if (s.attendance_locked_at) attendance_state = 'LOCKED';
+    else if (s.attendance_saved_at) attendance_state = 'SAVED';
+    else if (s.scheduled_start_at <= now) attendance_state = 'NEEDS_ATTENDANCE';
+    return {
+      id: s.session_id,
+      class_id: s.subject_class_id,
+      class_code: s.subject_class_code,
+      title: s.session_title,
+      start_at: s.scheduled_start_at,
+      end_at: s.scheduled_end_at,
+      room_or_link: s.room_or_link || '',
+      session_status: s.session_status,
+      cancel_reason: s.cancel_reason || '',
+      instructor_name: s.actual_instructor_name || s.scheduled_instructor_name || '',
+      attendance_state,
+      attendance_saved_at: s.attendance_saved_at,
+      attendance_locked_at: s.attendance_locked_at,
+      counts,
+      marked_count: marked,
+      roster_size: rosterSize,
+      confirmation_status: s.confirmation_status,
+      confirmation_deadline_at: s.confirmation_deadline_at,
+      confirmed_at: s.confirmed_at,
+      is_late_confirmation: Boolean(s.is_late_confirmation),
+      delivery_mode: s.delivery_mode || 'OFFLINE',
+      teaching_content: s.teaching_content || '',
+      live_status: s.live_status || 'NOT_STARTED',
+      live_started_at: s.live_started_at || null,
+      live_ended_at: s.live_ended_at || null,
+      attendance_sync_status: s.attendance_sync_status || 'IDLE',
+      virtual_room: roomRows[idx] || null,
+    };
+  });
+}
+
+async function sessionDto(db, s, rosterSize = null) {
+  const [res] = await sessionsDtoBatch(db, [s], rosterSize);
+  return res;
 }
 
 async function findUsersByIdentifiers(db, identifiers) {
@@ -406,15 +434,16 @@ export function registerClassRoutes(route) {
     const { cls, caps } = await requireClassAccess(db, user, params.id);
     if (caps.role === 'STUDENT') fail(403, 'CLASS_ACCESS_DENIED', 'Học viên xem lớp tại mục "Lớp của tôi".');
     const now = nowVn();
-    const upcoming = await mapAsync(await db
-      .prepare(`SELECT * FROM sessions WHERE subject_class_id = ? AND session_status <> 'CANCELLED' AND scheduled_end_at >= ? ORDER BY scheduled_start_at LIMIT 5`)
-      .all(cls.id, now), async (s) => await sessionDto(db, s));
-    const unmarked = await mapAsync(await db
-      .prepare(`SELECT * FROM sessions WHERE subject_class_id = ? AND session_status <> 'CANCELLED' AND scheduled_start_at <= ? AND attendance_saved_at IS NULL ORDER BY scheduled_start_at DESC LIMIT 10`)
-      .all(cls.id, now), async (s) => await sessionDto(db, s));
-    const unconfirmed = await mapAsync(await db
-      .prepare(`SELECT * FROM sessions WHERE subject_class_id = ? AND session_status <> 'CANCELLED' AND scheduled_end_at < ? AND confirmation_status IN ('AWAITING_CONFIRMATION','OVERDUE_UNCONFIRMED') ORDER BY scheduled_start_at DESC LIMIT 10`)
-      .all(cls.id, now), async (s) => await sessionDto(db, s));
+    const [upRows, unmarkedRows, unconfRows] = await Promise.all([
+      db.prepare(`SELECT * FROM sessions WHERE subject_class_id = ? AND session_status <> 'CANCELLED' AND scheduled_end_at >= ? ORDER BY scheduled_start_at LIMIT 5`).all(cls.id, now),
+      db.prepare(`SELECT * FROM sessions WHERE subject_class_id = ? AND session_status <> 'CANCELLED' AND scheduled_start_at <= ? AND attendance_saved_at IS NULL ORDER BY scheduled_start_at DESC LIMIT 10`).all(cls.id, now),
+      db.prepare(`SELECT * FROM sessions WHERE subject_class_id = ? AND session_status <> 'CANCELLED' AND scheduled_end_at < ? AND confirmation_status IN ('AWAITING_CONFIRMATION','OVERDUE_UNCONFIRMED') ORDER BY scheduled_start_at DESC LIMIT 10`).all(cls.id, now),
+    ]);
+    const [upcoming, unmarked, unconfirmed] = await Promise.all([
+      sessionsDtoBatch(db, upRows),
+      sessionsDtoBatch(db, unmarkedRows),
+      sessionsDtoBatch(db, unconfRows),
+    ]);
     let progress = null;
     if (cls.course_id) {
       const total = (await db
@@ -567,10 +596,23 @@ export function registerClassRoutes(route) {
     const { cls } = await requireClassAccess(db, user, params.id, 'can_manage_roster');
     const raw = typeof body.text === 'string' ? body.text : '';
     if (raw.length > 200_000) fail(413, 'PAYLOAD_TOO_LARGE', 'Danh sách quá lớn.');
-    const identifiers = raw
-      .split(/[\r\n,;\t]+/)
-      .map((s) => s.trim().replace(/^"|"$/g, ''))
-      .filter((s) => s && !/^(mã|ma|code|email|stt)/i.test(s));
+    const lines = raw.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    let identifiers = [];
+    const firstCols = lines[0] ? lines[0].split(/[,\t;]+/).map((c) => c.trim().replace(/^"|"$/g, '').toLowerCase()) : [];
+    const codeColIdx = firstCols.findIndex((h) => ['code', 'student_code', 'ma', 'ma_hv', 'mã học viên', 'mã'].includes(h));
+    const emailColIdx = firstCols.findIndex((h) => ['email', 'thu_dien_tu'].includes(h));
+    if (lines.length > 1 && (codeColIdx >= 0 || emailColIdx >= 0)) {
+      for (let i = 1; i < lines.length; i++) {
+        const cols = lines[i].split(/[,\t;]+/).map((c) => c.trim().replace(/^"|"$/g, ''));
+        const candidate = (codeColIdx >= 0 ? cols[codeColIdx] : '') || (emailColIdx >= 0 ? cols[emailColIdx] : '');
+        if (candidate) identifiers.push(candidate);
+      }
+    } else {
+      identifiers = raw
+        .split(/[\r\n,;\t]+/)
+        .map((s) => s.trim().replace(/^"|"$/g, ''))
+        .filter((s) => s && !/^(mã|ma|code|email|stt)/i.test(s));
+    }
     const src = oneOf(body, 'enrollment_source', ['ACADEMIC_ASSIGNED', 'COHORT_SYNCED', 'MAKEUP', 'RETAKE', 'SUPPLEMENTAL'], {
       fallback: 'ACADEMIC_ASSIGNED',
       label: 'nguồn ghi danh',
@@ -957,7 +999,9 @@ export function registerClassRoutes(route) {
          ORDER BY s.scheduled_start_at`
       )
       .all(...params);
-    return { from, to, items: await mapAsync(rows, async (s) => ({ ...await sessionDto(db, s), class_title: s.class_title })) };
+    const titleMap = new Map(rows.map((s) => [s.session_id, s.class_title]));
+    const dtoItems = await sessionsDtoBatch(db, rows);
+    return { from, to, items: dtoItems.map((d) => ({ ...d, class_title: titleMap.get(d.id) || '' })) };
   });
 
   // ---------- Tổng quan giảng dạy
@@ -966,25 +1010,34 @@ export function registerClassRoutes(route) {
     const today = vnDate();
     const cScope = courseScopeSql(user);
     const sScope = classScopeSql(user);
-    const courses = (await db.prepare(`SELECT COUNT(*) n FROM courses c WHERE ${cScope.sql} AND c.status <> 'ARCHIVED'`).get(...cScope.params)).n;
-    const classIds = (await db.prepare(`SELECT sc.id FROM subject_classes sc WHERE ${sScope.sql} AND sc.status IN ('ACTIVE','UPCOMING')`).all(...sScope.params)).map((r) => r.id);
+    const [coursesRow, classRows] = await Promise.all([
+      db.prepare(`SELECT COUNT(*) n FROM courses c WHERE ${cScope.sql} AND c.status <> 'ARCHIVED'`).get(...cScope.params),
+      db.prepare(`SELECT sc.id FROM subject_classes sc WHERE ${sScope.sql} AND sc.status IN ('ACTIVE','UPCOMING')`).all(...sScope.params),
+    ]);
+    const courses = coursesRow.n;
+    const classIds = classRows.map((r) => r.id);
     const inList = classIds.length ? classIds.map(() => '?').join(',') : "''";
     const students = classIds.length
       ? (await db.prepare(`SELECT COUNT(DISTINCT student_id) n FROM class_enrollments WHERE status = 'ACTIVE' AND subject_class_id IN (${inList})`).get(...classIds)).n
       : 0;
-    const sel = async (where, extraParams, limit) =>
-      classIds.length
-        ? await mapAsync(await db
-            .prepare(
-              `SELECT s.*, sc.title AS class_title FROM sessions s JOIN subject_classes sc ON sc.id = s.subject_class_id
-               WHERE s.subject_class_id IN (${inList}) AND s.session_status <> 'CANCELLED' AND ${where} LIMIT ${limit}`
-            )
-            .all(...classIds, ...extraParams), async (s) => ({ ...await sessionDto(db, s), class_title: s.class_title }))
-        : [];
-    const todaySessions = await sel(`substr(s.scheduled_start_at, 1, 10) = ? ORDER BY s.scheduled_start_at`, [today], 20);
-    const upcoming = await sel(`s.scheduled_start_at > ? ORDER BY s.scheduled_start_at`, [`${today}T23:59:59+07:00`], 8);
-    const needAttendance = await sel(`s.scheduled_start_at <= ? AND s.attendance_saved_at IS NULL AND s.scheduled_start_at >= ? ORDER BY s.scheduled_start_at DESC`, [now, vnIso(new Date(Date.now() - 30 * 86400000))], 10);
-    const logsUnconfirmed = await sel(`s.scheduled_end_at < ? AND s.confirmation_status IN ('AWAITING_CONFIRMATION','OVERDUE_UNCONFIRMED') ORDER BY s.scheduled_start_at DESC`, [now], 10);
+    const sel = async (where, extraParams, limit) => {
+      if (!classIds.length) return [];
+      const sRows = await db
+        .prepare(
+          `SELECT s.*, sc.title AS class_title FROM sessions s JOIN subject_classes sc ON sc.id = s.subject_class_id
+           WHERE s.subject_class_id IN (${inList}) AND s.session_status <> 'CANCELLED' AND ${where} LIMIT ${limit}`
+        )
+        .all(...classIds, ...extraParams);
+      const tMap = new Map(sRows.map((s) => [s.session_id, s.class_title]));
+      const dtos = await sessionsDtoBatch(db, sRows);
+      return dtos.map((d) => ({ ...d, class_title: tMap.get(d.id) || '' }));
+    };
+    const [todaySessions, upcoming, needAttendance, logsUnconfirmed] = await Promise.all([
+      sel(`substr(s.scheduled_start_at, 1, 10) = ? ORDER BY s.scheduled_start_at`, [today], 20),
+      sel(`s.scheduled_start_at > ? ORDER BY s.scheduled_start_at`, [`${today}T23:59:59+07:00`], 8),
+      sel(`s.scheduled_start_at <= ? AND s.attendance_saved_at IS NULL AND s.scheduled_start_at >= ? ORDER BY s.scheduled_start_at DESC`, [now, vnIso(new Date(Date.now() - 30 * 86400000))], 10),
+      sel(`s.scheduled_end_at < ? AND s.confirmation_status IN ('AWAITING_CONFIRMATION','OVERDUE_UNCONFIRMED') ORDER BY s.scheduled_start_at DESC`, [now], 10),
+    ]);
 
     // Cảnh báo chuyên cần thấp
     const policy = await getAttendancePolicy(db);

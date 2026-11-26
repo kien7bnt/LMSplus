@@ -2,25 +2,31 @@ import React, { useState } from 'react';
 import { UserRole } from '../../types/elearning';
 import { AuthenticatedUser, apiLogin, apiRegister } from '../../api/elearningClient';
 import { BrandLogo } from '../BrandLogo';
-import { Button } from '../ui/Primitives';
+import { Btn, errMsg } from '../../teaching/ui';
 
 export const ROLE_DISPLAY_LABELS: Record<UserRole, string> = {
   STUDENT: 'Học viên',
   INSTRUCTOR: 'Giảng viên',
   TEACHING_ASSISTANT: 'Trợ giảng',
+  HEAD_OF_DEPARTMENT: 'Trưởng bộ môn',
   ACADEMIC_STAFF: 'Giáo vụ',
   ADMIN: 'Quản trị viên',
+  SUPER_ADMIN: 'Quản trị tối cao',
 };
 
-/** Tài khoản dùng thử — chỉ điền sẵn biểu mẫu, người dùng vẫn phải bấm Đăng nhập. */
-const DEMO_ACCOUNTS: Array<{ name: string; email: string }> = [
-  { name: 'Cô Lê Thu Hà (Giảng viên)', email: 'thuha.gv@lmsplus.edu.vn' },
-  { name: 'Thầy Đỗ Văn Khoa (Giảng viên)', email: 'vankhoa.gv@lmsplus.edu.vn' },
-  { name: 'Thầy Phạm Minh Quân (Trợ giảng)', email: 'minhquan.tg@lmsplus.edu.vn' },
-  { name: 'Cô Nguyễn Thu Trang (Giáo vụ)', email: 'giaovu@lmsplus.edu.vn' },
-  { name: 'Nguyễn Minh Anh (Học viên)', email: 'minhanh.hs@lmsplus.edu.vn' },
-  { name: 'Quản trị Hệ thống', email: 'admin@lmsplus.edu.vn' },
-];
+const SHOW_DEMO_ACCOUNTS = !import.meta.env.PROD || import.meta.env.VITE_SHOW_DEMO_ACCOUNTS === 'true';
+
+/** Tài khoản dùng thử — chỉ hiển thị ở môi trường phát triển cục bộ hoặc staging được cấu hình. */
+const DEMO_ACCOUNTS: Array<{ name: string; email: string }> = SHOW_DEMO_ACCOUNTS
+  ? [
+      { name: 'Cô Lê Thu Hà (Giảng viên)', email: 'thuha.gv@lmsplus.edu.vn' },
+      { name: 'Thầy Đỗ Văn Khoa (Giảng viên)', email: 'vankhoa.gv@lmsplus.edu.vn' },
+      { name: 'Thầy Phạm Minh Quân (Trợ giảng)', email: 'minhquan.tg@lmsplus.edu.vn' },
+      { name: 'Cô Nguyễn Thu Trang (Giáo vụ)', email: 'giaovu@lmsplus.edu.vn' },
+      { name: 'Nguyễn Minh Anh (Học viên)', email: 'minhanh.hs@lmsplus.edu.vn' },
+      { name: 'Quản trị Hệ thống', email: 'admin@lmsplus.edu.vn' },
+    ]
+  : [];
 
 interface AuthPageProps {
   onAuthSuccess: (user: AuthenticatedUser, message: string) => void;
@@ -76,8 +82,8 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onAuthSuccess }) => {
     try {
       const res = await apiLogin(identifier.trim(), password);
       onAuthSuccess(res.user, `Chào mừng ${res.user.full_name} quay trở lại!`);
-    } catch (err: any) {
-      setErrorMsg(err?.message || 'Email hoặc mật khẩu không chính xác.');
+    } catch (err: unknown) {
+      setErrorMsg(errMsg(err) || 'Email hoặc mật khẩu không chính xác.');
     } finally {
       setSubmitting(false);
     }
@@ -107,8 +113,8 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onAuthSuccess }) => {
         password: regPassword,
       });
       onAuthSuccess(res.user, `Tạo tài khoản thành công. Chào mừng ${res.user.full_name}!`);
-    } catch (err: any) {
-      setErrorMsg(err?.message || 'Không thể tạo tài khoản. Vui lòng thử lại.');
+    } catch (err: unknown) {
+      setErrorMsg(errMsg(err) || 'Không thể tạo tài khoản. Vui lòng thử lại.');
     } finally {
       setSubmitting(false);
     }
@@ -219,14 +225,14 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onAuthSuccess }) => {
                     placeholder="Nhập mật khẩu"
                     style={{ ...inputStyle, flex: 1, minWidth: 0 }}
                   />
-                  <Button variant="subtle" onClick={() => setShowPassword((v) => !v)} style={{ minHeight: '48px', flexShrink: 0 }}>
+                  <Btn variant="ghost" onClick={() => setShowPassword((v) => !v)} style={{ minHeight: '48px', flexShrink: 0 }}>
                     {showPassword ? 'Ẩn' : 'Hiện'}
-                  </Button>
+                  </Btn>
                 </div>
               </Field>
-              <Button type="submit" variant="primary" size="lg" isLoading={submitting} style={{ width: '100%' }}>
+              <Btn type="submit" variant="primary" loading={submitting} style={{ width: '100%', minHeight: '48px' }}>
                 Đăng nhập
-              </Button>
+              </Btn>
               <p style={{ margin: 0, fontSize: '14px', color: 'var(--text-secondary)', textAlign: 'center' }}>
                 Chưa có tài khoản?{' '}
                 <button
@@ -246,45 +252,47 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onAuthSuccess }) => {
                 </button>
               </p>
 
-              <div
-                style={{
-                  borderTop: '1px solid var(--border-subtle)',
-                  paddingTop: '16px',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: '8px',
-                }}
-              >
-                <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>
-                  Tài khoản dùng thử (mật khẩu <strong>123456</strong>) — bấm để điền sẵn:
-                </span>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
-                  {DEMO_ACCOUNTS.map((acc) => (
-                    <button
-                      key={acc.email}
-                      type="button"
-                      onClick={() => {
-                        setIdentifier(acc.email);
-                        setPassword('123456');
-                        setErrorMsg(null);
-                      }}
-                      style={{
-                        minHeight: '44px',
-                        padding: '0 14px',
-                        borderRadius: 'var(--radius-pill)',
-                        border: '1px solid var(--border-strong)',
-                        backgroundColor: identifier === acc.email ? 'var(--bg-surface-hover)' : 'var(--bg-surface)',
-                        color: 'var(--text-primary)',
-                        fontSize: '13px',
-                        fontWeight: 600,
-                        cursor: 'pointer',
-                      }}
-                    >
-                      {acc.name}
-                    </button>
-                  ))}
+              {SHOW_DEMO_ACCOUNTS && DEMO_ACCOUNTS.length > 0 && (
+                <div
+                  style={{
+                    borderTop: '1px solid var(--border-subtle)',
+                    paddingTop: '16px',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '8px',
+                  }}
+                >
+                  <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>
+                    Tài khoản dùng thử (môi trường phát triển) — bấm để điền nhanh email:
+                  </span>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+                    {DEMO_ACCOUNTS.map((acc) => (
+                      <button
+                        key={acc.email}
+                        type="button"
+                        onClick={() => {
+                          setIdentifier(acc.email);
+                          setPassword('123456');
+                          setErrorMsg(null);
+                        }}
+                        style={{
+                          minHeight: '44px',
+                          padding: '0 14px',
+                          borderRadius: 'var(--radius-pill)',
+                          border: '1px solid var(--border-strong)',
+                          backgroundColor: identifier === acc.email ? 'var(--bg-surface-hover)' : 'var(--bg-surface)',
+                          color: 'var(--text-primary)',
+                          fontSize: '13px',
+                          fontWeight: 600,
+                          cursor: 'pointer',
+                        }}
+                      >
+                        {acc.name}
+                      </button>
+                    ))}
+                  </div>
                 </div>
-              </div>
+              )}
             </form>
           ) : (
             <form onSubmit={handleRegister} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
@@ -305,9 +313,9 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onAuthSuccess }) => {
                   <input type="password" autoComplete="new-password" value={regConfirm} onChange={(e) => setRegConfirm(e.target.value)} placeholder="Nhập lại" style={inputStyle} />
                 </Field>
               </div>
-              <Button type="submit" variant="primary" size="lg" isLoading={submitting} style={{ width: '100%' }}>
+              <Btn type="submit" variant="primary" loading={submitting} style={{ width: '100%', minHeight: '48px' }}>
                 Tạo tài khoản
-              </Button>
+              </Btn>
               <p style={{ margin: 0, fontSize: '14px', color: 'var(--text-secondary)', textAlign: 'center' }}>
                 Đã có tài khoản?{' '}
                 <button

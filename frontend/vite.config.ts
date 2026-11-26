@@ -98,6 +98,23 @@ function lmsplusSqlApiPlugin() {
 
 export default defineConfig({
   plugins: [react(), lmsplusSqlApiPlugin()],
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (id.includes('node_modules')) {
+            if (id.includes('react-router') || id.includes('react-dom') || id.includes('/react/') || id.includes('\\react\\')) {
+              return 'vendor-react';
+            }
+            return 'vendor';
+          }
+          if (id.includes('teaching/studio')) return 'chunk-studio';
+          if (id.includes('teaching/ui') || id.includes('teaching/api')) return 'chunk-teaching-core';
+          return undefined;
+        },
+      },
+    },
+  },
   server: {
     port: 5173,
     fs: {

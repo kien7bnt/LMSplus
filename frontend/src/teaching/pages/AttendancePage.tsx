@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
+import { useBreadcrumbTrail } from '../../layout/BreadcrumbContext';
 import {
   AttendanceHistoryItem, AttendanceRow, AttendanceSheet, AttendanceStatus, QrState, SessionSummary, teachingApi,
 } from '../api';
@@ -174,6 +175,14 @@ export const AttendancePage: React.FC = () => {
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historyItems, setHistoryItems] = useState<AttendanceHistoryItem[]>([]);
   const [unlockModalOpen, setUnlockModalOpen] = useState(false);
+
+  useBreadcrumbTrail(
+    sheet?.class.code
+      ? [{ label: `Lớp ${sheet.class.code}`, to: `/teaching/classes/${classId}` }]
+      : classId
+        ? [{ label: 'Chi tiết lớp', to: `/teaching/classes/${classId}` }]
+        : []
+  );
 
   const loadSessions = useCallback(async () => {
     setLoadingSessions(true);
@@ -367,8 +376,7 @@ export const AttendancePage: React.FC = () => {
     return (
       <div className="t-page">
         <PageHeader
-          breadcrumb={<><Link to="/teaching/classes">Lớp học</Link><span>/</span><Link to={`/teaching/classes/${classId}`}>Chi tiết lớp</Link></>}
-          title="Điểm danh lớp học"
+          title="Điểm danh lớp môn học"
         />
         <Card>
           <EmptyState
@@ -387,15 +395,6 @@ export const AttendancePage: React.FC = () => {
   return (
     <div className="t-page">
       <PageHeader
-        breadcrumb={
-          <>
-            <Link to="/teaching/classes">Lớp học</Link>
-            <span>/</span>
-            <Link to={`/teaching/classes/${classId}`}>{sheet?.class.code || 'Lớp học'}</Link>
-            <span>/</span>
-            <span>Điểm danh</span>
-          </>
-        }
         title={sheet ? `Điểm danh: ${sheet.class.title}` : 'Điểm danh buổi học'}
         subtitle={
           sheet && (

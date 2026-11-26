@@ -2,6 +2,7 @@ import React, { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { SessionSummary, TimetableSessionItem, masterApi, teachingApi } from '../api';
 import { SessionRow, attendanceLink, virtualSessionLink } from '../components/SessionRow';
+import { IconCalendar } from '../components/Icons';
 import {
   Badge,
   Btn,
@@ -142,7 +143,7 @@ export const SchedulePage: React.FC<{ studentMode?: boolean }> = ({ studentMode 
     return (
       <div className="t-page">
         <PageHeader
-          title="Lịch học"
+          title="Lịch học của tôi"
           subtitle={`${dayLabel(range.from)} – ${dayLabel(range.to)}`}
           actions={
             <>
@@ -230,15 +231,15 @@ export const SchedulePage: React.FC<{ studentMode?: boolean }> = ({ studentMode 
   return (
     <div className="t-page">
       <PageHeader
-        title="Lịch giảng dạy & Thời khóa biểu đa chiều"
-        subtitle={`Khoảng xem: ${dayLabel(range.from)} – ${dayLabel(range.to)} (${filteredItems.length} buổi)`}
+        title="Lịch giảng dạy"
+        subtitle={`Khoảng xem đa chiều: ${dayLabel(range.from)} – ${dayLabel(range.to)} (${filteredItems.length} buổi)`}
         actions={
           <div className="t-actions">
             <Btn onClick={() => setAnchorDate(addDays(anchorDate, view === 'month' ? -30 : -7))}>‹ Trước</Btn>
             <Btn onClick={() => setAnchorDate(mondayOf(today))}>Hôm nay</Btn>
             <Btn onClick={() => setAnchorDate(addDays(anchorDate, view === 'month' ? 30 : 7))}>Sau ›</Btn>
             <Link className="t-btn t-btn--primary" to="/teaching/timetable">
-              🗓️ Điều phối Xếp lịch
+              <IconCalendar size={15} /> Điều phối thời khóa biểu
             </Link>
           </div>
         }
