@@ -5118,7 +5118,7 @@ textarea.t-input {
   height: 100%;
   padding: 0 20px;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(240px, 440px) minmax(0, 1fr);
+  grid-template-columns: minmax(max-content, 1fr) minmax(180px, 440px) minmax(max-content, 1fr);
   align-items: center;
   gap: 16px;
 }
