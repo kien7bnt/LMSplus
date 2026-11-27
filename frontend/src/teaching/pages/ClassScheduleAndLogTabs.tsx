@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   ClassAssignmentItem, ClassDetail, ClassExamItem, ClassQuizAnalytics, DeliveryMode, EnrollResult, EnrollmentSource,
@@ -11,6 +11,7 @@ import {
 } from '../ui';
 import { ClassLeaveRequestsPanel } from './LeaveRequestsPage';
 import { BankQuestionAttachment, BankQuestionPicker, extractBankQuestionAttachments, mergeInstructionsWithQuestions } from '../components/BankQuestionPicker';
+import { extractMeetingCodeFromUrl } from './VirtualSessionPanels';
 
 export const WEEKDAYS: Array<{ day: number; label: string }> = [
   { day: 1, label: 'Thứ 2' },
@@ -46,6 +47,7 @@ export const ScheduleTab: React.FC<{ cls: ClassDetail; onChanged: () => void }> 
   const [existingRoomId, setExistingRoomId] = useState('');
   const [externalUrl, setExternalUrl] = useState('');
   const [externalCode, setExternalCode] = useState('');
+  const lastAutoCodeRef = useRef('');
   const [externalPasscode, setExternalPasscode] = useState('');
   const [externalPlatformName, setExternalPlatformName] = useState('Microsoft Teams');
 
@@ -63,12 +65,13 @@ export const ScheduleTab: React.FC<{ cls: ClassDetail; onChanged: () => void }> 
     setTitle('');
     setTeachingContent('');
     setDeliveryMode(cls.delivery_mode || 'OFFLINE');
-    setVirtualAction(cls.delivery_mode === 'ONLINE' || cls.delivery_mode === 'HYBRID' ? 'CREATE_NEW' : 'NONE');
+    setVirtualAction(cls.delivery_mode === 'ONLINE' || cls.delivery_mode === 'HYBRID' ? 'EXTERNAL_LINK' : 'NONE');
     setProvider('ZOOM');
     setRoomName(`${cls.code} — ${cls.title}`);
     setExistingRoomId(existingRoomsReq.data?.items[0]?.id || '');
     setExternalUrl('');
     setExternalCode('');
+    lastAutoCodeRef.current = '';
     setExternalPasscode('');
     setDate(todayVn());
     setStartDate(cls.start_date || todayVn());
@@ -94,6 +97,12 @@ export const ScheduleTab: React.FC<{ cls: ClassDetail; onChanged: () => void }> 
     );
     setExternalUrl(s.virtual_room?.join_url || '');
     setExternalCode(s.virtual_room?.external_meeting_id || '');
+    lastAutoCodeRef.current = (
+      s.virtual_room?.external_meeting_id ||
+      extractMeetingCodeFromUrl(s.virtual_room?.provider || 'ZOOM', s.virtual_room?.join_url || '')
+    )
+      .replace(/\s+/g, '')
+      .toLowerCase();
     setExternalPasscode('');
     setDate(isoToDateInput(s.start_at));
     setStartTime(isoToTimeInput(s.start_at));
@@ -407,7 +416,7 @@ export const ScheduleTab: React.FC<{ cls: ClassDetail; onChanged: () => void }> 
                   const nextMode = e.target.value as DeliveryMode;
                   setDeliveryMode(nextMode);
                   if ((nextMode === 'ONLINE' || nextMode === 'HYBRID') && virtualAction === 'NONE') {
-                    setVirtualAction(typeof modalMode === 'object' && modalMode.virtual_room ? 'KEEP' : 'CREATE_NEW');
+                    setVirtualAction(typeof modalMode === 'object' && modalMode.virtual_room ? 'KEEP' : 'EXTERNAL_LINK');
                   }
                 }}
               >
@@ -428,7 +437,9 @@ export const ScheduleTab: React.FC<{ cls: ClassDetail; onChanged: () => void }> 
                   wide
                   hint={
                     typeof modalMode === 'object' && modalMode.virtual_room
-                      ? 'Khi chỉ sửa tên hoặc nội dung buổi học, hệ thống giữ nguyên phòng đã tạo (không tự tạo phòng mới).'
+                      ? modalMode.virtual_room.is_sandbox_room
+                        ? 'Phòng hiện tại đang dùng link mô phỏng (Sandbox — mở Zoom sẽ báo lỗi 3.001). Chọn "Chỉnh sửa link..." để dán link Zoom/Meet thật.'
+                        : 'Khi chỉ sửa tên hoặc nội dung buổi học, hệ thống giữ nguyên phòng đã tạo (không tự tạo phòng mới).'
                       : undefined
                   }
                 >
@@ -467,6 +478,9 @@ export const ScheduleTab: React.FC<{ cls: ClassDetail; onChanged: () => void }> 
 
                 {(virtualAction === 'CREATE_NEW' || virtualAction === 'RECURRING_CLASS') && (
                   <>
+                    <div className="t-notice t-notice--warning t-field--wide">
+                      <strong>Lưu ý chế độ Sandbox:</strong> Nếu chưa kết nối Zoom/Google Meet OAuth API thật, tùy chọn tạo tự động sẽ sinh link mô phỏng để kiểm thử điểm danh (mở trên Zoom thật sẽ báo lỗi <code>3.001</code>). Để dạy lớp thật ngay, hãy chọn <strong>Nhập / Gắn link phòng có sẵn</strong> và dán link từ ứng dụng Zoom/Meet của bạn.
+                    </div>
                     <Field label="Nền tảng họp trực tuyến" required>
                       <select
                         className="t-input"
@@ -547,7 +561,16 @@ export const ScheduleTab: React.FC<{ cls: ClassDetail; onChanged: () => void }> 
                         className="t-input"
                         type="url"
                         value={externalUrl}
-                        onChange={(e) => setExternalUrl(e.target.value)}
+                        onChange={(e) => {
+                          const nextUrl = e.target.value;
+                          setExternalUrl(nextUrl);
+                          const nextAuto = extractMeetingCodeFromUrl(provider, nextUrl);
+                          const curNorm = externalCode.replace(/\s+/g, '').toLowerCase();
+                          if (nextAuto && (!curNorm || curNorm === lastAutoCodeRef.current)) {
+                            setExternalCode(nextAuto);
+                            lastAutoCodeRef.current = nextAuto;
+                          }
+                        }}
                         placeholder={provider === 'ZOOM' ? 'https://us02web.zoom.us/j/...' : provider === 'GOOGLE_MEET' ? 'https://meet.google.com/...' : 'https://teams.microsoft.com/...'}
                         required
                       />

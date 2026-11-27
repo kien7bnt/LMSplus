@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   teachingApi, VirtualAttendanceRow, VirtualAttendanceRules, VirtualAttendanceStatus,
   VirtualParticipantSession, VirtualProviderConfig, VirtualProviderType, VirtualSessionDetail,
@@ -51,20 +51,47 @@ function urlPlaceholderForProvider(p: VirtualProviderType): string {
   return 'https://teams.microsoft.com/l/meetup-join/...';
 }
 
+export function extractMeetingCodeFromUrl(provider: VirtualProviderType, rawUrl: string): string {
+  const url = rawUrl.trim();
+  if (!url) return '';
+  if (provider === 'ZOOM' || /zoom\.us/i.test(url)) {
+    const m = url.match(/zoom\.us\/(?:j|wc|s|w)\/(\d{9,11})/i);
+    if (m) return m[1];
+  }
+  if (provider === 'GOOGLE_MEET' || /meet\.google\.com/i.test(url)) {
+    const m = url.match(/meet\.google\.com\/([a-z]{3}-[a-z]{4}-[a-z]{3})/i);
+    if (m) return m[1].toLowerCase();
+  }
+  return '';
+}
+
 export const ConfigureVirtualRoomModal: React.FC<{
   classId: string;
   sessionId: string;
   sessionTitle: string;
   currentRoom: VirtualSessionDetail['room'];
+  liveApiStatus?: { ZOOM: boolean; GOOGLE_MEET: boolean };
   onClose: () => void;
   onSaved: () => void;
-}> = ({ classId, sessionId, sessionTitle, currentRoom, onClose, onSaved }) => {
+}> = ({ classId, sessionId, sessionTitle, currentRoom, liveApiStatus, onClose, onSaved }) => {
   const toast = useToast();
-  const [mode, setMode] = useState<RoomConfigMode>(currentRoom ? 'EDIT_CURRENT' : 'CREATE_NEW');
+  const hasAnyLiveApi = Boolean(liveApiStatus?.ZOOM || liveApiStatus?.GOOGLE_MEET);
+  const [mode, setMode] = useState<RoomConfigMode>(
+    currentRoom ? 'EDIT_CURRENT' : hasAnyLiveApi ? 'CREATE_NEW' : 'EXTERNAL_LINK'
+  );
   const [provider, setProvider] = useState<VirtualProviderType>(currentRoom?.provider || 'ZOOM');
   const [roomName, setRoomName] = useState(currentRoom?.room_title || sessionTitle);
   const [joinUrl, setJoinUrl] = useState(currentRoom?.join_url || '');
   const [meetingCode, setMeetingCode] = useState(currentRoom?.raw_meeting_id || currentRoom?.external_meeting_id || '');
+  const lastAutoCodeRef = useRef(
+    (
+      currentRoom?.raw_meeting_id ||
+      currentRoom?.external_meeting_id ||
+      extractMeetingCodeFromUrl(currentRoom?.provider || 'ZOOM', currentRoom?.join_url || '')
+    )
+      .replace(/\s+/g, '')
+      .toLowerCase()
+  );
   const [passcode, setPasscode] = useState(currentRoom?.passcode || '');
   const [externalPlatformName, setExternalPlatformName] = useState(
     currentRoom?.external_platform_name || DEFAULT_PLATFORM_NAMES[currentRoom?.provider || 'EXTERNAL']
@@ -102,10 +129,16 @@ export const ConfigureVirtualRoomModal: React.FC<{
       setProvider('ZOOM');
     }
     if (nextMode === 'EDIT_CURRENT' && currentRoom) {
+      const code = currentRoom.raw_meeting_id || currentRoom.external_meeting_id || '';
       setProvider(currentRoom.provider);
       setRoomName(currentRoom.room_title);
       setJoinUrl(currentRoom.join_url);
-      setMeetingCode(currentRoom.raw_meeting_id || currentRoom.external_meeting_id || '');
+      setMeetingCode(code);
+      lastAutoCodeRef.current = (
+        code || extractMeetingCodeFromUrl(currentRoom.provider, currentRoom.join_url)
+      )
+        .replace(/\s+/g, '')
+        .toLowerCase();
       setPasscode(currentRoom.passcode || '');
       setExternalPlatformName(currentRoom.external_platform_name || DEFAULT_PLATFORM_NAMES[currentRoom.provider]);
       setIsRecurringRoom(Boolean(currentRoom.is_recurring_room));
@@ -116,6 +149,16 @@ export const ConfigureVirtualRoomModal: React.FC<{
     setProvider(nextProvider);
     if (!externalPlatformName.trim() || Object.values(DEFAULT_PLATFORM_NAMES).includes(externalPlatformName.trim())) {
       setExternalPlatformName(DEFAULT_PLATFORM_NAMES[nextProvider]);
+    }
+  };
+
+  const handleJoinUrlChange = (nextUrl: string) => {
+    setJoinUrl(nextUrl);
+    const nextAuto = extractMeetingCodeFromUrl(provider, nextUrl);
+    const curNorm = meetingCode.replace(/\s+/g, '').toLowerCase();
+    if (nextAuto && (!curNorm || curNorm === lastAutoCodeRef.current)) {
+      setMeetingCode(nextAuto);
+      lastAutoCodeRef.current = nextAuto;
     }
   };
 
@@ -221,6 +264,13 @@ export const ConfigureVirtualRoomModal: React.FC<{
           </select>
         </Field>
 
+        {mode === 'EDIT_CURRENT' && currentRoom?.is_sandbox_room && (
+          <div className="t-notice t-notice--warning t-field--wide">
+            <strong>Phòng hiện tại đang dùng link mô phỏng (Sandbox):</strong> Đường dẫn{' '}
+            <code style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }}>{currentRoom.join_url}</code> không tồn tại trên Zoom/Meet thật (mở sẽ báo lỗi <code>3.001</code>). Hãy dán link phòng học thật của bạn vào ô bên dưới để thay thế.
+          </div>
+        )}
+
         {mode === 'REUSE_EXISTING' ? (
           <Field label="Chọn phòng họp đã tạo của lớp" wide required>
             {existingRooms.length === 0 ? (
@@ -267,13 +317,13 @@ export const ConfigureVirtualRoomModal: React.FC<{
               label="Link phòng học (Zoom / Google Meet / Meeting URL)"
               wide
               required
-              hint="Dán đường dẫn tham gia trực tiếp bắt đầu bằng https://; học viên bấm Tham gia phòng sẽ mở đúng link này."
+              hint="Dán đường dẫn tham gia trực tiếp bắt đầu bằng https:// (vd: https://us02web.zoom.us/j/...); học viên bấm Tham gia phòng sẽ mở đúng link này."
             >
               <input
                 className="t-input"
                 type="url"
                 value={joinUrl}
-                onChange={(e) => setJoinUrl(e.target.value)}
+                onChange={(e) => handleJoinUrlChange(e.target.value)}
                 placeholder={urlPlaceholderForProvider(provider)}
                 required
               />
@@ -295,6 +345,11 @@ export const ConfigureVirtualRoomModal: React.FC<{
           </>
         ) : (
           <>
+            {!(provider === 'GOOGLE_MEET' ? liveApiStatus?.GOOGLE_MEET : liveApiStatus?.ZOOM) && (
+              <div className="t-notice t-notice--warning t-field--wide">
+                <strong>Chế độ Sandbox (Chưa kết nối API OAuth trực tiếp):</strong> Chế độ tạo tự động sẽ sinh link mô phỏng để kiểm thử luồng điểm danh &amp; webhook — mở trực tiếp trên Zoom thật sẽ báo lỗi <code>3.001</code>. Nếu dạy lớp thật ngay, hãy chọn <strong>Nhập / Gắn link phòng có sẵn</strong> ở trên để dán link Zoom/Google Meet của bạn.
+              </div>
+            )}
             <Field label="Nền tảng họp trực tuyến" required>
               <select className="t-input" value={provider === 'GOOGLE_MEET' ? 'GOOGLE_MEET' : 'ZOOM'} onChange={(e) => handleProviderChange(e.target.value as VirtualProviderType)}>
                 <option value="ZOOM">Zoom Meeting (Ưu tiên — REST API + Webhook)</option>

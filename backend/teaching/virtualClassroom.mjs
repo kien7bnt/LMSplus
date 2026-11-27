@@ -20,6 +20,8 @@ import {
   maskSecret,
   formatZoomMeetingId,
   createProviderAdapter,
+  isSandboxVirtualRoom,
+  extractMeetingIdFromUrl,
 } from './virtualProviders.mjs';
 
 export const VIRTUAL_ATTENDANCE_STATUSES = [
@@ -738,11 +740,14 @@ export async function virtualRoomSummaryDto(db, session) {
     )
     .get(session.session_id, room.id);
 
+  const roomMeta = safeJson(room.provider_metadata_json, {});
   return {
     id: room.id,
     provider: room.provider,
     external_platform_name: room.external_platform_name || (room.provider === 'ZOOM' ? 'Zoom Meeting' : room.provider === 'GOOGLE_MEET' ? 'Google Meet' : 'Phòng trực tuyến'),
     creation_mode: room.creation_mode,
+    is_sandbox_room: isSandboxVirtualRoom(room),
+    provider_mode: roomMeta.mode || (room.creation_mode === 'MANUAL_LINK' ? 'MANUAL_LINK' : 'SANDBOX_ADAPTER'),
     is_recurring_room: Boolean(room.is_recurring_room),
     room_title: room.room_title,
     external_meeting_id: room.external_meeting_id ? formatZoomMeetingId(room.external_meeting_id) : null,
@@ -763,9 +768,13 @@ export async function virtualRoomSummaryDto(db, session) {
 }
 
 async function buildVirtualSessionDetailDto(db, user, session, cls, caps, jwtSecret) {
-  const room = session.virtual_room_id
-    ? await db.prepare('SELECT * FROM virtual_meeting_rooms WHERE id = ?').get(session.virtual_room_id)
-    : await db.prepare('SELECT * FROM virtual_meeting_rooms WHERE session_id = ? ORDER BY created_at DESC LIMIT 1').get(session.session_id);
+  const [room, zoomCfg, meetCfg] = await Promise.all([
+    session.virtual_room_id
+      ? db.prepare('SELECT * FROM virtual_meeting_rooms WHERE id = ?').get(session.virtual_room_id)
+      : db.prepare('SELECT * FROM virtual_meeting_rooms WHERE session_id = ? ORDER BY created_at DESC LIMIT 1').get(session.session_id),
+    createProviderAdapter('ZOOM', { db, jwtSecret }).getConfig(),
+    createProviderAdapter('GOOGLE_MEET', { db, jwtSecret }).getConfig(),
+  ]);
 
   const roster = await sessionRoster(db, session);
   const rules = await getSessionAttendanceRules(db, session, cls);
@@ -891,6 +900,7 @@ async function buildVirtualSessionDetailDto(db, user, session, cls, caps, jwtSec
   // Giải mã passcode cho thành viên hợp lệ trong lớp; TUYỆT ĐỐI KHÔNG gửi host_start_url xuống danh sách chung
   const decryptedPasscode = room?.encrypted_passcode ? decryptSecret(room.encrypted_passcode, jwtSecret) : null;
 
+  const detailMeta = safeJson(room?.provider_metadata_json, {});
   return {
     session: {
       id: refreshedSession.session_id,
@@ -920,6 +930,8 @@ async function buildVirtualSessionDetailDto(db, user, session, cls, caps, jwtSec
             room.external_platform_name ||
             (room.provider === 'ZOOM' ? 'Zoom Meeting' : room.provider === 'GOOGLE_MEET' ? 'Google Meet' : 'Nền tảng bên ngoài'),
           creation_mode: room.creation_mode,
+          is_sandbox_room: isSandboxVirtualRoom(room),
+          provider_mode: detailMeta.mode || (room.creation_mode === 'MANUAL_LINK' ? 'MANUAL_LINK' : 'SANDBOX_ADAPTER'),
           is_recurring_room: Boolean(room.is_recurring_room),
           room_title: room.room_title,
           external_meeting_id: room.external_meeting_id ? formatZoomMeetingId(room.external_meeting_id) : null,
@@ -930,7 +942,7 @@ async function buildVirtualSessionDetailDto(db, user, session, cls, caps, jwtSec
           room_status: refreshedSession.live_status === 'LIVE' ? 'LIVE' : refreshedSession.live_status === 'ENDED' ? 'ENDED' : room.room_status,
           supports_auto_sync: Boolean(room.supports_auto_sync),
           sync_notice: room.supports_auto_sync ? null : EXTERNAL_NO_SYNC_NOTICE,
-          provider_metadata: safeJson(room.provider_metadata_json, {}),
+          provider_metadata: detailMeta,
           updated_at: room.updated_at,
         }
       : null,
@@ -958,6 +970,10 @@ async function buildVirtualSessionDetailDto(db, user, session, cls, caps, jwtSec
         caps.can_take_attendance &&
         (!refreshedSession.attendance_locked_at || caps.can_lock_attendance),
       can_lock_attendance: caps.can_lock_attendance,
+      provider_live_api: {
+        ZOOM: Boolean(zoomCfg?.hasLiveApiCreds),
+        GOOGLE_MEET: Boolean(meetCfg?.hasLiveApiCreds),
+      },
     },
   };
 }
@@ -1341,7 +1357,7 @@ export function registerVirtualClassroomRoutes(route, { jwtSecret = resolveJwtSe
       }
       const externalPlatformName = text(normalizedBody, 'external_platform_name', { max: 100, label: 'tên nền tảng' }) ||
         (provider === 'ZOOM' ? 'Zoom Meeting' : provider === 'GOOGLE_MEET' ? 'Google Meet' : 'Microsoft Teams / Nền tảng ngoài');
-      const externalMeetingId = text(normalizedBody, 'external_meeting_id', { max: 80, label: 'mã phòng' }) || null;
+      const externalMeetingId = text(normalizedBody, 'external_meeting_id', { max: 80, label: 'mã phòng' }) || extractMeetingIdFromUrl(provider, joinUrl) || null;
       const passcode = text(normalizedBody, 'passcode', { max: 60, label: 'mật khẩu phòng' }) || null;
       const isRecurring = Boolean(body.is_recurring_room ?? body.is_recurring ?? recurringFromMode);
       // Nếu là link ngoài (EXTERNAL) hoặc không có mã phòng API của Zoom/Google Meet -> không giả lập đồng bộ tự động
@@ -1508,10 +1524,17 @@ export function registerVirtualClassroomRoutes(route, { jwtSecret = resolveJwtSe
     if (!/^https:\/\//i.test(nextUrl)) {
       fail(422, 'INVALID_MEETING_URL', 'Meeting URL phải bắt đầu bằng https://', { field: 'join_url' });
     }
+    const explicitMeetingId =
+      'external_meeting_id' in normalizedBody
+        ? (text(normalizedBody, 'external_meeting_id', { max: 80, label: 'mã phòng' }) || '').replace(/\s+/g, '')
+        : null;
+    const extractedMeetingId = extractMeetingIdFromUrl(nextProvider, nextUrl);
     const nextMeetingId =
       'external_meeting_id' in normalizedBody
-        ? (text(normalizedBody, 'external_meeting_id', { max: 80, label: 'mã phòng' }) || '').replace(/\s+/g, '') || null
-        : room.external_meeting_id;
+        ? explicitMeetingId || extractedMeetingId || null
+        : nextUrl !== room.join_url && extractedMeetingId
+          ? extractedMeetingId
+          : room.external_meeting_id;
     const nextPasscode =
       'passcode' in normalizedBody
         ? normalizedBody.passcode
@@ -1544,7 +1567,11 @@ export function registerVirtualClassroomRoutes(route, { jwtSecret = resolveJwtSe
           ? Boolean(normalizedBody.supports_auto_sync) ? 1 : 0
           : room.supports_auto_sync;
     const nextCreationMode =
-      nextProvider === 'EXTERNAL' ? 'MANUAL_LINK' : nextUrl !== room.join_url && room.creation_mode === 'AUTO_API' ? 'MANUAL_LINK' : room.creation_mode;
+      nextProvider === 'EXTERNAL' || normalizedBody.creation_mode === 'MANUAL_LINK'
+        ? 'MANUAL_LINK'
+        : nextUrl !== room.join_url && room.creation_mode === 'AUTO_API'
+          ? 'MANUAL_LINK'
+          : room.creation_mode;
     const prevMeta = safeJson(room.provider_metadata_json, {});
     const nextMeta = {
       ...prevMeta,
@@ -1644,6 +1671,7 @@ export function registerVirtualClassroomRoutes(route, { jwtSecret = resolveJwtSe
       live_started_at: session.live_started_at || nowVnStr,
       host_start_url: hostStartUrl,
       join_url: room.join_url,
+      is_sandbox_room: isSandboxVirtualRoom(room),
     };
   });
 
@@ -1753,6 +1781,7 @@ export function registerVirtualClassroomRoutes(route, { jwtSecret = resolveJwtSe
         (room.provider === 'ZOOM' ? 'Zoom Meeting' : room.provider === 'GOOGLE_MEET' ? 'Google Meet' : 'Phòng học trực tuyến'),
       external_meeting_id: room.external_meeting_id ? formatZoomMeetingId(room.external_meeting_id) : null,
       join_url: personalizedJoinUrl,
+      is_sandbox_room: isSandboxVirtualRoom(room),
       passcode,
       registrant_id: registrantId,
       lms_join_token: lmsJoinToken,

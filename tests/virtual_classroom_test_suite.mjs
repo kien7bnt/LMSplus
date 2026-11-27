@@ -529,6 +529,8 @@ await t('CASE-15', 'Giảng viên điều chỉnh kết quả điểm danh bắt
 await t('CASE-16', 'Cho phép chỉnh sửa trực tiếp link Zoom/phòng trực tuyến & giữ tương thích payload mode/MANUAL_LINK', async () => {
   // 16a. PATCH đổi link Zoom, tên phòng, Meeting ID, passcode trên phòng hiện có (giữ nguyên room.id)
   const before = expectStatus(await apiAsync('GET', `/sessions/${zoomSessionId}/virtual-room`, GV), 200);
+  assert.equal(before.room.is_sandbox_room, true, 'Phòng tạo bằng AUTO_API khi chưa có Live API phải gắn cờ is_sandbox_room');
+
   const customZoomUrl = 'https://us02web.zoom.us/j/89012345678?pwd=test';
   const patchRes = await apiAsync('PATCH', `/sessions/${zoomSessionId}/virtual-room`, GV, {
     provider: 'ZOOM',
@@ -542,26 +544,60 @@ await t('CASE-16', 'Cho phép chỉnh sửa trực tiếp link Zoom/phòng trự
   assert.equal(updated.room.join_url, customZoomUrl);
   assert.equal(updated.room.passcode, '654321');
   assert.equal(updated.room.raw_meeting_id, '89012345678');
+  assert.equal(updated.room.is_sandbox_room, false, 'Sau khi dán link Zoom thật qua PATCH, is_sandbox_room phải tắt');
 
   // Host Start URL cũng phải cập nhật theo link mới (không trỏ nhầm sang sandbox URL cũ)
   const hostStartRes = await apiAsync('POST', `/sessions/${zoomSessionId}/virtual-room/start`, GV);
   const hostData = expectStatus(hostStartRes, 200);
   assert.equal(hostData.host_start_url, customZoomUrl);
+  assert.equal(hostData.is_sandbox_room, false);
 
-  // 16b. Gắn link Zoom mới bằng POST với alias mode/room_name (giống form UI)
+  // 16b. Gắn link Zoom mới bằng POST với alias mode/room_name & tự trích xuất Meeting ID từ URL
   const manualZoomAttach = await apiAsync('POST', `/sessions/${externalSessionId}/virtual-room`, GV, {
     mode: 'EXTERNAL_LINK',
     provider: 'ZOOM',
     room_name: 'Phòng Zoom Nhập Tay 5A1',
-    join_url: 'https://zoom.us/j/9988776655',
-    meeting_code: '9988776655',
+    join_url: 'https://us05web.zoom.us/j/9988776655?pwd=real',
     passcode: '778899',
   });
   const attached = expectStatus(manualZoomAttach, 201);
   assert.equal(attached.room.provider, 'ZOOM');
   assert.equal(attached.room.creation_mode, 'MANUAL_LINK');
-  assert.equal(attached.room.join_url, 'https://zoom.us/j/9988776655');
+  assert.equal(attached.room.is_sandbox_room, false);
+  assert.equal(attached.room.raw_meeting_id, '9988776655', 'Phải tự trích xuất được Meeting ID từ link Zoom');
+  assert.equal(attached.room.join_url, 'https://us05web.zoom.us/j/9988776655?pwd=real');
   assert.equal(attached.room.passcode, '778899');
+
+  const joinManual = expectStatus(await apiAsync('POST', `/sessions/${externalSessionId}/virtual-room/join`, HS1), 200);
+  assert.equal(joinManual.is_sandbox_room, false);
+});
+
+// ---------------------------------------------------------------- Case 17: Cảnh báo link Sandbox để tránh lỗi Zoom 3.001
+await t('CASE-17', 'Trả về cờ is_sandbox_room & provider_live_api chính xác cho phòng Sandbox (tránh mở link giả 3.001)', async () => {
+  const sbSession = await apiAsync('POST', '/classes/sc_toan5_5a1/sessions', GV, {
+    title: 'Buổi học Sandbox test',
+    date: '2026-12-01',
+    start_time: '09:00',
+    end_time: '10:30',
+    delivery_mode: 'ONLINE',
+    virtual_room_config: {
+      room_option: 'CREATE_NEW',
+      provider: 'ZOOM',
+      room_title: 'Phòng Zoom Sandbox Test',
+    },
+  });
+  const sbCreated = expectStatus(sbSession, 201);
+  const sbSessionId = sbCreated.created_ids[0];
+
+  const detail = expectStatus(await apiAsync('GET', `/sessions/${sbSessionId}/virtual-room`, GV), 200);
+  assert.equal(detail.room.is_sandbox_room, true);
+  assert.equal(detail.capabilities.provider_live_api.ZOOM, false);
+
+  const startSb = expectStatus(await apiAsync('POST', `/sessions/${sbSessionId}/virtual-room/start`, GV), 200);
+  assert.equal(startSb.is_sandbox_room, true);
+
+  const joinSb = expectStatus(await apiAsync('POST', `/sessions/${sbSessionId}/virtual-room/join`, HS1), 200);
+  assert.equal(joinSb.is_sandbox_room, true);
 });
 
 console.log('----------------------------------------------------------------------');

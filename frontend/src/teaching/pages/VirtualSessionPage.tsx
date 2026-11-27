@@ -160,13 +160,21 @@ export const VirtualSessionPage: React.FC = () => {
     setBusyAction(true);
     try {
       const res = await teachingApi.joinVirtualRoom(sessionId);
-      toast({
-        tone: 'success',
-        title: `Đã cấp quyền vào phòng (${label('virtualProvider', res.provider)})`,
-        detail: `Đường dẫn: ${res.join_url}`,
-      });
-      if (res.join_url && typeof window !== 'undefined') {
-        window.open(res.join_url, '_blank', 'noopener,noreferrer');
+      if (res.is_sandbox_room || room?.is_sandbox_room) {
+        toast({
+          tone: 'info',
+          title: 'Đang dùng link mô phỏng Sandbox — không mở tab Zoom ngoài',
+          detail: 'Link tự sinh chưa gắn phòng Zoom thật nên mở trực tiếp sẽ báo lỗi 3.001. Nhấn "Chỉnh sửa link & phòng" để dán link thật.',
+        });
+      } else {
+        toast({
+          tone: 'success',
+          title: `Đã cấp quyền vào phòng (${label('virtualProvider', res.provider)})`,
+          detail: `Đường dẫn: ${res.join_url}`,
+        });
+        if (res.join_url && typeof window !== 'undefined') {
+          window.open(res.join_url, '_blank', 'noopener,noreferrer');
+        }
       }
       await loadData(true);
     } catch (e) {
@@ -180,13 +188,21 @@ export const VirtualSessionPage: React.FC = () => {
     setBusyAction(true);
     try {
       const res = await teachingApi.startVirtualRoomHost(sessionId);
-      toast({
-        tone: 'success',
-        title: 'Đã bắt đầu buổi học trực tuyến với quyền Host',
-        detail: `Trạng thái phòng học đã chuyển sang Đang diễn ra.`,
-      });
-      if (res.host_start_url && typeof window !== 'undefined') {
-        window.open(res.host_start_url, '_blank', 'noopener,noreferrer');
+      if (res.is_sandbox_room || room?.is_sandbox_room) {
+        toast({
+          tone: 'info',
+          title: 'Buổi học đã chuyển sang Đang diễn ra (chế độ Sandbox)',
+          detail: 'Chưa mở tab Zoom ngoài vì đây là link mô phỏng Sandbox (sẽ báo lỗi 3.001). Bấm "Chỉnh sửa link & phòng" để dán link Zoom/Meet thật.',
+        });
+      } else {
+        toast({
+          tone: 'success',
+          title: 'Đã bắt đầu buổi học trực tuyến với quyền Host',
+          detail: `Trạng thái phòng học đã chuyển sang Đang diễn ra.`,
+        });
+        if (res.host_start_url && typeof window !== 'undefined') {
+          window.open(res.host_start_url, '_blank', 'noopener,noreferrer');
+        }
       }
       await loadData(true);
     } catch (e) {
@@ -362,8 +378,24 @@ export const VirtualSessionPage: React.FC = () => {
         }
       />
 
-      {/* Cảnh báo rõ ràng khi nền tảng bên ngoài không hỗ trợ đồng bộ tự động */}
-      {room && !room.supports_auto_sync && (
+      {/* Cảnh báo rõ ràng khi phòng dùng link mô phỏng Sandbox hoặc nền tảng ngoài không đồng bộ tự động */}
+      {room && room.is_sandbox_room && (
+        <div className="t-notice t-notice--warning" role="status" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
+          <div style={{ flex: '1 1 360px' }}>
+            <strong>Phòng học đang dùng link mô phỏng (Sandbox) — Chưa kết nối Zoom/Meet API thật</strong>
+            <div style={{ marginTop: 4 }}>
+              Đường dẫn tự sinh ở chế độ Sandbox chỉ dùng để thử nghiệm trên LMSPLUS và <strong>không tồn tại trên máy chủ Zoom/Meet thật</strong> (mở trực tiếp sẽ báo lỗi <code>3.001</code>). Hãy bấm <em>Dán link Zoom / Meet thật</em> để thay bằng phòng họp thật của bạn.
+            </div>
+          </div>
+          {canManage && (
+            <Btn small variant="primary" onClick={() => setRoomModalOpen(true)}>
+              Dán link Zoom / Meet thật
+            </Btn>
+          )}
+        </div>
+      )}
+
+      {room && !room.is_sandbox_room && !room.supports_auto_sync && (
         <div className="t-notice t-notice--warning" role="status">
           <strong>Chưa hỗ trợ đồng bộ điểm danh tự động với nền tảng này</strong>
           <div style={{ marginTop: 4 }}>
@@ -426,6 +458,7 @@ export const VirtualSessionPage: React.FC = () => {
             room ? (
               <div className="t-actions">
                 <Badge kind="virtualProvider" value={room.provider} />
+                {room.is_sandbox_room && <Tone tone="warning">Link mô phỏng (Sandbox)</Tone>}
                 {room.is_recurring_room && <Tone tone="info">Phòng cố định nhiều buổi</Tone>}
               </div>
             ) : undefined
@@ -434,7 +467,7 @@ export const VirtualSessionPage: React.FC = () => {
           {!room ? (
             <EmptyState
               title="Buổi học chưa gắn phòng trực tuyến"
-              text="Tạo phòng Zoom, Google Meet tự động hoặc gắn link phòng họp có sẵn để học viên tham gia và đồng bộ điểm danh."
+              text="Dán link Zoom, Google Meet có sẵn (hoặc tạo phòng mô phỏng / API) để học viên tham gia và theo dõi buổi học."
               action={
                 canManage && (
                   <Btn variant="primary" onClick={() => setRoomModalOpen(true)}>
@@ -474,9 +507,18 @@ export const VirtualSessionPage: React.FC = () => {
                 </dd>
                 <dt>Link tham gia</dt>
                 <dd style={{ wordBreak: 'break-all' }}>
-                  <a href={room.join_url} target="_blank" rel="noopener noreferrer" className="t-row-link">
-                    {room.join_url}
-                  </a>
+                  {room.is_sandbox_room ? (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                      <code style={{ fontFamily: 'var(--font-mono)', fontSize: 13 }}>{room.join_url}</code>
+                      <span className="t-sub">
+                        Link mô phỏng Sandbox (mở trực tiếp trên Zoom sẽ báo lỗi 3.001 — cần thay bằng link thật).
+                      </span>
+                    </div>
+                  ) : (
+                    <a href={room.join_url} target="_blank" rel="noopener noreferrer" className="t-row-link">
+                      {room.join_url}
+                    </a>
+                  )}
                 </dd>
               </dl>
 
@@ -484,11 +526,11 @@ export const VirtualSessionPage: React.FC = () => {
                 <Btn small variant="secondary" onClick={handleCopyJoinUrl}>
                   Sao chép link
                 </Btn>
-                <Btn small variant="primary" onClick={handleJoinRoom} loading={busyAction}>
+                <Btn small variant={room.is_sandbox_room ? 'secondary' : 'primary'} onClick={handleJoinRoom} loading={busyAction}>
                   Tham gia phòng
                 </Btn>
                 {canManage && (
-                  <Btn small variant="secondary" onClick={() => setRoomModalOpen(true)}>
+                  <Btn small variant={room.is_sandbox_room ? 'primary' : 'secondary'} onClick={() => setRoomModalOpen(true)}>
                     Chỉnh sửa link &amp; phòng
                   </Btn>
                 )}
@@ -1029,6 +1071,7 @@ export const VirtualSessionPage: React.FC = () => {
           sessionId={sessionId}
           sessionTitle={session.title}
           currentRoom={room}
+          liveApiStatus={data.capabilities.provider_live_api}
           onClose={() => setRoomModalOpen(false)}
           onSaved={() => {
             setRoomModalOpen(false);

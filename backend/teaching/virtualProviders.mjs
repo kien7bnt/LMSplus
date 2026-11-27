@@ -734,6 +734,38 @@ export class ExternalLinkProviderAdapter {
   }
 }
 
+export function isSandboxVirtualRoom(room) {
+  if (!room) return false;
+  if (room.creation_mode === 'MANUAL_LINK' || room.creation_mode === 'REUSED_ROOM') return false;
+  if (room.creation_mode !== 'AUTO_API') return false;
+  let meta = {};
+  try {
+    meta =
+      typeof room.provider_metadata_json === 'string'
+        ? JSON.parse(room.provider_metadata_json || '{}') || {}
+        : room.provider_metadata || {};
+  } catch {
+    meta = {};
+  }
+  if (meta.mode === 'LIVE_API') return false;
+  return meta.mode === 'SANDBOX_ADAPTER' || !meta.mode;
+}
+
+export function extractMeetingIdFromUrl(provider, joinUrl) {
+  const url = String(joinUrl || '').trim();
+  if (!url) return null;
+  const normProvider = String(provider || '').toUpperCase();
+  if (normProvider === 'ZOOM' || /zoom\.us/i.test(url)) {
+    const m = url.match(/zoom\.us\/(?:j|wc|s|w)\/(\d{9,11})/i);
+    if (m) return m[1];
+  }
+  if (normProvider === 'GOOGLE_MEET' || /meet\.google\.com/i.test(url)) {
+    const m = url.match(/meet\.google\.com\/([a-z]{3}-[a-z]{4}-[a-z]{3})/i);
+    if (m) return m[1].toLowerCase();
+  }
+  return null;
+}
+
 export function createProviderAdapter(provider, context = {}) {
   const norm = String(provider || 'ZOOM').toUpperCase();
   if (norm === 'ZOOM') return new ZoomProviderAdapter(context);

@@ -103,13 +103,21 @@ export const SchedulePage: React.FC<{ studentMode?: boolean }> = ({ studentMode 
     setJoiningId(s.id);
     try {
       const res = await teachingApi.joinVirtualRoom(s.id);
-      toast({
-        tone: 'success',
-        title: `Đã tham gia lớp học trực tuyến (${label('virtualProvider', res.provider)})`,
-        detail: res.join_url,
-      });
-      if (res.join_url && typeof window !== 'undefined') {
-        window.open(res.join_url, '_blank', 'noopener,noreferrer');
+      if (res.is_sandbox_room) {
+        toast({
+          tone: 'info',
+          title: 'Phòng học đang ở chế độ mô phỏng (Sandbox)',
+          detail: 'Link tự sinh chưa gắn phòng Zoom/Meet thật (mở trực tiếp sẽ báo lỗi 3.001). Nhờ giảng viên dán link phòng thật để tham gia.',
+        });
+      } else {
+        toast({
+          tone: 'success',
+          title: `Đã tham gia lớp học trực tuyến (${label('virtualProvider', res.provider)})`,
+          detail: res.join_url,
+        });
+        if (res.join_url && typeof window !== 'undefined') {
+          window.open(res.join_url, '_blank', 'noopener,noreferrer');
+        }
       }
     } catch (err) {
       toast({ tone: 'error', title: 'Không thể tham gia phòng học', detail: errMsg(err) });

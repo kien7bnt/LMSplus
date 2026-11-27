@@ -590,6 +590,8 @@ export interface VirtualRoomSummary {
   provider: VirtualProviderType;
   external_platform_name: string;
   creation_mode: 'AUTO_API' | 'MANUAL_LINK' | 'REUSED_ROOM';
+  is_sandbox_room?: boolean;
+  provider_mode?: string;
   is_recurring_room: boolean;
   room_title: string;
   external_meeting_id: string | null;
@@ -715,6 +717,8 @@ export interface VirtualSessionDetail {
     provider: VirtualProviderType;
     external_platform_name: string;
     creation_mode: string;
+    is_sandbox_room?: boolean;
+    provider_mode?: string;
     is_recurring_room: boolean;
     room_title: string;
     external_meeting_id: string | null;
@@ -747,6 +751,10 @@ export interface VirtualSessionDetail {
     can_adjust_attendance: boolean;
     can_confirm_attendance: boolean;
     can_lock_attendance: boolean;
+    provider_live_api?: {
+      ZOOM: boolean;
+      GOOGLE_MEET: boolean;
+    };
   };
 }
 
@@ -759,6 +767,7 @@ export interface VirtualJoinResult {
   external_platform_name: string;
   external_meeting_id: string | null;
   join_url: string;
+  is_sandbox_room?: boolean;
   passcode: string | null;
   registrant_id: string | null;
   lms_join_token: string | null;

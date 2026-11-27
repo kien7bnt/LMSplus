@@ -23,6 +23,7 @@ import {
   encryptSecret,
   decryptJsonCredentials,
   createProviderAdapter,
+  extractMeetingIdFromUrl,
 } from './virtualProviders.mjs';
 
 const CLASS_CODE_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$/;
@@ -804,7 +805,7 @@ export function registerClassRoutes(route) {
           if (!/^https:\/\//i.test(joinUrl)) {
             fail(422, 'INVALID_MEETING_URL', 'Đường dẫn phòng học phải bắt đầu bằng https://.', { field: 'join_url' });
           }
-          const extId = text(normalizedVcfg, 'external_meeting_id', { max: 80, label: 'mã phòng' }) || null;
+          const extId = text(normalizedVcfg, 'external_meeting_id', { max: 80, label: 'mã phòng' }) || extractMeetingIdFromUrl(provider, joinUrl) || null;
           const extPlatformName = text(normalizedVcfg, 'external_platform_name', { max: 100, label: 'tên nền tảng' }) ||
             (provider === 'ZOOM' ? 'Zoom Meeting' : provider === 'GOOGLE_MEET' ? 'Google Meet' : 'Microsoft Teams / Nền tảng ngoài');
           const supportsSync = provider !== 'EXTERNAL' && Boolean(extId) && Boolean(vcfg.supports_auto_sync);
@@ -815,7 +816,7 @@ export function registerClassRoutes(route) {
                  is_recurring_room, room_title, external_meeting_id, join_url,
                  encrypted_host_start_url, encrypted_passcode, scheduled_start_at, scheduled_end_at,
                  room_status, supports_auto_sync, provider_metadata_json, created_by, created_at, updated_at
-               ) VALUES (?, ?, ?, ?, ?, 'MANUAL_LINK', ?, ?, ?, ?, NULL, ?, ?, ?, 'SCHEDULED', ?, ?, ?, ?, ?)`
+               ) VALUES (?, ?, ?, ?, ?, 'MANUAL_LINK', ?, ?, ?, ?, ?, ?, ?, ?, 'SCHEDULED', ?, ?, ?, ?, ?)`
             ).run(
               roomId,
               cls.id,
@@ -826,6 +827,7 @@ export function registerClassRoutes(route) {
               roomTitle,
               extId ? extId.replace(/\s+/g, '') : null,
               joinUrl,
+              provider === 'EXTERNAL' ? null : encryptSecret(joinUrl),
               passcode ? encryptSecret(passcode) : null,
               firstSession.scheduled_start_at,
               firstSession.scheduled_end_at,

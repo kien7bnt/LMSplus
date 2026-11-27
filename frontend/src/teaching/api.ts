@@ -390,7 +390,14 @@ export const teachingApi = {
   deleteVirtualRoom: (sessionId: string) =>
     send<{ detached: boolean; session_id: string }>('DELETE', `/sessions/${sessionId}/virtual-room`),
   startVirtualRoomHost: (sessionId: string) =>
-    send<{ session_id: string; live_status: string; live_started_at: string; host_start_url: string; join_url: string }>(
+    send<{
+      session_id: string;
+      live_status: string;
+      live_started_at: string;
+      host_start_url: string;
+      join_url: string;
+      is_sandbox_room?: boolean;
+    }>(
       'POST',
       `/sessions/${sessionId}/virtual-room/start`
     ),

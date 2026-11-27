@@ -33,6 +33,7 @@ export const StudentHomePage: React.FC = () => {
     meeting_code: string | null;
     passcode: string | null;
     lms_join_token: string | null;
+    is_sandbox_room?: boolean;
   } | null>(null);
 
   const handleJoinOnline = async (sessionId: string, sessionTitle: string) => {
@@ -46,14 +47,23 @@ export const StudentHomePage: React.FC = () => {
         meeting_code: res.external_meeting_id,
         passcode: res.passcode,
         lms_join_token: res.lms_join_token,
+        is_sandbox_room: Boolean(res.is_sandbox_room),
       });
-      toast({
-        tone: 'success',
-        title: 'Đã ghi nhận tham gia lớp học trực tuyến',
-        detail: `Hệ thống đã gắn mã định danh điểm danh tự động cho tài khoản của bạn.`,
-      });
-      if (res.join_url && typeof window !== 'undefined') {
-        window.open(res.join_url, '_blank', 'noopener,noreferrer');
+      if (res.is_sandbox_room) {
+        toast({
+          tone: 'info',
+          title: 'Phòng học đang dùng link mô phỏng (Sandbox)',
+          detail: 'Không tự mở Zoom vì link Sandbox chưa nối phòng thật (lỗi 3.001).',
+        });
+      } else {
+        toast({
+          tone: 'success',
+          title: 'Đã ghi nhận tham gia lớp học trực tuyến',
+          detail: `Hệ thống đã gắn mã định danh điểm danh tự động cho tài khoản của bạn.`,
+        });
+        if (res.join_url && typeof window !== 'undefined') {
+          window.open(res.join_url, '_blank', 'noopener,noreferrer');
+        }
       }
     } catch (err) {
       toast({ tone: 'error', title: 'Không thể vào phòng trực tuyến', detail: errMsg(err) });
@@ -527,21 +537,29 @@ export const StudentHomePage: React.FC = () => {
           footer={
             <>
               <Btn variant="ghost" onClick={() => setJoinResult(null)}>Đóng</Btn>
-              <a
-                href={joinResult.join_url}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="t-btn t-btn--primary"
-              >
-                Mở phòng họp ({label('virtualProvider', joinResult.provider)})
-              </a>
+              {!joinResult.is_sandbox_room && (
+                <a
+                  href={joinResult.join_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="t-btn t-btn--primary"
+                >
+                  Mở phòng họp ({label('virtualProvider', joinResult.provider)})
+                </a>
+              )}
             </>
           }
         >
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-            <div className="t-notice">
-              Hệ thống đã ghi nhận lượt tham gia của bạn và gắn mã định danh điểm danh tự động.
-            </div>
+            {joinResult.is_sandbox_room ? (
+              <div className="t-notice t-notice--warning">
+                Phòng học này đang dùng link mô phỏng (Sandbox) nên chưa mở được trên Zoom/Meet thật (sẽ báo lỗi 3.001). Vui lòng liên hệ giảng viên để cập nhật link phòng học thật.
+              </div>
+            ) : (
+              <div className="t-notice">
+                Hệ thống đã ghi nhận lượt tham gia của bạn và gắn mã định danh điểm danh tự động.
+              </div>
+            )}
             <dl className="t-dl">
               <dt>Nền tảng</dt>
               <dd><Badge kind="virtualProvider" value={joinResult.provider} /></dd>
@@ -551,9 +569,13 @@ export const StudentHomePage: React.FC = () => {
               <dd className="tabular-nums" style={{ fontFamily: 'var(--font-mono)', fontWeight: 700 }}>{joinResult.passcode || 'Không yêu cầu'}</dd>
               <dt>Link tham gia</dt>
               <dd style={{ wordBreak: 'break-all' }}>
-                <a href={joinResult.join_url} target="_blank" rel="noopener noreferrer" className="t-row-link">
-                  {joinResult.join_url}
-                </a>
+                {joinResult.is_sandbox_room ? (
+                  <code style={{ fontFamily: 'var(--font-mono)', fontSize: 13 }}>{joinResult.join_url}</code>
+                ) : (
+                  <a href={joinResult.join_url} target="_blank" rel="noopener noreferrer" className="t-row-link">
+                    {joinResult.join_url}
+                  </a>
+                )}
               </dd>
             </dl>
           </div>
@@ -596,13 +618,21 @@ export const StudentClassPage: React.FC = () => {
     setJoiningSessionId(sessionId);
     try {
       const res = await teachingApi.joinVirtualRoom(sessionId);
-      toast({
-        tone: 'success',
-        title: `Đã kết nối phòng học (${label('virtualProvider', res.provider)})`,
-        detail: `Đường dẫn: ${res.join_url}`,
-      });
-      if (res.join_url && typeof window !== 'undefined') {
-        window.open(res.join_url, '_blank', 'noopener,noreferrer');
+      if (res.is_sandbox_room) {
+        toast({
+          tone: 'info',
+          title: 'Phòng học đang ở chế độ mô phỏng (Sandbox)',
+          detail: 'Không mở tab Zoom ngoài vì đây là link thử nghiệm (lỗi 3.001). Nhờ giảng viên gắn link Zoom/Meet thật để vào lớp.',
+        });
+      } else {
+        toast({
+          tone: 'success',
+          title: `Đã kết nối phòng học (${label('virtualProvider', res.provider)})`,
+          detail: `Đường dẫn: ${res.join_url}`,
+        });
+        if (res.join_url && typeof window !== 'undefined') {
+          window.open(res.join_url, '_blank', 'noopener,noreferrer');
+        }
       }
       detailReq.reload();
     } catch (err) {
