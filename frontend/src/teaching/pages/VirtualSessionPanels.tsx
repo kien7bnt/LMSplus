@@ -37,6 +37,20 @@ export const VIRTUAL_STATUS_OPTIONS: Array<{ value: VirtualAttendanceStatus; lab
 
 // ------------------------------------------------------------------ Sub-components & Modals
 
+type RoomConfigMode = 'EDIT_CURRENT' | 'EXTERNAL_LINK' | 'CREATE_NEW' | 'RECURRING_CLASS' | 'REUSE_EXISTING';
+
+const DEFAULT_PLATFORM_NAMES: Record<VirtualProviderType, string> = {
+  ZOOM: 'Zoom Meeting',
+  GOOGLE_MEET: 'Google Meet',
+  EXTERNAL: 'Microsoft Teams',
+};
+
+function urlPlaceholderForProvider(p: VirtualProviderType): string {
+  if (p === 'ZOOM') return 'https://us02web.zoom.us/j/89012345678';
+  if (p === 'GOOGLE_MEET') return 'https://meet.google.com/abc-defg-hij';
+  return 'https://teams.microsoft.com/l/meetup-join/...';
+}
+
 export const ConfigureVirtualRoomModal: React.FC<{
   classId: string;
   sessionId: string;
@@ -46,15 +60,16 @@ export const ConfigureVirtualRoomModal: React.FC<{
   onSaved: () => void;
 }> = ({ classId, sessionId, sessionTitle, currentRoom, onClose, onSaved }) => {
   const toast = useToast();
-  const [mode, setMode] = useState<'CREATE_NEW' | 'REUSE_EXISTING' | 'RECURRING_CLASS' | 'EXTERNAL_LINK'>(
-    currentRoom?.provider === 'EXTERNAL' ? 'EXTERNAL_LINK' : 'CREATE_NEW'
-  );
+  const [mode, setMode] = useState<RoomConfigMode>(currentRoom ? 'EDIT_CURRENT' : 'CREATE_NEW');
   const [provider, setProvider] = useState<VirtualProviderType>(currentRoom?.provider || 'ZOOM');
   const [roomName, setRoomName] = useState(currentRoom?.room_title || sessionTitle);
   const [joinUrl, setJoinUrl] = useState(currentRoom?.join_url || '');
-  const [meetingCode, setMeetingCode] = useState(currentRoom?.external_meeting_id || '');
+  const [meetingCode, setMeetingCode] = useState(currentRoom?.raw_meeting_id || currentRoom?.external_meeting_id || '');
   const [passcode, setPasscode] = useState(currentRoom?.passcode || '');
-  const [externalPlatformName, setExternalPlatformName] = useState(currentRoom?.external_platform_name || 'Microsoft Teams');
+  const [externalPlatformName, setExternalPlatformName] = useState(
+    currentRoom?.external_platform_name || DEFAULT_PLATFORM_NAMES[currentRoom?.provider || 'EXTERNAL']
+  );
+  const [isRecurringRoom, setIsRecurringRoom] = useState(Boolean(currentRoom?.is_recurring_room));
   const [existingRoomId, setExistingRoomId] = useState('');
   const [busy, setBusy] = useState(false);
   const [existingRooms, setExistingRooms] = useState<
@@ -76,31 +91,100 @@ export const ConfigureVirtualRoomModal: React.FC<{
       .classVirtualRooms(classId)
       .then((r) => {
         setExistingRooms(r.items);
-        if (r.items[0] && !existingRoomId) setExistingRoomId(r.items[0].id);
+        setExistingRoomId((prev) => prev || r.items[0]?.id || '');
       })
       .catch(() => {});
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [classId]);
+
+  const handleModeChange = (nextMode: RoomConfigMode) => {
+    setMode(nextMode);
+    if ((nextMode === 'CREATE_NEW' || nextMode === 'RECURRING_CLASS') && provider === 'EXTERNAL') {
+      setProvider('ZOOM');
+    }
+    if (nextMode === 'EDIT_CURRENT' && currentRoom) {
+      setProvider(currentRoom.provider);
+      setRoomName(currentRoom.room_title);
+      setJoinUrl(currentRoom.join_url);
+      setMeetingCode(currentRoom.raw_meeting_id || currentRoom.external_meeting_id || '');
+      setPasscode(currentRoom.passcode || '');
+      setExternalPlatformName(currentRoom.external_platform_name || DEFAULT_PLATFORM_NAMES[currentRoom.provider]);
+      setIsRecurringRoom(Boolean(currentRoom.is_recurring_room));
+    }
+  };
+
+  const handleProviderChange = (nextProvider: VirtualProviderType) => {
+    setProvider(nextProvider);
+    if (!externalPlatformName.trim() || Object.values(DEFAULT_PLATFORM_NAMES).includes(externalPlatformName.trim())) {
+      setExternalPlatformName(DEFAULT_PLATFORM_NAMES[nextProvider]);
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if ((mode === 'EDIT_CURRENT' || mode === 'EXTERNAL_LINK') && !/^https:\/\//i.test(joinUrl.trim())) {
+      toast({
+        tone: 'error',
+        title: 'Đường dẫn phòng học chưa hợp lệ',
+        detail: 'Vui lòng nhập đầy đủ link bắt đầu bằng https:// (vd: https://zoom.us/j/...).',
+      });
+      return;
+    }
+    if (mode === 'REUSE_EXISTING' && !existingRoomId) {
+      toast({ tone: 'error', title: 'Vui lòng chọn một phòng họp đã tạo của lớp' });
+      return;
+    }
+
     setBusy(true);
     try {
-      await teachingApi.createVirtualRoom(sessionId, {
-        mode,
-        provider: mode === 'EXTERNAL_LINK' ? 'EXTERNAL' : provider,
-        room_name: roomName.trim() || sessionTitle,
-        existing_room_id: mode === 'REUSE_EXISTING' ? existingRoomId : undefined,
-        join_url: mode === 'EXTERNAL_LINK' ? joinUrl.trim() : undefined,
-        meeting_code: mode === 'EXTERNAL_LINK' ? meetingCode.trim() : undefined,
-        passcode: passcode.trim() || undefined,
-        external_platform_name: mode === 'EXTERNAL_LINK' ? externalPlatformName.trim() : undefined,
-        is_recurring: mode === 'RECURRING_CLASS',
-      });
-      toast({ tone: 'success', title: 'Đã thiết lập phòng học trực tuyến cho buổi học' });
+      if (mode === 'EDIT_CURRENT' && currentRoom) {
+        await teachingApi.updateVirtualRoom(sessionId, {
+          provider,
+          external_platform_name:
+            provider === 'EXTERNAL'
+              ? externalPlatformName.trim() || 'Microsoft Teams / Nền tảng ngoài'
+              : DEFAULT_PLATFORM_NAMES[provider],
+          room_title: roomName.trim() || sessionTitle,
+          join_url: joinUrl.trim(),
+          external_meeting_id: meetingCode.trim(),
+          passcode: passcode.trim(),
+          is_recurring_room: isRecurringRoom,
+        });
+        toast({ tone: 'success', title: 'Đã cập nhật link & cấu hình phòng học trực tuyến' });
+      } else if (mode === 'EXTERNAL_LINK') {
+        await teachingApi.createVirtualRoom(sessionId, {
+          creation_mode: 'MANUAL_LINK',
+          provider,
+          room_title: roomName.trim() || sessionTitle,
+          join_url: joinUrl.trim(),
+          external_meeting_id: meetingCode.trim() || undefined,
+          passcode: passcode.trim() || undefined,
+          external_platform_name:
+            provider === 'EXTERNAL'
+              ? externalPlatformName.trim() || 'Microsoft Teams / Nền tảng ngoài'
+              : DEFAULT_PLATFORM_NAMES[provider],
+          is_recurring_room: isRecurringRoom,
+        });
+        toast({ tone: 'success', title: 'Đã gắn link phòng học trực tuyến cho buổi học' });
+      } else if (mode === 'REUSE_EXISTING') {
+        await teachingApi.createVirtualRoom(sessionId, {
+          creation_mode: 'REUSED_ROOM',
+          reuse_room_id: existingRoomId,
+        });
+        toast({ tone: 'success', title: 'Đã sử dụng lại phòng họp đã tạo của lớp' });
+      } else {
+        const autoProvider: VirtualProviderType = provider === 'GOOGLE_MEET' ? 'GOOGLE_MEET' : 'ZOOM';
+        await teachingApi.createVirtualRoom(sessionId, {
+          creation_mode: 'AUTO_API',
+          provider: autoProvider,
+          room_title: roomName.trim() || sessionTitle,
+          passcode: passcode.trim() || undefined,
+          is_recurring_room: mode === 'RECURRING_CLASS',
+        });
+        toast({ tone: 'success', title: 'Đã tạo & gắn phòng học trực tuyến cho buổi học' });
+      }
       onSaved();
     } catch (err) {
-      toast({ tone: 'error', title: 'Không thể thiết lập phòng học', detail: errMsg(err) });
+      toast({ tone: 'error', title: 'Không thể lưu cấu hình phòng học', detail: errMsg(err) });
     } finally {
       setBusy(false);
     }
@@ -114,28 +198,33 @@ export const ConfigureVirtualRoomModal: React.FC<{
       footer={
         <>
           <Btn variant="ghost" onClick={onClose} disabled={busy}>Hủy</Btn>
-          <Btn variant="primary" onClick={handleSubmit} loading={busy}>Lưu cấu hình phòng</Btn>
+          <Btn variant="primary" onClick={handleSubmit} loading={busy}>
+            {mode === 'EDIT_CURRENT' ? 'Lưu thay đổi phòng' : 'Lưu cấu hình phòng'}
+          </Btn>
         </>
       }
     >
       <form onSubmit={handleSubmit} className="t-form-grid">
-        <Field label="Chế độ khởi tạo phòng họp" wide>
+        <Field label="Chế độ thiết lập phòng họp" wide>
           <select
             className="t-input"
             value={mode}
-            onChange={(e) => setMode(e.target.value as typeof mode)}
+            onChange={(e) => handleModeChange(e.target.value as RoomConfigMode)}
           >
+            {currentRoom && (
+              <option value="EDIT_CURRENT">Chỉnh sửa link &amp; thông tin phòng hiện tại</option>
+            )}
+            <option value="EXTERNAL_LINK">Nhập / Gắn link phòng có sẵn (Zoom / Google Meet / Teams)</option>
             <option value="CREATE_NEW">Tạo phòng họp mới tự động qua API (Zoom / Google Meet)</option>
             <option value="RECURRING_CLASS">Tạo phòng cố định dùng chung cho nhiều buổi của lớp</option>
             <option value="REUSE_EXISTING">Sử dụng lại phòng họp đã tạo của lớp</option>
-            <option value="EXTERNAL_LINK">Nhập link phòng họp bên ngoài có sẵn (Thủ công)</option>
           </select>
         </Field>
 
         {mode === 'REUSE_EXISTING' ? (
           <Field label="Chọn phòng họp đã tạo của lớp" wide required>
             {existingRooms.length === 0 ? (
-              <div className="t-notice">Lớp chưa có phòng họp nào được lưu trước đó. Hãy chọn Tạo phòng mới.</div>
+              <div className="t-notice">Lớp chưa có phòng họp nào được lưu trước đó. Hãy chọn Nhập link có sẵn hoặc Tạo phòng mới.</div>
             ) : (
               <select className="t-input" value={existingRoomId} onChange={(e) => setExistingRoomId(e.target.value)}>
                 {existingRooms.map((r) => (
@@ -146,46 +235,70 @@ export const ConfigureVirtualRoomModal: React.FC<{
               </select>
             )}
           </Field>
-        ) : mode === 'EXTERNAL_LINK' ? (
+        ) : mode === 'EDIT_CURRENT' || mode === 'EXTERNAL_LINK' ? (
           <>
-            <div className="t-notice t-notice--warning t-field--wide">
-              <strong>Lưu ý:</strong> Với link phòng học bên ngoài không kết nối API, hệ thống sẽ hiển thị rõ:{' '}
-              <em>"Chưa hỗ trợ đồng bộ điểm danh tự động với nền tảng này"</em> và không giả lập dữ liệu tham gia.
-            </div>
-            <Field label="Tên phòng học" required>
+            {provider === 'EXTERNAL' && (
+              <div className="t-notice t-notice--warning t-field--wide">
+                <strong>Lưu ý:</strong> Với link nền tảng bên ngoài không kết nối API, hệ thống hiển thị rõ{' '}
+                <em>"Chưa hỗ trợ đồng bộ điểm danh tự động với nền tảng này"</em> và không giả lập dữ liệu tham gia.
+              </div>
+            )}
+            <Field label="Nền tảng họp trực tuyến" required>
+              <select className="t-input" value={provider} onChange={(e) => handleProviderChange(e.target.value as VirtualProviderType)}>
+                <option value="ZOOM">Zoom Meeting</option>
+                <option value="GOOGLE_MEET">Google Meet</option>
+                <option value="EXTERNAL">Nền tảng ngoài (Teams, Webex, Jitsi…)</option>
+              </select>
+            </Field>
+            <Field label="Tên phòng học trực tuyến" required>
               <input className="t-input" value={roomName} onChange={(e) => setRoomName(e.target.value)} required />
             </Field>
-            <Field label="Nền tảng bên ngoài" required>
-              <input
-                className="t-input"
-                value={externalPlatformName}
-                onChange={(e) => setExternalPlatformName(e.target.value)}
-                placeholder="vd: Microsoft Teams, Webex, Jitsi…"
-              />
-            </Field>
-            <Field label="Meeting URL (Đường dẫn tham gia)" wide required>
+            {provider === 'EXTERNAL' && (
+              <Field label="Tên nền tảng bên ngoài" wide required>
+                <input
+                  className="t-input"
+                  value={externalPlatformName}
+                  onChange={(e) => setExternalPlatformName(e.target.value)}
+                  placeholder="vd: Microsoft Teams, Webex, Jitsi…"
+                />
+              </Field>
+            )}
+            <Field
+              label="Link phòng học (Zoom / Google Meet / Meeting URL)"
+              wide
+              required
+              hint="Dán đường dẫn tham gia trực tiếp bắt đầu bằng https://; học viên bấm Tham gia phòng sẽ mở đúng link này."
+            >
               <input
                 className="t-input"
                 type="url"
                 value={joinUrl}
                 onChange={(e) => setJoinUrl(e.target.value)}
-                placeholder="https://teams.microsoft.com/l/meetup-join/..."
+                placeholder={urlPlaceholderForProvider(provider)}
                 required
               />
             </Field>
             <Field label="Mã phòng (Meeting ID)">
-              <input className="t-input tabular-nums" value={meetingCode} onChange={(e) => setMeetingCode(e.target.value)} />
+              <input className="t-input tabular-nums" value={meetingCode} onChange={(e) => setMeetingCode(e.target.value)} placeholder="vd: 890 1234 5678" />
             </Field>
-            <Field label="Mật khẩu phòng (nếu có)">
-              <input className="t-input tabular-nums" value={passcode} onChange={(e) => setPasscode(e.target.value)} />
+            <Field label="Mật khẩu phòng (Passcode)" hint="Để trống nếu phòng không yêu cầu mật khẩu.">
+              <input className="t-input tabular-nums" value={passcode} onChange={(e) => setPasscode(e.target.value)} placeholder="Tùy chọn" />
             </Field>
+            <label className="t-field--wide" style={{ display: 'flex', alignItems: 'center', gap: 8, minHeight: 44, cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={isRecurringRoom}
+                onChange={(e) => setIsRecurringRoom(e.target.checked)}
+              />
+              <span>Đặt làm phòng họp cố định cho các buổi của lớp</span>
+            </label>
           </>
         ) : (
           <>
             <Field label="Nền tảng họp trực tuyến" required>
-              <select className="t-input" value={provider} onChange={(e) => setProvider(e.target.value as VirtualProviderType)}>
+              <select className="t-input" value={provider === 'GOOGLE_MEET' ? 'GOOGLE_MEET' : 'ZOOM'} onChange={(e) => handleProviderChange(e.target.value as VirtualProviderType)}>
                 <option value="ZOOM">Zoom Meeting (Ưu tiên — REST API + Webhook)</option>
-                <option value="GOOGLE_MEET">Google Meet (Spaces & Conference Records)</option>
+                <option value="GOOGLE_MEET">Google Meet (Spaces &amp; Conference Records)</option>
               </select>
             </Field>
             <Field label="Tên phòng học trực tuyến" required>

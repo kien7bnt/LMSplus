@@ -1292,16 +1292,31 @@ export function registerVirtualClassroomRoutes(route, { jwtSecret = resolveJwtSe
   // 6. Tạo mới / Gắn phòng học trực tuyến cho buổi học
   route('POST', '/sessions/:id/virtual-room', async ({ db, user, params, body, log }) => {
     const { session, cls, caps } = await requireSession(db, user, params.id, 'can_manage_sessions');
-    const mode = oneOf(body, 'creation_mode', ['AUTO_API', 'MANUAL_LINK', 'REUSED_ROOM'], {
-      fallback: 'AUTO_API',
-      label: 'chế độ tạo phòng',
-    });
+    const rawMode = String(body.creation_mode || body.mode || body.room_option || 'AUTO_API').trim().toUpperCase();
+    let mode = 'AUTO_API';
+    let recurringFromMode = false;
+    if (rawMode === 'REUSED_ROOM' || rawMode === 'REUSE_EXISTING') {
+      mode = 'REUSED_ROOM';
+    } else if (rawMode === 'MANUAL_LINK' || rawMode === 'EXTERNAL_LINK') {
+      mode = 'MANUAL_LINK';
+    } else if (rawMode === 'RECURRING_CLASS' || rawMode === 'RECURRING_ROOM') {
+      mode = 'AUTO_API';
+      recurringFromMode = true;
+    } else if (rawMode === 'AUTO_API' || rawMode === 'CREATE_NEW') {
+      mode = 'AUTO_API';
+    } else {
+      fail(422, 'INVALID_CHOICE', 'chế độ tạo phòng không nằm trong danh sách cho phép.');
+    }
 
     const now = nowIso();
     let roomId = null;
 
     if (mode === 'REUSED_ROOM') {
-      const targetRoomId = text(body, 'reuse_room_id', { required: true, max: 80, label: 'mã phòng sẵn có' });
+      const reuseBody = {
+        ...body,
+        reuse_room_id: body.reuse_room_id ?? body.existing_room_id,
+      };
+      const targetRoomId = text(reuseBody, 'reuse_room_id', { required: true, max: 80, label: 'mã phòng sẵn có' });
       const existingRoom = await db
         .prepare('SELECT * FROM virtual_meeting_rooms WHERE id = ? AND subject_class_id = ?')
         .get(targetRoomId, cls.id);
@@ -1313,17 +1328,22 @@ export function registerVirtualClassroomRoutes(route, { jwtSecret = resolveJwtSe
          WHERE session_id = ?`
       ).run(existingRoom.id, `${existingRoom.provider === 'ZOOM' ? 'Zoom' : existingRoom.provider === 'GOOGLE_MEET' ? 'Google Meet' : existingRoom.external_platform_name || 'Online'} · ${existingRoom.external_meeting_id ? formatZoomMeetingId(existingRoom.external_meeting_id) : existingRoom.room_title}`, session.session_id);
     } else if (mode === 'MANUAL_LINK') {
-      const provider = oneOf(body, 'provider', VIRTUAL_PROVIDERS, { fallback: 'EXTERNAL', label: 'nền tảng' });
-      const roomTitle = text(body, 'room_title', { max: 200, label: 'tên phòng' }) || session.session_title;
-      const joinUrl = text(body, 'join_url', { required: true, max: 500, label: 'Meeting URL' });
+      const normalizedBody = {
+        ...body,
+        room_title: body.room_title ?? body.room_name,
+        external_meeting_id: body.external_meeting_id ?? body.meeting_code,
+      };
+      const provider = oneOf(normalizedBody, 'provider', VIRTUAL_PROVIDERS, { fallback: 'EXTERNAL', label: 'nền tảng' });
+      const roomTitle = text(normalizedBody, 'room_title', { max: 200, label: 'tên phòng' }) || session.session_title;
+      const joinUrl = text(normalizedBody, 'join_url', { required: true, max: 500, label: 'Meeting URL' });
       if (!/^https:\/\//i.test(joinUrl)) {
         fail(422, 'INVALID_MEETING_URL', 'Đường dẫn phòng học trực tuyến phải bắt đầu bằng https://', { field: 'join_url' });
       }
-      const externalPlatformName = text(body, 'external_platform_name', { max: 100, label: 'tên nền tảng' }) ||
+      const externalPlatformName = text(normalizedBody, 'external_platform_name', { max: 100, label: 'tên nền tảng' }) ||
         (provider === 'ZOOM' ? 'Zoom Meeting' : provider === 'GOOGLE_MEET' ? 'Google Meet' : 'Microsoft Teams / Nền tảng ngoài');
-      const externalMeetingId = text(body, 'external_meeting_id', { max: 80, label: 'mã phòng' }) || null;
-      const passcode = text(body, 'passcode', { max: 60, label: 'mật khẩu phòng' }) || null;
-      const isRecurring = Boolean(body.is_recurring_room);
+      const externalMeetingId = text(normalizedBody, 'external_meeting_id', { max: 80, label: 'mã phòng' }) || null;
+      const passcode = text(normalizedBody, 'passcode', { max: 60, label: 'mật khẩu phòng' }) || null;
+      const isRecurring = Boolean(body.is_recurring_room ?? body.is_recurring ?? recurringFromMode);
       // Nếu là link ngoài (EXTERNAL) hoặc không có mã phòng API của Zoom/Google Meet -> không giả lập đồng bộ tự động
       const supportsAutoSync = provider !== 'EXTERNAL' && Boolean(externalMeetingId) && Boolean(body.supports_auto_sync);
 
@@ -1335,7 +1355,7 @@ export function registerVirtualClassroomRoutes(route, { jwtSecret = resolveJwtSe
              is_recurring_room, room_title, external_meeting_id, join_url,
              encrypted_host_start_url, encrypted_passcode, scheduled_start_at, scheduled_end_at,
              room_status, supports_auto_sync, provider_metadata_json, created_by, created_at, updated_at
-           ) VALUES (?, ?, ?, ?, ?, 'MANUAL_LINK', ?, ?, ?, ?, NULL, ?, ?, ?, 'SCHEDULED', ?, ?, ?, ?, ?)`
+           ) VALUES (?, ?, ?, ?, ?, 'MANUAL_LINK', ?, ?, ?, ?, ?, ?, ?, ?, 'SCHEDULED', ?, ?, ?, ?, ?)`
         ).run(
           roomId,
           cls.id,
@@ -1346,6 +1366,7 @@ export function registerVirtualClassroomRoutes(route, { jwtSecret = resolveJwtSe
           roomTitle,
           externalMeetingId ? externalMeetingId.replace(/\s+/g, '') : null,
           joinUrl,
+          provider === 'EXTERNAL' ? null : encryptSecret(joinUrl, jwtSecret),
           passcode ? encryptSecret(passcode, jwtSecret) : null,
           session.scheduled_start_at,
           session.scheduled_end_at,
@@ -1374,10 +1395,14 @@ export function registerVirtualClassroomRoutes(route, { jwtSecret = resolveJwtSe
       });
     } else {
       // AUTO_API (Tạo phòng tự động qua Zoom / Google Meet Provider Adapter)
-      const provider = oneOf(body, 'provider', ['ZOOM', 'GOOGLE_MEET'], { fallback: 'ZOOM', label: 'nền tảng' });
-      const roomTitle = text(body, 'room_title', { max: 200, label: 'tên phòng' }) || `${cls.code} — ${session.session_title}`;
-      const passcode = text(body, 'passcode', { max: 40, label: 'mật khẩu phòng' }) || null;
-      const isRecurring = Boolean(body.is_recurring_room);
+      const normalizedBody = {
+        ...body,
+        room_title: body.room_title ?? body.room_name,
+      };
+      const provider = oneOf(normalizedBody, 'provider', ['ZOOM', 'GOOGLE_MEET'], { fallback: 'ZOOM', label: 'nền tảng' });
+      const roomTitle = text(normalizedBody, 'room_title', { max: 200, label: 'tên phòng' }) || `${cls.code} — ${session.session_title}`;
+      const passcode = text(normalizedBody, 'passcode', { max: 40, label: 'mật khẩu phòng' }) || null;
+      const isRecurring = Boolean(body.is_recurring_room ?? body.is_recurring ?? recurringFromMode);
       const durationMinutes = Math.max(
         15,
         Math.round((Date.parse(session.scheduled_end_at) - Date.parse(session.scheduled_start_at)) / 60000)
@@ -1445,7 +1470,7 @@ export function registerVirtualClassroomRoutes(route, { jwtSecret = resolveJwtSe
     return [201, await buildVirtualSessionDetailDto(db, user, updatedSession, cls, caps, jwtSecret)];
   });
 
-  // 7. Cập nhật thông tin phòng học trực tuyến (KHÔNG tạo lại phòng mới khi chỉ đổi tên/mật khẩu/cấu hình)
+  // 7. Cập nhật thông tin & link phòng học trực tuyến (KHÔNG tạo lại phòng mới khi chỉnh sửa link/tên/ID/mật khẩu)
   route('PATCH', '/sessions/:id/virtual-room', async ({ db, user, params, body }) => {
     const { session, cls, caps } = await requireSession(db, user, params.id, 'can_manage_sessions');
     const room = session.virtual_room_id
@@ -1453,29 +1478,114 @@ export function registerVirtualClassroomRoutes(route, { jwtSecret = resolveJwtSe
       : await db.prepare('SELECT * FROM virtual_meeting_rooms WHERE session_id = ? ORDER BY created_at DESC LIMIT 1').get(session.session_id);
     if (!room) fail(404, 'VIRTUAL_ROOM_NOT_FOUND', 'Buổi học này chưa gắn phòng học trực tuyến.');
 
-    const nextTitle = 'room_title' in body ? text(body, 'room_title', { required: true, max: 200, label: 'tên phòng' }) : room.room_title;
-    const nextUrl = 'join_url' in body ? text(body, 'join_url', { required: true, max: 500, label: 'Meeting URL' }) : room.join_url;
+    const normalizedBody = {
+      ...body,
+      room_title: body.room_title ?? body.room_name,
+      external_meeting_id: body.external_meeting_id ?? body.meeting_code,
+    };
+
+    const nextProvider =
+      'provider' in normalizedBody
+        ? oneOf(normalizedBody, 'provider', VIRTUAL_PROVIDERS, { fallback: room.provider, label: 'nền tảng' })
+        : room.provider;
+    const defaultPlatform =
+      nextProvider === 'ZOOM' ? 'Zoom Meeting' : nextProvider === 'GOOGLE_MEET' ? 'Google Meet' : 'Microsoft Teams / Nền tảng ngoài';
+    const nextPlatformName =
+      'external_platform_name' in normalizedBody
+        ? text(normalizedBody, 'external_platform_name', { max: 100, label: 'tên nền tảng' }) || defaultPlatform
+        : nextProvider !== room.provider
+          ? defaultPlatform
+          : room.external_platform_name || defaultPlatform;
+
+    const nextTitle =
+      'room_title' in normalizedBody && normalizedBody.room_title !== undefined
+        ? text(normalizedBody, 'room_title', { required: true, max: 200, label: 'tên phòng' })
+        : room.room_title;
+    const nextUrl =
+      'join_url' in normalizedBody && normalizedBody.join_url !== undefined
+        ? text(normalizedBody, 'join_url', { required: true, max: 500, label: 'Meeting URL' })
+        : room.join_url;
     if (!/^https:\/\//i.test(nextUrl)) {
-      fail(422, 'INVALID_MEETING_URL', 'Meeting URL phải bắt đầu bằng https://');
+      fail(422, 'INVALID_MEETING_URL', 'Meeting URL phải bắt đầu bằng https://', { field: 'join_url' });
     }
     const nextMeetingId =
-      'external_meeting_id' in body
-        ? (text(body, 'external_meeting_id', { max: 80, label: 'mã phòng' }) || '').replace(/\s+/g, '') || null
+      'external_meeting_id' in normalizedBody
+        ? (text(normalizedBody, 'external_meeting_id', { max: 80, label: 'mã phòng' }) || '').replace(/\s+/g, '') || null
         : room.external_meeting_id;
     const nextPasscode =
-      'passcode' in body
-        ? body.passcode
-          ? encryptSecret(String(body.passcode).trim(), jwtSecret)
+      'passcode' in normalizedBody
+        ? normalizedBody.passcode
+          ? encryptSecret(String(normalizedBody.passcode).trim(), jwtSecret)
           : null
         : room.encrypted_passcode;
-    const isRecurring = 'is_recurring_room' in body ? (body.is_recurring_room ? 1 : 0) : room.is_recurring_room;
 
-    await db.prepare(
-      `UPDATE virtual_meeting_rooms
-       SET room_title = ?, join_url = ?, external_meeting_id = ?, encrypted_passcode = ?,
-           is_recurring_room = ?, updated_at = ?
-       WHERE id = ?`
-    ).run(nextTitle, nextUrl, nextMeetingId, nextPasscode, isRecurring, nowIso(), room.id);
+    let nextEncryptedHostUrl = room.encrypted_host_start_url;
+    if ('host_start_url' in normalizedBody) {
+      const rawHost = text(normalizedBody, 'host_start_url', { max: 500, label: 'Host Start URL' }) || '';
+      if (rawHost && !/^https:\/\//i.test(rawHost)) {
+        fail(422, 'INVALID_MEETING_URL', 'Host Start URL phải bắt đầu bằng https://', { field: 'host_start_url' });
+      }
+      nextEncryptedHostUrl = rawHost ? encryptSecret(rawHost, jwtSecret) : null;
+    } else if (nextProvider === 'EXTERNAL') {
+      nextEncryptedHostUrl = null;
+    } else if (nextUrl !== room.join_url) {
+      // Nếu giảng viên thay link Zoom/Meet thủ công mới, đồng bộ lại link mở phòng Host để không dẫn về link cũ
+      nextEncryptedHostUrl = encryptSecret(nextUrl, jwtSecret);
+    }
+
+    const isRecurring =
+      'is_recurring_room' in normalizedBody || 'is_recurring' in normalizedBody
+        ? Boolean(normalizedBody.is_recurring_room ?? normalizedBody.is_recurring) ? 1 : 0
+        : room.is_recurring_room;
+    const nextSupportsAutoSync =
+      nextProvider === 'EXTERNAL'
+        ? 0
+        : 'supports_auto_sync' in normalizedBody
+          ? Boolean(normalizedBody.supports_auto_sync) ? 1 : 0
+          : room.supports_auto_sync;
+    const nextCreationMode =
+      nextProvider === 'EXTERNAL' ? 'MANUAL_LINK' : nextUrl !== room.join_url && room.creation_mode === 'AUTO_API' ? 'MANUAL_LINK' : room.creation_mode;
+    const prevMeta = safeJson(room.provider_metadata_json, {});
+    const nextMeta = {
+      ...prevMeta,
+      mode: nextCreationMode,
+      platform_name: nextPlatformName,
+      sync_notice: nextSupportsAutoSync ? null : EXTERNAL_NO_SYNC_NOTICE,
+    };
+
+    const displayRoom = `${nextPlatformName}${nextMeetingId ? ` · ID: ${formatZoomMeetingId(nextMeetingId)}` : ''}`;
+
+    await tx(db, async () => {
+      await db.prepare(
+        `UPDATE virtual_meeting_rooms
+         SET provider = ?, external_platform_name = ?, creation_mode = ?, room_title = ?, join_url = ?,
+             external_meeting_id = ?, encrypted_host_start_url = ?, encrypted_passcode = ?,
+             is_recurring_room = ?, supports_auto_sync = ?, provider_metadata_json = ?, updated_at = ?
+         WHERE id = ?`
+      ).run(
+        nextProvider,
+        nextPlatformName,
+        nextCreationMode,
+        nextTitle,
+        nextUrl,
+        nextMeetingId,
+        nextEncryptedHostUrl,
+        nextPasscode,
+        isRecurring,
+        nextSupportsAutoSync,
+        JSON.stringify(nextMeta),
+        nowIso(),
+        room.id
+      );
+
+      await db.prepare('UPDATE sessions SET room_or_link = ? WHERE virtual_room_id = ?').run(displayRoom, room.id);
+
+      if (isRecurring === 1) {
+        await db.prepare('UPDATE subject_classes SET default_virtual_room_id = ? WHERE id = ?').run(room.id, cls.id);
+      } else if (cls.default_virtual_room_id === room.id) {
+        await db.prepare('UPDATE subject_classes SET default_virtual_room_id = NULL WHERE id = ?').run(cls.id);
+      }
+    });
 
     const updatedSession = await db.prepare('SELECT * FROM sessions WHERE session_id = ?').get(session.session_id);
     return await buildVirtualSessionDetailDto(db, user, updatedSession, cls, caps, jwtSecret);

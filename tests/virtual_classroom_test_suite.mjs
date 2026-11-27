@@ -525,6 +525,45 @@ await t('CASE-15', 'Giảng viên điều chỉnh kết quả điểm danh bắt
   assert.ok(confirmedData.session.attendance_saved_at, 'Sau khi chốt, bảng điểm danh chính thức của buổi học phải được lưu');
 });
 
+// ---------------------------------------------------------------- Case 16: Chỉnh sửa & Gắn link Zoom thủ công trực tiếp qua PATCH & POST
+await t('CASE-16', 'Cho phép chỉnh sửa trực tiếp link Zoom/phòng trực tuyến & giữ tương thích payload mode/MANUAL_LINK', async () => {
+  // 16a. PATCH đổi link Zoom, tên phòng, Meeting ID, passcode trên phòng hiện có (giữ nguyên room.id)
+  const before = expectStatus(await apiAsync('GET', `/sessions/${zoomSessionId}/virtual-room`, GV), 200);
+  const customZoomUrl = 'https://us02web.zoom.us/j/89012345678?pwd=test';
+  const patchRes = await apiAsync('PATCH', `/sessions/${zoomSessionId}/virtual-room`, GV, {
+    provider: 'ZOOM',
+    room_title: '5A1 — Phòng Zoom Chính Thức (Đã chỉnh link)',
+    join_url: customZoomUrl,
+    external_meeting_id: '89012345678',
+    passcode: '654321',
+  });
+  const updated = expectStatus(patchRes, 200);
+  assert.equal(updated.room.id, before.room.id, 'Chỉnh sửa link không được tạo room id mới');
+  assert.equal(updated.room.join_url, customZoomUrl);
+  assert.equal(updated.room.passcode, '654321');
+  assert.equal(updated.room.raw_meeting_id, '89012345678');
+
+  // Host Start URL cũng phải cập nhật theo link mới (không trỏ nhầm sang sandbox URL cũ)
+  const hostStartRes = await apiAsync('POST', `/sessions/${zoomSessionId}/virtual-room/start`, GV);
+  const hostData = expectStatus(hostStartRes, 200);
+  assert.equal(hostData.host_start_url, customZoomUrl);
+
+  // 16b. Gắn link Zoom mới bằng POST với alias mode/room_name (giống form UI)
+  const manualZoomAttach = await apiAsync('POST', `/sessions/${externalSessionId}/virtual-room`, GV, {
+    mode: 'EXTERNAL_LINK',
+    provider: 'ZOOM',
+    room_name: 'Phòng Zoom Nhập Tay 5A1',
+    join_url: 'https://zoom.us/j/9988776655',
+    meeting_code: '9988776655',
+    passcode: '778899',
+  });
+  const attached = expectStatus(manualZoomAttach, 201);
+  assert.equal(attached.room.provider, 'ZOOM');
+  assert.equal(attached.room.creation_mode, 'MANUAL_LINK');
+  assert.equal(attached.room.join_url, 'https://zoom.us/j/9988776655');
+  assert.equal(attached.room.passcode, '778899');
+});
+
 console.log('----------------------------------------------------------------------');
 console.log(` TOTAL: ${passed + failed} | PASSED: ${passed} | FAILED: ${failed}`);
 console.log('======================================================================');

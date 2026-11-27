@@ -43,6 +43,35 @@ import {
   MapUnknownParticipantModal, ParticipantSlicesModal, RulesAndProvidersPanel, SimulateWebhookModal,
 } from './VirtualSessionPanels';
 
+const LiveElapsedDuration: React.FC<{
+  liveStatus: string;
+  startedAt?: string | null;
+  endedAt?: string | null;
+  parens?: boolean;
+}> = ({ liveStatus, startedAt, endedAt, parens = true }) => {
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    if (liveStatus !== 'LIVE' || !startedAt) return undefined;
+    setNowMs(Date.now());
+    const timer = window.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [liveStatus, startedAt]);
+
+  const elapsedSeconds = useMemo(() => {
+    if (!startedAt) return 0;
+    if (liveStatus === 'LIVE') {
+      return Math.max(0, Math.floor((nowMs - Date.parse(startedAt)) / 1000));
+    }
+    if (liveStatus === 'ENDED' && endedAt) {
+      return Math.max(0, Math.floor((Date.parse(endedAt) - Date.parse(startedAt)) / 1000));
+    }
+    return 0;
+  }, [liveStatus, startedAt, endedAt, nowMs]);
+
+  const formatted = fmtElapsedSec(elapsedSeconds);
+  return <>{parens ? `(${formatted})` : formatted}</>;
+};
+
 export const VirtualSessionPage: React.FC = () => {
   const { classId = '', sessionId = '' } = useParams();
   const toast = useToast();
@@ -59,13 +88,6 @@ export const VirtualSessionPage: React.FC = () => {
   const [activeTab, setActiveTab] = useState<VirtualTab>('live');
   const [showPasscode, setShowPasscode] = useState(false);
   const [busyAction, setBusyAction] = useState(false);
-
-  // Elapsed timer when session is LIVE
-  const [nowMs, setNowMs] = useState(() => Date.now());
-  useEffect(() => {
-    const timer = window.setInterval(() => setNowMs(Date.now()), 1000);
-    return () => window.clearInterval(timer);
-  }, []);
 
   // Filters
   const [liveQuery, setLiveQuery] = useState('');
@@ -123,17 +145,6 @@ export const VirtualSessionPage: React.FC = () => {
         ? [{ label: 'Chi tiết lớp', to: `/teaching/classes/${classId}` }]
         : []
   );
-
-  const elapsedSeconds = useMemo(() => {
-    if (!session) return 0;
-    if (session.live_status === 'LIVE' && session.live_started_at) {
-      return Math.max(0, Math.floor((nowMs - Date.parse(session.live_started_at)) / 1000));
-    }
-    if (session.live_status === 'ENDED' && session.live_started_at && session.live_ended_at) {
-      return Math.max(0, Math.floor((Date.parse(session.live_ended_at) - Date.parse(session.live_started_at)) / 1000));
-    }
-    return 0;
-  }, [session, nowMs]);
 
   const handleCopyJoinUrl = async () => {
     if (!room?.join_url) return;
@@ -324,7 +335,7 @@ export const VirtualSessionPage: React.FC = () => {
             </Link>
             {canManage && (
               <Btn small variant="secondary" onClick={() => setRoomModalOpen(true)}>
-                {room ? 'Đổi / Cấu hình phòng họp' : '+ Thiết lập phòng họp'}
+                {room ? 'Chỉnh sửa link & cấu hình' : '+ Thiết lập phòng họp'}
               </Btn>
             )}
             {room && (
@@ -394,7 +405,7 @@ export const VirtualSessionPage: React.FC = () => {
                 <>
                   Bắt đầu {fmtTime(session.live_started_at)}
                   {session.live_ended_at ? ` · Kết thúc ${fmtTime(session.live_ended_at)}` : ' · Đang diễn ra'}
-                  {' '}({fmtElapsedSec(elapsedSeconds)})
+                  {' '}<LiveElapsedDuration liveStatus={session.live_status} startedAt={session.live_started_at} endedAt={session.live_ended_at} />
                 </>
               ) : (
                 'Chưa bắt đầu'
@@ -476,6 +487,11 @@ export const VirtualSessionPage: React.FC = () => {
                 <Btn small variant="primary" onClick={handleJoinRoom} loading={busyAction}>
                   Tham gia phòng
                 </Btn>
+                {canManage && (
+                  <Btn small variant="secondary" onClick={() => setRoomModalOpen(true)}>
+                    Chỉnh sửa link &amp; phòng
+                  </Btn>
+                )}
                 {canManage && room.has_host_start_url && session.live_status !== 'LIVE' && (
                   <Btn small variant="secondary" onClick={handleStartHost} loading={busyAction}>
                     Bắt đầu với quyền Host
@@ -636,7 +652,15 @@ export const VirtualSessionPage: React.FC = () => {
               </div>
               <div className="t-actions">
                 <span className="t-sub tabular-nums">
-                  Thời lượng buổi học đã diễn ra: <strong>{fmtElapsedSec(elapsedSeconds)}</strong>
+                  Thời lượng buổi học đã diễn ra:{' '}
+                  <strong>
+                    <LiveElapsedDuration
+                      liveStatus={session.live_status}
+                      startedAt={session.live_started_at}
+                      endedAt={session.live_ended_at}
+                      parens={false}
+                    />
+                  </strong>
                 </span>
               </div>
             </div>

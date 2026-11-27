@@ -757,13 +757,22 @@ export function registerClassRoutes(route) {
 
     return await (async () => {
       const vcfg = body.virtual_room_config;
-      const roomOption = String(vcfg.room_option || 'CREATE_NEW').toUpperCase();
+      const rawOption = String(vcfg.room_option || vcfg.mode || vcfg.creation_mode || 'CREATE_NEW').trim().toUpperCase();
+      const roomOption =
+        rawOption === 'REUSED_ROOM' || rawOption === 'REUSE_EXISTING'
+          ? 'REUSE_EXISTING'
+          : rawOption === 'MANUAL_LINK' || rawOption === 'EXTERNAL_LINK'
+            ? 'EXTERNAL_LINK'
+            : rawOption === 'RECURRING_CLASS' || rawOption === 'RECURRING_ROOM'
+              ? 'RECURRING_ROOM'
+              : 'CREATE_NEW';
       let attachedRoomId = null;
 
-      if (roomOption === 'REUSE_EXISTING' && vcfg.existing_room_id) {
+      const existingId = vcfg.existing_room_id || vcfg.reuse_room_id;
+      if (roomOption === 'REUSE_EXISTING' && existingId) {
         const existingRoom = await db
           .prepare('SELECT * FROM virtual_meeting_rooms WHERE id = ? AND subject_class_id = ?')
-          .get(String(vcfg.existing_room_id).trim(), cls.id);
+          .get(String(existingId).trim(), cls.id);
         if (!existingRoom) fail(404, 'VIRTUAL_ROOM_NOT_FOUND', 'Không tìm thấy phòng trực tuyến đã chọn trong lớp.');
         await tx(db, async () => {
           for (const sid of created) {
@@ -773,25 +782,30 @@ export function registerClassRoutes(route) {
         });
         attachedRoomId = existingRoom.id;
       } else {
-        const provider = oneOf(vcfg, 'provider', VIRTUAL_PROVIDERS, { fallback: 'ZOOM', label: 'nền tảng họp trực tuyến' });
-        const isRecurring = Boolean(vcfg.is_recurring || roomOption === 'RECURRING_ROOM' || created.length > 1);
+        const normalizedVcfg = {
+          ...vcfg,
+          room_title: vcfg.room_title ?? vcfg.room_name,
+          external_meeting_id: vcfg.external_meeting_id ?? vcfg.meeting_code,
+        };
+        const provider = oneOf(normalizedVcfg, 'provider', VIRTUAL_PROVIDERS, { fallback: 'ZOOM', label: 'nền tảng họp trực tuyến' });
+        const isRecurring = Boolean(vcfg.is_recurring || vcfg.is_recurring_room || roomOption === 'RECURRING_ROOM' || created.length > 1);
         const firstSession = await db.prepare('SELECT * FROM sessions WHERE session_id = ?').get(created[0]);
         const durationMinutes = Math.max(
           15,
           Math.round((Date.parse(firstSession.scheduled_end_at) - Date.parse(firstSession.scheduled_start_at)) / 60000)
         );
-        const roomTitle = text(vcfg, 'room_title', { max: 200, label: 'tên phòng học' }) || `${cls.code} — ${firstSession.session_title}`;
-        const passcode = text(vcfg, 'passcode', { max: 40, label: 'mật khẩu phòng' }) || null;
+        const roomTitle = text(normalizedVcfg, 'room_title', { max: 200, label: 'tên phòng học' }) || `${cls.code} — ${firstSession.session_title}`;
+        const passcode = text(normalizedVcfg, 'passcode', { max: 40, label: 'mật khẩu phòng' }) || null;
         const now = nowIso();
         const roomId = `vmr_${crypto.randomBytes(6).toString('hex')}`;
 
-        if (provider === 'EXTERNAL' || vcfg.creation_mode === 'MANUAL_LINK') {
-          const joinUrl = text(vcfg, 'join_url', { required: true, max: 500, label: 'đường dẫn phòng học (Meeting URL)' });
+        if (provider === 'EXTERNAL' || roomOption === 'EXTERNAL_LINK') {
+          const joinUrl = text(normalizedVcfg, 'join_url', { required: true, max: 500, label: 'đường dẫn phòng học (Meeting URL)' });
           if (!/^https:\/\//i.test(joinUrl)) {
             fail(422, 'INVALID_MEETING_URL', 'Đường dẫn phòng học phải bắt đầu bằng https://.', { field: 'join_url' });
           }
-          const extId = text(vcfg, 'external_meeting_id', { max: 80, label: 'mã phòng' }) || null;
-          const extPlatformName = text(vcfg, 'external_platform_name', { max: 100, label: 'tên nền tảng' }) ||
+          const extId = text(normalizedVcfg, 'external_meeting_id', { max: 80, label: 'mã phòng' }) || null;
+          const extPlatformName = text(normalizedVcfg, 'external_platform_name', { max: 100, label: 'tên nền tảng' }) ||
             (provider === 'ZOOM' ? 'Zoom Meeting' : provider === 'GOOGLE_MEET' ? 'Google Meet' : 'Microsoft Teams / Nền tảng ngoài');
           const supportsSync = provider !== 'EXTERNAL' && Boolean(extId) && Boolean(vcfg.supports_auto_sync);
           await tx(db, async () => {
