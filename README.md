@@ -27,6 +27,9 @@ Hệ thống giữ nguyên trọn vẹn cấu trúc 80 bảng hiện tại và h
 | Giảng viên | `thuha.gv@lmsplus.edu.vn` (`GV5001`) | `123456` |
 | Học viên | `minhanh.hs@lmsplus.edu.vn` (`HS50101`) | `123456` |
 
+## Tài liệu Hướng dẫn Sử dụng
+- Xem trọn bộ **[Hướng dẫn Sử dụng Chi tiết theo từng Module (kèm ảnh chụp màn hình)](./docs/user-guide/README.md)** trong thư mục `docs/user-guide/`.
+
 ## Triển khai lên Vercel
 Dự án đã cấu hình sẵn `vercel.json` và Serverless API (`api/index.mjs`) dùng Node.js 24 (`pg` cho PostgreSQL 18 qua `DATABASE_URL`, tự fallback `node:sqlite` trên `/tmp` nếu chưa khai báo `DATABASE_URL`):
 1. Kết nối kho mã nguồn GitHub `kien7bnt/LMSplus` tại [vercel.com/new](https://vercel.com/new).
