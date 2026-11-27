@@ -72,6 +72,10 @@ if exist "%BASE_DIR%1-audit-and-verify.bat" (
 REM =====================================================
 REM  3. KHOI DONG BACKEND
 REM =====================================================
+if not exist "%BASE_DIR%node_modules" (
+    echo [INFO] Chua co node_modules goc, dang cai dat dependencies...
+    call npm install
+)
 echo [3/5] Khoi dong Backend (PostgreSQL 18 / SQLite Fallback + JWT API)...
 echo ================= BACKEND START %DATE% %TIME% ================= >> "%LOG_DIR%\backend.log"
 start "LMSPLUS Backend (Port 8000)" /D "%BASE_DIR%" cmd /k "chcp 65001 >nul && title LMSPLUS Backend (Port 8000) && node backend\server_fallback.mjs"

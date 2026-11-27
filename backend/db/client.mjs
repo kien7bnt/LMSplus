@@ -12,7 +12,14 @@ import path from 'node:path';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
-import pg from 'pg';
+
+let pg = null;
+try {
+  const mod = await import('pg');
+  pg = mod.default || mod;
+} catch {
+  // Thư viện pg chưa được cài đặt (chế độ SQLite Fallback vẫn chạy bình thường)
+}
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const ROOT_DIR = path.resolve(__dirname, '..', '..');
@@ -47,14 +54,16 @@ function loadEnvFileIfPresent() {
 loadEnvFileIfPresent();
 
 // Chuẩn hóa kiểu trả về của PostgreSQL: INT8 (COUNT/SUM nguyên) & NUMERIC -> JavaScript number
-pg.types.setTypeParser(20, (val) => {
-  const n = Number(val);
-  return Number.isSafeInteger(n) ? n : val;
-});
-pg.types.setTypeParser(1700, (val) => {
-  const n = parseFloat(val);
-  return Number.isFinite(n) ? n : val;
-});
+if (pg?.types) {
+  pg.types.setTypeParser(20, (val) => {
+    const n = Number(val);
+    return Number.isSafeInteger(n) ? n : val;
+  });
+  pg.types.setTypeParser(1700, (val) => {
+    const n = parseFloat(val);
+    return Number.isFinite(n) ? n : val;
+  });
+}
 
 const IS_SERVERLESS = Boolean(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME);
 
@@ -228,6 +237,11 @@ export function createDbClient() {
   const txStorage = new AsyncLocalStorage();
 
   if (engine === 'postgres') {
+    if (!pg) {
+      throw new Error(
+        "Không tìm thấy package 'pg'. Vui lòng chạy 'npm install' tại thư mục gốc để kết nối PostgreSQL, hoặc đặt LMSPLUS_DB_CLIENT=sqlite để chạy với SQLite Fallback."
+      );
+    }
     const pool = new pg.Pool(buildPgPoolConfig());
     pool.on('error', (err) => {
       console.error('[lmsplus-pg-pool]', err?.message || err);
